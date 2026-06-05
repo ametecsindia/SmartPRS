@@ -1,0 +1,6585 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+/**
+ * Serves the full SmartPRS prototype engine (113 screens, SCREENS config + SEED
+ * + renderers) behind Laravel auth. Injects the logged-in user's role so the
+ * prototype's role-based navigation matches, skips the prototype's mock login,
+ * and wires a real Laravel logout. Live DB data is layered in progressively.
+ */
+class AppController extends Controller
+{
+    private const ROLE_MAP = [
+        'super_admin' => 'Super Admin',
+        'admin' => 'Admin',
+        'hr_manager' => 'HR Manager',
+        'field_agent' => 'Field Agent',
+        'employee' => 'Employee',
+    ];
+
+    /**
+     * The module groups the current user's tenant plan includes.
+     * Returns null (= UNRESTRICTED) for: the platform super admin; a tenant with
+     * no plan; a plan with no features; OR a legacy/free-text plan whose feature
+     * keys are not the recognised module-group keys (e.g. the seeded Growth plan
+     * stored ['payroll','attendance','compliance']). Enforcement only kicks in
+     * when the plan was configured with the new module-group system — otherwise
+     * we never gate, so a tenant is never accidentally stripped of most modules.
+     * The recognised group keys must match SaasController::MODULE_GROUPS and the
+     * front-end PLAN_GROUP_NAV.
+     */
+    private const PLAN_GROUP_KEYS = [
+        'employees', 'attendance', 'leave', 'payroll', 'statutory',
+        'requests', 'field', 'performance', 'kb', 'reports',
+    ];
+
+    private static function resolvePlanModules($user): ?array
+    {
+        try {
+            $tid = $user->tenant_id ?? null;
+            if (! $tid) {
+                return null;   // platform super admin — full access
+            }
+            if (! \Illuminate\Support\Facades\Schema::hasTable('tenants') || ! \Illuminate\Support\Facades\Schema::hasTable('plans')) {
+                return null;
+            }
+            $planId = \Illuminate\Support\Facades\DB::table('tenants')->where('id', $tid)->value('plan_id');
+            if (! $planId) {
+                return null;   // tenant has no plan assigned → don't gate
+            }
+            $features = \Illuminate\Support\Facades\DB::table('plans')->where('id', $planId)->value('features');
+            $groups = $features ? (json_decode($features, true) ?: []) : [];
+            $groups = array_values(array_filter(array_map('strval', is_array($groups) ? $groups : [])));
+            if (! count($groups)) {
+                return null;   // empty list → unrestricted (safe)
+            }
+            // Only gate when EVERY key is a recognised module-group key — that is
+            // only ever produced by the new Plans UI (checkboxes). If ANY key is
+            // unknown (e.g. the seeded Growth plan's free-text 'compliance'), the
+            // plan predates the module-group system → do NOT gate (unrestricted),
+            // so legacy/seeded plans never hide most of the app.
+            $unknown = array_diff($groups, self::PLAN_GROUP_KEYS);
+            if (count($unknown)) {
+                return null;   // legacy/free-text plan → unrestricted
+            }
+
+            return $groups;   // all keys recognised → enforce exactly these
+        } catch (\Throwable $e) {
+            return null;   // never block the app on a plan-resolution error
+        }
+    }
+
+    public function show(Request $request, ?string $screen = null)
+    {
+        $path = resource_path('prototype/app.html');
+        abort_unless(is_file($path), 404, 'Prototype not found.');
+
+        $html = file_get_contents($path);
+        $user = $request->user();
+        $role = self::ROLE_MAP[$user->getRoleNames()->first() ?? 'admin'] ?? 'Admin';
+
+        // Subscription lifecycle (rev 75) — banner + lock-out state for this login.
+        $subInfo = \App\Services\SubscriptionService::state($user->tenant_id ? (int) $user->tenant_id : null);
+
+        $cfg = json_encode([
+            'role' => $role,
+            'planModules' => self::resolvePlanModules($user),   // null = unrestricted; else allowed module-group keys
+            'csrf' => csrf_token(),
+            'logoutUrl' => route('logout'),
+            'dataUrl' => route('app.data'),
+            'kbUrl' => route('app.kb'),
+            'attReportUrl' => route('app.attreport'),
+            'attLogsUrl' => url('/app/attendance-report/logs'),
+            'attRatingUrl' => route('app.attreport.rating'),
+            'attPdfUrl' => route('app.attreport.pdf'),
+            'settingsUrl' => route('app.settings'),
+            'settingsSaveUrl' => route('app.settings.save'),
+            'kbReorderUrl' => url('/app/kb/reorder'),
+            'punchUrl' => route('app.punch'),
+            'punchStatusUrl' => route('app.punch.status'),
+            'mailUrl' => route('app.mail'),
+            'mailSaveUrl' => route('app.mail.save'),
+            'mailTestUrl' => route('app.mail.test'),
+            'brandingUrl' => route('app.branding'),
+            'brandingSaveUrl' => route('app.branding.save'),
+            'empImportUrl' => route('app.employees.import'),
+            'empTemplateUrl' => route('app.employees.template'),
+            'stateUrl' => route('app.state'),
+            'stateSaveUrl' => route('app.state.save'),
+            'empStoreUrl' => route('app.employees.store'),
+            'leavesUrl' => route('app.leaves'),
+            'leaveApplyUrl' => route('app.leaves.apply'),
+            'leaveBalancesBase' => url('/app/leaves/balances'),   // + /{employee}
+            'leaveDecideUrl' => url('/app/leaves'),   // + /{id}/decide
+            'approvalsUrl' => route('app.approvals'),
+            'requestsBase' => url('/app/requests'),   // + /{module}  and  /{module}/{id}/decide
+            'masterBase' => url('/app/master'),       // + /{type}, /{type}/{id}/delete
+            'cocUrl' => url('/app/code-of-conduct'),   // Code of Conduct read + acknowledge (+ /ack)
+            'incentiveBase' => url('/app/incentive'),   // commission/incentive calc: /template /calculate /commit
+            'finYearBase' => url('/app/fin-year'),       // financial year: GET + /set
+            'mySubBase' => url('/app/my-subscription'),   // tenant self-serve billing: GET + /quote /renew/order /renew/complete
+            'transfersBase' => url('/app/transfers'),     // + /{id}/letter (Transfer Order PDF)
+            'incrementsBase' => url('/app/increments'),   // + /{id}/letter (PDF) + /{id}/apply (rev 83b)
+            'liveSalaryUrl' => url('/app/live-salary/data'),   // running-month earned-till-today panel
+            'attBulkBase' => url('/app/attendance-bulk'),      // bulk punches: /template /upload /{batch}/decide /row/{id}/delete
+            'empBulkDeleteUrl' => url('/app/employees/bulk-delete'),   // soft-delete selected employees (admin)
+            'salaryRunsUrl' => route('app.salaryruns'),
+            'salaryRunsBase' => url('/app/salary-runs'),   // + /{id}/decide  and  /bulk  and  /{id}/sheet
+            'payslipBase' => url('/app/payslip'),           // + /{code}/pdf?month=
+            'salaryLinesBase' => url('/app/salary-lines'),  // + /{id}/decide, /bulk, /{id}/acknowledge
+            'complianceUrl' => url('/app/compliance-alerts'),       // DRA/PCC expiry alerts
+            'complianceRunUrl' => url('/app/compliance-alerts/run'),
+            'payrollPreviewUrl' => url('/app/payroll/preview'),     // Generate Payroll: preview a run
+            'payrollGenUrl' => url('/app/payroll/generate'),        // Generate Payroll: create draft run
+            'reportsPreviewUrl' => url('/app/reports/preview'),     // Reports: preview a dataset
+            'reportsExportUrl' => url('/app/reports/export'),       // Reports: CSV download
+            'statutoryReportBase' => url('/app/statutory-report'),  // + /{type} (gratuity|pt)
+            'lettersBase' => url('/app/letters'),                   // + /{id}/pdf (merged letter)
+            'computedBase' => url('/app/computed'),                 // + /{type} computed read views
+            'idcardBase' => url('/app/idcard'),                     // + /{code}/pdf
+            'sendMessageUrl' => url('/app/send-message'),           // broadcast email
+            'pointsAutoApplyUrl' => url('/app/points/auto-apply'),  // auto-award attendance points
+            'testsBase' => url('/app/tests'),                       // tests engine (questions + take)
+            'onboardingBase' => url('/app/onboarding'),             // onboarding checklist workflow
+            'performanceBase' => url('/app/performance'),           // performance review workflow
+            'myPhotoUrl' => url('/app/my-photo'),                   // self-service employee photo
+            'essMeUrl' => url('/app/ess/me'),                       // employee self-service snapshot
+            'deviceBase' => url('/app/device'),                     // biometric device in-app sync
+            'recruitmentBase' => url('/app/recruitment'),          // ATS pipeline
+            'offrollAgentBase' => url('/app/offroll-agent'),        // off-roll agent KYC
+            'billingBase' => url('/app/billing'),                   // SaaS billing (super admin)
+            'dashboardStatsUrl' => url('/app/dashboard/stats'),     // live dashboard widgets
+            'searchUrl' => url('/app/search'),                      // global top-bar search
+            'usersUrl' => url('/app/users'),                        // company user logins
+            'usersBase' => url('/app/users'),                       // + /{id}/invite, /{id}/status
+            'changePasswordUrl' => url('/app/change-password'),
+            'saasTenantsUrl' => url('/app/saas/tenants'),    // SaaS platform: tenant provisioning
+            'saasPlansUrl' => url('/app/saas/plans'),
+            'screen' => $screen,
+            'user' => $user->name,
+            'userEmail' => $user->email,
+            'company' => optional($user->company)->name,
+            'portalCompany' => session('portal_company_id'),   // from /c/{slug} branded login
+            // Subscription lifecycle (rev 75): drives the renew banner + lock-out UI.
+            'subState' => $subInfo['state'],                 // active|grace|locked|none
+            'subEnd' => $subInfo['end'] ? $subInfo['end']->format('d M Y') : '',
+            'subDays' => $subInfo['daysLeft'],
+        ], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
+
+        // Hide the prototype's mock login to avoid a flash before auto-enter.
+        // NOTE: the prototype's JS builds HTML strings containing literal
+        // </head> and </body>, so we must inject ONLY at the real document tags
+        // (first </head>, last </body>) — never a blind replace-all.
+        $style = <<<CSS
+<style>
+#login-page{display:none!important}
+#smartprs-burger{display:none}
+#smartprs-mlogo{display:none}
+#smartprs-ov{display:none}
+/* Topbar layout: keep the page title on one line (it renders at 24px and was
+   wrapping into the Punch button), and give the title block room while the
+   action icons keep their own space on the right. */
+.topbar > div:first-child{flex:0 1 auto;min-width:0;margin-right:8px}
+.topbar .page-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
+.topbar .breadcrumb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar-actions{flex:0 0 auto;flex-wrap:nowrap}
+@media (max-width: 900px){
+  .sidebar{transform:translateX(-100%);transition:transform .25s ease;z-index:120}
+  body.nav-open .sidebar{transform:translateX(0)}
+  .main-wrap{margin-left:0 !important}
+  #smartprs-burger{display:inline-flex !important}
+  body.nav-open #smartprs-ov{display:block;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:110}
+  .feat-grid,.dash-grid,.dash-grid2,.price-grid,.fgrid,.form-grid,.form-grid.col2,.form-grid.col4{grid-template-columns:1fr !important}
+  .stats-grid,.kpi-strip{grid-template-columns:1fr 1fr !important;gap:12px !important}
+  .stat-card{padding:14px !important}
+  .stat-card .icon{width:34px;height:34px;font-size:14px;margin-bottom:10px}
+  .stat-card h3{font-size:20px}
+  .stat-card p{font-size:11px}
+  .kpi{padding:14px}
+  .kpi h3{font-size:19px}
+  .content{padding:14px !important}
+  .topbar{height:auto;min-height:56px;padding:8px 10px;gap:8px}
+  .topbar > div:first-child{min-width:0}
+  .breadcrumb{display:none}
+  .page-title{display:none}
+  #smartprs-mlogo{display:inline-flex !important;align-items:center;gap:8px}
+  .topbar-actions{gap:8px}
+  .topbar-search{display:none !important}
+  .topbar-actions .topbar-btn:not(.sp-keep){display:none !important}   /* hide bell/import/export; keep logout */
+  .topbar-actions .csub{display:none}                    /* compact company switcher */
+  .topbar-actions .company{max-width:48vw;padding:6px 10px}
+  .topbar-actions .cname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+  .cdrop{max-width:80vw}
+  .page-header{flex-direction:column;align-items:flex-start;gap:10px}
+}
+@media (max-width: 600px){
+  th,td{padding:9px 10px !important}
+}
+/* --- rev 66 UX polish: motion & interaction ONLY (palette, layout, fonts, icons unchanged) --- */
+input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
+tbody tr:hover{background:rgba(15,23,42,.025)}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: no-preference){
+  .btn,button{transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease,transform .08s ease}
+  .btn:active,button:active{transform:translateY(1px)}
+  input,select,textarea{transition:border-color .15s ease,box-shadow .15s ease,background-color .15s ease}
+  .card{transition:box-shadow .2s ease,transform .2s ease}
+  a{transition:color .12s ease,opacity .12s ease}
+  .nav-item{transition:background-color .15s ease,color .15s ease}
+  i[onclick]{transition:transform .12s ease,opacity .12s ease;display:inline-block}
+  i[onclick]:hover{transform:scale(1.15)}
+  tbody tr{transition:background-color .12s ease}
+  @keyframes sp-fade{from{opacity:0}to{opacity:1}}
+  @keyframes sp-pop{from{opacity:0;transform:translateY(10px) scale(.99)}to{opacity:1;transform:none}}
+  div[id$="-modal"],div[id$="-ov"],.modal-ov{animation:sp-fade .16s ease}
+  div[id$="-modal"]>.card,div[id$="-ov"]>.card,div[id$="-ov"]>div,.modal-ov>.card,.modal-ov>div{animation:sp-pop .2s cubic-bezier(.16,.84,.44,1)}
+}
+/* --- rev 73: default inner padding for ALL cards (content was touching the card
+   border on several screens). The base .card class ships with NO padding, so any
+   screen that sets its own inline padding — including the padding:0 full-bleed
+   table cards — automatically overrides this (inline styles win). --- */
+.card{padding:18px 22px}
+</style>
+CSS;
+        if (($h = strpos($html, '</head>')) !== false) {
+            $html = substr($html, 0, $h).$style.substr($html, $h);
+        }
+
+        $boot = <<<HTML
+<script>window.__SMARTPRS = {$cfg};</script>
+<script>
+(function () {
+    var cfg = window.__SMARTPRS || {};
+    async function boot() {
+        if (typeof gotoApp !== 'function' || typeof go !== 'function' || typeof DB === 'undefined') { return setTimeout(boot, 40); }
+        try { window._role = cfg.role; } catch (e) {}
+        // 1) Load saved per-tenant app state (persists ALL screens) from the database.
+        var seedState = false;
+        try {
+            const sres = await fetch(cfg.stateUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
+            if (sres.ok) {
+                const sj = await sres.json();
+                if (sj && sj.state && typeof sj.state === 'object') {
+                    DB = sj.state;
+                    // Employees are authoritative from the DB table (loaded below).
+                    // Drop any employees saved into old app-state so prototype/sample
+                    // rows (e.g. EMP-0142) can never reappear in the Directory.
+                    try { delete DB.employees; } catch (e) { DB.employees = []; }
+                }
+                else { seedState = true; }
+            }
+        } catch (e) {}
+        // 2) Overlay normalized live tables (employees authoritative from its table).
+        try {
+            const res = await fetch(cfg.dataUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
+            if (res.ok) {
+                const live = await res.json();
+                // Always replace employees with the DB-backed list (even if empty),
+                // so the Directory is strictly database-driven — never sample data.
+                DB.employees = Array.isArray(live.employees) ? live.employees : [];
+                if (Array.isArray(live.companies) && live.companies.length) { DB.companies = live.companies; }
+                if (Array.isArray(live.tenants) && live.tenants.length) { DB.tenants = live.tenants; }
+                if (Array.isArray(live.payrollRuns) && live.payrollRuns.length) { DB.payrollRuns = live.payrollRuns; }
+                if (Array.isArray(live.payslips)) { window.__PAYSLIPS = live.payslips; }
+                if (Array.isArray(live.tdsReturns) && live.tdsReturns.length && (!DB.tdsReturns || !DB.tdsReturns.length)) { DB.tdsReturns = live.tdsReturns; }
+                if (live.rates) { window.__RATES = live.rates; }
+                if (live.branding) { window.__BRANDMAP = live.branding; }
+                try { COMPANY = 'ALL'; } catch (e) {}
+            }
+        } catch (e) { /* fall back to demo data */ }
+        // Knowledge Base (role-filtered articles).
+        try {
+            const kr = await fetch(cfg.kbUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
+            if (kr.ok) { window.__KB = await kr.json(); }
+        } catch (e) {}
+        // 3) Persist every change back to the database (debounced).
+        // Each wiring step is isolated: if one throws (e.g. a screen-specific
+        // helper), the rest STILL run — so logout and navigation are never lost.
+        var safe = function (fn) { try { fn(); } catch (e) { /* keep booting */ } };
+        safe(function () { wireStatePersist(cfg); });
+        safe(function () { if (seedState && typeof DB === 'object') { syncState(cfg); } });
+        safe(function () { wireEmployeeSave(cfg); });
+        safe(function () { wireGenericEdit(); });
+        safe(function () { wireCustomScreens(); });
+        safe(function () { wireImport(cfg); });
+        safe(function () { gotoApp(); });
+        // Remember the current screen across refreshes (per browser) so a reload
+        // stays where the user was — not always back to the dashboard.
+        safe(function () { wireScreenMemory(); });
+        // Wire logout FIRST so it can never be lost to a later failure.
+        safe(function () { addLogout(cfg); });
+        safe(function () { addAccountMenu(cfg); });
+        safe(function () { injectAdminLinks(cfg); });
+        safe(function () { injectMySubNav(cfg); });
+        safe(function () { injectTransfersNav(); });
+        safe(function () { injectLiveSalaryNav(); });
+        safe(function () { wireUserCard(cfg); });
+        safe(function () { wireSubBanner(cfg); });
+        safe(function () { wireResponsive(); });
+        safe(function () { wirePunch(cfg); });
+        safe(function () { wireBell(cfg); });
+        safe(function () { wireSearch(cfg); });
+        safe(function () { wireAvatars(); });
+        safe(function () { declutterTopbar(); });
+        safe(function () { wireBranding(); });
+        safe(function () { applyPlanGate(); });
+        safe(function () { applyPerms(); });
+        // Restore the last screen LAST — AFTER nav gating — so we only land on a
+        // screen this user can actually access. Explicit ?screen wins; else the
+        // saved screen, but ONLY if its nav item is present + visible for THIS
+        // user (a super admin's saved 'plans' must not load for a tenant admin →
+        // 'Super Admin only' error). Otherwise clear it and go to a safe home.
+        safe(function () {
+            if (typeof go !== 'function') { return; }
+            var explicit = cfg.screen || null;
+            var saved = explicit || (function () { try { return localStorage.getItem('sp_screen'); } catch (e) { return null; } })();
+            var el = saved ? document.querySelector('.nav-item[data-id="' + saved + '"]') : null;
+            var usable = el && el.offsetParent !== null && el.style.display !== 'none';
+            if (usable) {
+                try { go(saved, el); return; } catch (e) {}
+            }
+            if (!explicit) { try { localStorage.removeItem('sp_screen'); } catch (e) {} }
+            try {
+                var home = (cfg.role === 'Super Admin') ? 'platform-dashboard' : 'dashboard';
+                go(home, document.querySelector('.nav-item[data-id="' + home + '"]'));
+            } catch (e) {}
+        });
+    }
+    // Remove the top bar's non-functional / redundant icons. The prototype ships
+    // dead upload/download/reset buttons (no onclick); the CSV template+import
+    // pair is redundant (Sample/Import/Export live on each list's own toolbar).
+    // Keep: bell, Punch, company switcher, search, avatar, logout. Mobile-safe.
+    function declutterOnce() {
+        var bar = document.querySelector('.topbar-actions');
+        if (!bar) { return; }
+        // The dead dev-tool icons are <label>/<div>/<button> with .topbar-btn —
+        // match ALL of them, not just button/a. Keep bell, punch, logout.
+        bar.querySelectorAll('.topbar-btn').forEach(function (el) {
+            if (el.classList.contains('sp-keep')) { return; }           // keep punch/logout
+            if (el.id === 'sp-bell' || el.querySelector('#sp-bell')) { return; } // keep bell
+            var ic = el.querySelector('i');
+            var cls = ic ? ic.className : '';
+            if (/fa-upload|fa-download|fa-rotate-left|fa-file-csv|fa-file-import/.test(cls)) {
+                el.remove();
+            }
+        });
+    }
+    // Run now and again shortly after, so it cleans up whether the CSV/import
+    // buttons are injected before or after this step.
+    function declutterTopbar() {
+        declutterOnce();
+        setTimeout(declutterOnce, 300);
+        setTimeout(declutterOnce, 1200);
+    }
+    // Persist the active screen so a page refresh restores it (per browser).
+    function wireScreenMemory() {
+        if (typeof go !== 'function' || go.__memWrapped) { return; }
+        var _go = go;
+        window.go = function (id, el) {
+            try { if (id) { localStorage.setItem('sp_screen', id); } } catch (e) {}
+            return _go.apply(this, arguments);
+        };
+        window.go.__memWrapped = true;
+    }
+    // ---- Phase 7: enforce the admin-defined permission matrix on this login ----
+    // The Roles & Permissions screen saves per-role `perms` (module → {view,
+    // create, edit, approve, del}) on DB.roles. Here we APPLY them to the current
+    // user: hide menu modules the role can't VIEW, and hide Add/Edit/Delete in
+    // lists the role can't create/edit/del. Safe fallback: a role with NO perms
+    // defined (or Super Admin) is unrestricted, so nobody gets locked out.
+    // Map each matrix module → the nav ids it controls.
+    var PERM_NAV = {
+        dashboard: ['dashboard', 'platform-dashboard', 'how-it-works', 'notifications'],
+        employees: ['emp-list', 'emp-add', 'idcard', 'teams', 'onboarding-board', 'recruitment', 'bgv', 'documents', 'roster', 'offroll-agents', 'transfers'],
+        attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'geofence', 'geofence-list', 'late-policy'],
+        leave: ['leave-apply', 'leave-types', 'holidays'],
+        payroll: ['pay-cycle', 'salary-schedules', 'salary-setup', 'salary-gen', 'salary-approval', 'payslip', 'deductions', 'payout-recon', 'live-salary'],
+        commissions: ['commissions', 'incentive-schemes', 'clawbacks', 'bonus-enc'],
+        expenses: ['expenses', 'advance'],
+        loans: ['loans'],
+        statutory: ['pf-esic', 'tds', 'pt', 'gratuity', 'tds-returns'],
+        performance: ['performance', 'increments', 'exits', 'awards', 'points-scores', 'points-ledger', 'points-rules', 'tests', 'test-results', 'test-reports', 'attrition'],
+        field: ['escalations', 'agent-auth', 'complaints', 'compliance-alerts'],
+        kb: ['kb', 'faqs', 'training-programs', 'training-records', 'training-content', 'code-of-conduct', 'helpdesk', 'letters-offer', 'letters-increment', 'letters-warning', 'letters-relieving', 'letters-templates', 'notice', 'messages', 'send-message'],
+        reports: ['reports', 'activity-logs'],
+        assets: ['assets'],
+        settings: ['companies', 'departments', 'designations', 'branches', 'banks', 'users', 'roles', 'settings', 'fin-year', 'my-subscription', 'branding', 'company-emails', 'wa-settings', 'sms-settings', 'sms-templates', 'approvals-inbox'],
+        saas: ['tenants', 'plans', 'subscriptions', 'invoices', 'payments', 'gateways', 'feature-flags']
+    };
+    // Resolve the current login's saved perms object from DB.roles (match by the
+    // role label the server injected). Returns null when none defined.
+    function currentPerms() {
+        try {
+            var label = cfg.role || window._role || '';
+            var roles = (typeof DB !== 'undefined' && DB.roles) || [];
+            var r = roles.find(function (x) { return (x.role || '') === label; });
+            if (r && r.perms && Object.keys(r.perms).length) { return r.perms; }
+        } catch (e) {}
+        return null;
+    }
+    // Build a quick lookup nav-id → moduleKey.
+    function navModule(navId) {
+        for (var mk in PERM_NAV) { if (PERM_NAV[mk].indexOf(navId) >= 0) { return mk; } }
+        return null;
+    }
+    // ---- Plan -> module gating (SaaS): hide nav for modules the tenant's plan
+    // does NOT include. Parallel to the role matrix above. cfg.planModules is the
+    // list of module GROUP keys the plan includes (null = unrestricted: platform
+    // super admin, no plan, or empty plan). Core groups stay on regardless so a
+    // tenant admin can always reach Settings/Dashboard to manage their account.
+    var PLAN_GROUP_NAV = {
+        employees: PERM_NAV.employees,
+        attendance: PERM_NAV.attendance,
+        leave: PERM_NAV.leave,
+        payroll: PERM_NAV.payroll,
+        statutory: PERM_NAV.statutory,
+        // 'requests' in a plan covers the money/HR request modules.
+        requests: [].concat(PERM_NAV.commissions, PERM_NAV.expenses, PERM_NAV.loans),
+        field: PERM_NAV.field,
+        performance: PERM_NAV.performance,
+        kb: PERM_NAV.kb,
+        reports: PERM_NAV.reports
+    };
+    // Nav ids that are NEVER gated by plan (account management + platform + base).
+    var PLAN_ALWAYS = ['dashboard', 'settings', 'saas', 'assets'];
+    function applyPlanGate() {
+        // TEMPORARILY DISABLED (rev 34e): plan-gating is off until it can be
+        // verified against a reachable server. It must never hide the menu.
+        return;
+        var allowed = cfg.planModules;   // eslint-disable-line no-unreachable
+        if (!allowed || !allowed.length) { return; }   // unrestricted
+        // Only act on a recognised module-group list — extra safety so a stray
+        // value (e.g. legacy 'compliance') can never trigger gating client-side.
+        var KNOWN = ['employees','attendance','leave','payroll','statutory','requests','field','performance','kb','reports'];
+        var clean = allowed.filter(function (g) { return KNOWN.indexOf(g) >= 0; });
+        if (clean.length !== allowed.length) { return; }   // any unknown key → don't gate
+        // Build the set of nav ids permitted by the plan: always-on groups + the
+        // plan's included groups.
+        var allowIds = {};
+        PLAN_ALWAYS.forEach(function (g) { (PERM_NAV[g] || []).forEach(function (n) { allowIds[n] = 1; }); });
+        clean.forEach(function (g) { (PLAN_GROUP_NAV[g] || []).forEach(function (n) { allowIds[n] = 1; }); });
+        // Only gate ids that belong to a gateable plan group (so unrelated/core
+        // nav is untouched even if not explicitly listed).
+        var gateable = {};
+        for (var g in PLAN_GROUP_NAV) { PLAN_GROUP_NAV[g].forEach(function (n) { gateable[n] = 1; }); }
+        var toHide = [];
+        document.querySelectorAll('.nav-item[data-id]').forEach(function (el) {
+            var id = el.getAttribute('data-id');
+            if (gateable[id] && !allowIds[id]) { toHide.push(el); }
+        });
+        // SAFETY NET: never let the gate hide so much that the sidebar is gutted.
+        // If more than 70% of currently-visible nav items would be hidden, abort
+        // (a misconfigured plan should degrade to "show everything", not blank).
+        var visibleNow = [...document.querySelectorAll('.nav-item[data-id]')].filter(function (e) { return e.style.display !== 'none'; }).length;
+        if (visibleNow > 0 && toHide.length / visibleNow > 0.7) { return; }
+        toHide.forEach(function (el) { el.style.display = 'none'; });
+        hideEmptyNavSections();
+    }
+    // Hide a section header when every nav item under it (until the next header)
+    // is hidden. Shared by the plan gate and the role matrix.
+    function hideEmptyNavSections() {
+        document.querySelectorAll('.nav-section').forEach(function (sec) {
+            var anyVisible = false;
+            var n = sec.nextElementSibling;
+            while (n && !n.classList.contains('nav-section')) {
+                if (n.classList.contains('nav-item') && n.style.display !== 'none') { anyVisible = true; break; }
+                n = n.nextElementSibling;
+            }
+            if (!anyVisible) { sec.style.display = 'none'; }
+        });
+    }
+    window.spPerms = null;
+    window.spCan = function (moduleKey, action) {
+        // No matrix for this role → allow (fall back to prototype's own role nav).
+        if (!window.spPerms) { return true; }
+        var m = window.spPerms[moduleKey];
+        return !!(m && m[action]);
+    };
+    function applyPerms() {
+        // Super Admin AND Admin are full-access roles by design (the prototype's
+        // own nav filter returns true for Admin). Never gate them by the saved
+        // matrix — otherwise an Admin role row with mostly-unchecked perms would
+        // blank the whole sidebar. The matrix only restricts the lower roles.
+        if (cfg.role === 'Super Admin' || cfg.role === 'Admin') { return; }
+        window.spPerms = currentPerms();
+        if (!window.spPerms) { return; }               // no matrix defined → unchanged
+        // Hide menu items whose module the role cannot VIEW.
+        document.querySelectorAll('.nav-item[data-id]').forEach(function (el) {
+            var id = el.getAttribute('data-id');
+            var mk = navModule(id);
+            if (mk && !spCan(mk, 'view')) { el.style.display = 'none'; }
+        });
+        // Hide a section header when all nav items that follow it are hidden.
+        hideEmptyNavSections();
+        // Gate list action buttons (Add/Edit/Delete) for the current screen after
+        // each render, based on the screen's module.
+        wireActionGating();
+    }
+    // Wrap render() so action buttons are hidden per the role's create/edit/del.
+    function wireActionGating() {
+        if (typeof render !== 'function' || render.__permWrapped) { return; }
+        var _render = render;
+        window.render = function () {
+            var out = _render.apply(this, arguments);
+            try { gateActions(); } catch (e) {}
+            return out;
+        };
+        window.render.__permWrapped = true;
+        try { gateActions(); } catch (e) {}
+    }
+    function gateActions() {
+        if (!window.spPerms) { return; }
+        var id = (typeof CURRENT !== 'undefined') ? CURRENT : null;
+        var mk = id ? navModule(id) : null;
+        if (!mk) { return; }
+        var host = document.getElementById('host'); if (!host) { return; }
+        if (!spCan(mk, 'create')) {
+            host.querySelectorAll('.page-header .btn-primary, .page-header .btn.btn-primary').forEach(function (b) {
+                if (/add|new|apply|run|issue|\+/i.test(b.textContent)) { b.style.display = 'none'; }
+            });
+        }
+        if (!spCan(mk, 'edit')) { host.querySelectorAll('.fa-pen').forEach(function (i) { i.style.display = 'none'; }); }
+        if (!spCan(mk, 'del')) { host.querySelectorAll('.fa-trash').forEach(function (i) { i.style.display = 'none'; }); }
+    }
+    // ---- Company-wise branding applied live (header, sidebar logo, accent) ----
+    // Wraps the prototype's setCompany() so switching company re-brands the UI.
+    function brandDefault() {
+        return { display_name: (cfg.company || 'SmartPRS'), color: '#f97316', logo: '', tagline: '' };
+    }
+    function brandFor(companyId) {
+        var map = window.__BRANDMAP || {};
+        if (companyId && companyId !== 'ALL' && map[companyId]) { return map[companyId]; }
+        // Group view: if every company shares one brand use it, else default.
+        return brandDefault();
+    }
+    window.applyBranding = function (companyId) {
+        var b = brandFor(companyId);
+        try {
+            var root = document.documentElement;
+            root.style.setProperty('--accent', b.color || '#f97316');
+            root.style.setProperty('--accent2', b.color || '#fb923c');
+            // soft tint from hex (fallback to default soft).
+            root.style.setProperty('--accent-soft', hexToSoft(b.color) || 'rgba(249,115,22,0.1)');
+        } catch (e) {}
+        // Sidebar logo text + mark.
+        var nameEls = document.querySelectorAll('.sidebar .logo-text, .sidebar h1, #smartprs-mlogo b');
+        // Topbar company chip name (when a specific company is active).
+        var cn = document.getElementById('company-name');
+        if (cn && companyId && companyId !== 'ALL' && b.display_name) { cn.textContent = b.display_name; }
+        // Swap a logo image into the sidebar brand area if a logo URL is set.
+        try {
+            var host = document.querySelector('.sidebar .logo, .sidebar-logo, .sidebar .brand');
+            if (host) {
+                var img = host.querySelector('img.sp-brand-logo');
+                if (b.logo) {
+                    if (!img) { img = document.createElement('img'); img.className = 'sp-brand-logo'; img.style.cssText = 'max-height:30px;max-width:140px;object-fit:contain'; host.insertBefore(img, host.firstChild); }
+                    img.src = b.logo; img.style.display = '';
+                } else if (img) { img.style.display = 'none'; }
+            }
+        } catch (e) {}
+    };
+    function hexToSoft(hex) {
+        if (!hex || hex[0] !== '#' || (hex.length !== 7 && hex.length !== 4)) { return null; }
+        var h = hex.length === 4 ? ('#' + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3]) : hex;
+        var r = parseInt(h.slice(1, 3), 16), g = parseInt(h.slice(3, 5), 16), bl = parseInt(h.slice(5, 7), 16);
+        return 'rgba(' + r + ',' + g + ',' + bl + ',0.10)';
+    }
+    function wireBranding() {
+        // If the user arrived via a branded company portal (/c/slug), default the
+        // app to that company (appearance + default scope; switch still allowed).
+        if (cfg.portalCompany && typeof setCompany === 'function') {
+            try { setCompany(cfg.portalCompany); } catch (e) {}
+        }
+        // Apply once on load (group/default), then re-apply whenever company changes.
+        applyBranding((typeof COMPANY !== 'undefined') ? COMPANY : 'ALL');
+        if (typeof setCompany === 'function' && !setCompany.__brandWrapped) {
+            var _sc = setCompany;
+            window.setCompany = function (id) {
+                var r = _sc.apply(this, arguments);
+                try { applyBranding(id); } catch (e) {}
+                return r;
+            };
+            window.setCompany.__brandWrapped = true;
+        }
+    }
+    // Mobile/tablet: hamburger toggles an off-canvas sidebar + tap-to-close overlay.
+    function wireResponsive() {
+        if (document.getElementById('smartprs-burger')) { return; }
+        var bar = document.querySelector('.topbar');
+        if (!bar) { return; }
+        var b = document.createElement('button');
+        b.id = 'smartprs-burger'; b.className = 'topbar-btn';
+        b.style.cssText = 'margin-right:8px;align-items:center;justify-content:center';
+        b.innerHTML = '<i class="fas fa-bars"></i>';
+        b.onclick = function (e) { e.stopPropagation(); document.body.classList.toggle('nav-open'); };
+        bar.insertBefore(b, bar.firstChild);
+        // Compact brand logo (mobile only — the sidebar logo is off-canvas).
+        var brand = document.createElement('div');
+        brand.id = 'smartprs-mlogo';
+        brand.innerHTML = '<span style="width:28px;height:28px;border-radius:8px;background:var(--accent);display:inline-flex;align-items:center;justify-content:center;color:#fff"><i class="fas fa-bolt"></i></span>'
+            + '<b style="font-size:15px;color:var(--navy)">Smart<span style="color:var(--accent)">PRS</span></b>';
+        brand.style.cursor = 'pointer';
+        brand.onclick = function () { try { go(cfg.role === 'Super Admin' ? 'platform-dashboard' : 'dashboard'); } catch (e) {} };
+        bar.insertBefore(brand, b.nextSibling);
+        var ov = document.createElement('div');
+        ov.id = 'smartprs-ov';
+        ov.onclick = function () { document.body.classList.remove('nav-open'); };
+        document.body.appendChild(ov);
+        // Close the drawer after choosing a menu item.
+        var sb = document.querySelector('.sidebar');
+        if (sb) { sb.addEventListener('click', function (e) { if (e.target.closest('.nav-item')) { document.body.classList.remove('nav-open'); } }); }
+    }
+    // Add super-admin admin-panel links (Laravel pages) into the SaaS Platform sidebar section.
+    function injectAdminLinks(cfg) {
+        if (cfg.role !== 'Super Admin') { return; }
+        var tenantsItem = document.querySelector('.nav-item[data-id="tenants"]');
+        if (!tenantsItem) { return; }
+        var sec = tenantsItem.parentNode;
+        if (sec.__adminLinks) { return; }
+        var mk = function (href, icon, label) {
+            var a = document.createElement('a'); a.href = href; a.className = 'nav-item';
+            a.innerHTML = '<i class="fas ' + icon + '"></i> ' + label; return a;
+        };
+        // Platform mailbox (the FROM address for invoices, payment confirmations
+        // and login-credential emails when a tenant has no SMTP of its own).
+        var pm = document.createElement('div');
+        pm.className = 'nav-item';
+        pm.innerHTML = '<i class="fas fa-envelope-circle-check"></i> Platform Email (SMTP)';
+        pm.onclick = function () { try { go('company-emails', pm); } catch (e) {} };
+        sec.appendChild(pm);
+        sec.appendChild(mk('/admin/landing', 'fa-globe', 'Landing Page (CMS)'));
+        sec.appendChild(mk('/admin/staff', 'fa-user-shield', 'Platform Staff'));
+        sec.__adminLinks = true;
+    }
+    // Add the tenant admin's "My Subscription" item to the Administration nav
+    // (boot-JS injection — no app.html edit). Plain child item, rev53 style.
+    function injectMySubNav(cfg) {
+        if (cfg.role !== 'Admin') { return; }
+        var anchor = document.querySelector('.nav-item[data-id="fin-year"]')
+            || document.querySelector('.nav-item[data-id="settings"]')
+            || document.querySelector('.nav-item[data-id="users"]');
+        if (!anchor || !anchor.parentNode || anchor.parentNode.__mySubNav) { return; }
+        var d = document.createElement('div');
+        d.className = 'nav-item';
+        d.setAttribute('data-id', 'my-subscription');
+        d.setAttribute('onclick', "go('my-subscription',this)");
+        d.textContent = 'My Subscription';
+        anchor.parentNode.insertBefore(d, anchor.nextSibling);
+        anchor.parentNode.__mySubNav = true;
+    }
+    // rev 77: "Transfers" nav under People (boot-JS injection — no app.html
+    // edit). Branch + master↔subsidiary company moves with approval + register.
+    function injectTransfersNav() {
+        var anchor = document.querySelector('.nav-item[data-id="teams"]')
+            || document.querySelector('.nav-item[data-id="emp-list"]');
+        if (!anchor || !anchor.parentNode || anchor.parentNode.__transfersNav) { return; }
+        var d = document.createElement('div');
+        d.className = 'nav-item';
+        d.setAttribute('data-id', 'transfers');
+        d.setAttribute('onclick', "go('transfers',this)");
+        d.textContent = 'Transfers';
+        anchor.parentNode.insertBefore(d, anchor.nextSibling);
+        anchor.parentNode.__transfersNav = true;
+    }
+    // rev 81 (team test #5): the sidebar user-card is STATIC prototype text
+    // ("Ejaz Hussain · Managing Director") — show the real logged-in person.
+    function wireUserCard(cfg) {
+        var card = document.querySelector('.user-card');
+        if (!card || card.__wired) { return; }
+        var name = cfg.user || '';
+        if (!name) { return; }
+        var h = card.querySelector('.user-info h4');
+        var s = card.querySelector('.user-info span');
+        var av = card.querySelector('.user-avatar');
+        if (h) { h.textContent = name; }
+        if (s) { s.textContent = (cfg.role || '') + (cfg.company ? ' · ' + cfg.company : ''); }
+        if (av) {
+            var parts = name.trim().split(/[^A-Za-z]+/).filter(function (x) { return x.length; });
+            var ini = (parts[0] ? parts[0][0] : '') + (parts[1] ? parts[1][0] : '');
+            av.textContent = (ini || name.slice(0, 2)).toUpperCase();
+        }
+        card.__wired = true;
+    }
+    // rev 79c (Ejaz): Live Salary belongs in MAIN, right under Dashboard —
+    // moved out of Payroll (his explicit choice: "remove from payroll, your wish").
+    function injectLiveSalaryNav() {
+        var dash = document.querySelector('.nav-item[data-id="dashboard"]');
+        if (!dash || !dash.parentNode || dash.parentNode.__lsNav) { return; }
+        document.querySelectorAll('.nav-item[data-id="live-salary"]').forEach(function (nv) { nv.style.display = 'none'; });
+        var d = document.createElement('div');
+        d.className = 'nav-item';
+        d.setAttribute('data-id', 'live-salary');
+        d.setAttribute('onclick', "go('live-salary',this)");
+        d.textContent = 'Live Salary';
+        dash.parentNode.insertBefore(d, dash.nextSibling);
+        dash.parentNode.__lsNav = true;
+    }
+    // Subscription banner + lock-out UI (rev 75). States from the server:
+    //   grace  → bottom warning bar (admin only), app fully usable
+    //   locked → every navigation is forced to My Subscription (middleware
+    //            already blocks data endpoints; employees never get here)
+    //   active with <=15 days left → soft reminder bar (admin only)
+    function wireSubBanner(cfg) {
+        if (cfg.subState === 'locked') {
+            var bar = document.createElement('div');
+            bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:8500;background:#b91c1c;color:#fff;padding:10px 16px;text-align:center;font-size:13.5px;font-weight:600';
+            bar.innerHTML = 'Your subscription has expired and the workspace is suspended for your team. Renew below to restore access immediately.';
+            document.body.appendChild(bar);
+            try {
+                var prevGo = window.go;
+                window.go = function () { return prevGo('my-subscription', document.querySelector('.nav-item[data-id="my-subscription"]')); };
+                window.go.__memWrapped = true;
+            } catch (e) {}
+            try { window.go(); } catch (e) {}
+            return;
+        }
+        if (cfg.role !== 'Admin') { return; }
+        var soft = cfg.subState === 'active' && cfg.subDays !== null && cfg.subDays !== undefined && cfg.subDays <= 15;
+        if (cfg.subState !== 'grace' && ! soft) { return; }
+        var grace = cfg.subState === 'grace';
+        var warn = document.createElement('div');
+        warn.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:8500;background:' + (grace ? '#b45309' : '#0f1d33') + ';color:#fff;padding:9px 16px;text-align:center;font-size:13px';
+        warn.innerHTML = (grace
+            ? '<b>Your subscription expired on ' + (cfg.subEnd || '') + '.</b> The workspace suspends after the grace period - '
+            : '<b>Your subscription expires in ' + cfg.subDays + ' day' + (cfg.subDays === 1 ? '' : 's') + ' (on ' + (cfg.subEnd || '') + ').</b> ')
+            + '<a onclick="go(&#39;my-subscription&#39;)" style="color:#fff;text-decoration:underline;cursor:pointer;font-weight:700">Renew now</a>'
+            + '<i class="fas fa-xmark" onclick="this.parentNode.remove()" style="margin-left:14px;cursor:pointer"></i>';
+        document.body.appendChild(warn);
+    }
+    // POST an employee (add or edit) to the real employees table (server upserts by emp_code).
+    function postEmp(emp) {
+        return fetch(cfg.empStoreUrl, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ employee: emp })
+        }).then(function (r) { return r.json(); });
+    }
+    // Read every f_* form field into an object, merged onto a base employee.
+    function readEmpForm(base) {
+        var o = Object.assign({}, base || {});
+        document.querySelectorAll('[id^="f_"]').forEach(function (el) { o[el.id.slice(2)] = el.value; });
+        o.ctc = Number(o.ctc) || 0;
+        return o;
+    }
+    // Open the Add Employee form pre-filled for an existing employee (full edit).
+    window.editEmployee = function (id) {
+        // rev 81 (team test #7): ids arrive as number OR string depending on the
+        // caller (onboarding card vs directory) — compare loosely, and tell the
+        // user instead of failing silently.
+        var emp = ((typeof DB !== 'undefined' && DB.employees) || []).find(function (e) { return String(e.id) === String(id); });
+        if (!emp) { if (typeof toast === 'function') { toast('Employee record not found — refresh the page (Ctrl+F5) and try again.'); } return; }
+        window._editEmp = emp;
+        go('emp-add', document.querySelector('.nav-item[data-id="emp-add"]'));
+        setTimeout(function () { prefillEmp(emp); }, 40);
+    };
+    function prefillEmp(emp) {
+        Object.keys(emp).forEach(function (k) {
+            if (k === 'refs' || emp[k] === null || typeof emp[k] === 'object') { return; }
+            var el = document.getElementById('f_' + k);
+            if (el) { el.value = emp[k]; }
+        });
+        var refs = emp.refs || [];
+        while (document.querySelectorAll('[id^="refrow_"]').length < refs.length && typeof addRefRow === 'function') { addRefRow(); }
+        var rows = document.querySelectorAll('[id^="refrow_"]');
+        refs.forEach(function (r, i) {
+            var row = rows[i]; if (!row) { return; }
+            var n = row.id.replace('refrow_', '');
+            var set = function (f, v) { var el = document.getElementById('ref_' + n + '_' + f); if (el) { el.value = v || ''; } };
+            set('name', r.name); set('relation', r.relation); set('aadhaar', r.aadhaar); set('pan', r.pan);
+            set('mobile', r.mobile); set('email', r.email); set('whatsapp', r.whatsapp);
+            window._refV = window._refV || {}; window._refV[n] = r.verify || {};
+        });
+        var h = document.querySelector('.content .page-header h2, #host h2');
+        if (h) { h.textContent = 'Edit Employee — ' + (emp.name || ''); }
+    }
+    // Intercept the prototype's save -> persist to the real employees table (add or edit).
+    function wireEmployeeSave(cfg) {
+        if (typeof saveEmp !== 'function' || saveEmp.__wired) { return; }
+        var original = saveEmp;
+        window.saveEmp = function () {
+            var refs = collectRefs();
+            if (window._editEmp) {
+                var editing = window._editEmp;
+                var updated = readEmpForm(editing); updated.id = editing.id; updated.refs = refs;
+                var idx = (DB.employees || []).findIndex(function (e) { return e.id === editing.id; });
+                if (idx >= 0) { DB.employees[idx] = updated; }
+                if (typeof persist === 'function') { persist(); }
+                postEmp(updated).then(function () { if (typeof toast === 'function') { toast('Employee updated'); } }).catch(function () {});
+                window._editEmp = null;
+                go('emp-list', document.querySelector('.nav-item[data-id="emp-list"]'));
+                return;
+            }
+            var before = (DB.employees || []).length;
+            original.apply(this, arguments);
+            if ((DB.employees || []).length > before) {
+                var emp = Object.assign({}, DB.employees[0], { refs: refs });
+                // The prototype's native saveEmp() doesn't copy team/manager/leader
+                // into the record — read them straight off the form so they persist.
+                ['team', 'teamManager', 'teamLeader', 'designation', 'branch', 'dept'].forEach(function (k) {
+                    var el = document.getElementById('f_' + k); if (el && el.value) { emp[k] = el.value; }
+                });
+                postEmp(emp).then(function (d) { if (d && d.ok && typeof toast === 'function') { toast('Saved to database (' + d.emp_code + ')'); } }).catch(function () {});
+            }
+        };
+        window.saveEmp.__wired = true;
+    }
+    function collectRefs() {
+        var refs = [];
+        document.querySelectorAll('[id^="refrow_"]').forEach(function (row) {
+            var n = row.id.replace('refrow_', '');
+            var g = function (f) { var el = document.getElementById('ref_' + n + '_' + f); return el ? el.value : ''; };
+            if (g('name') && g('name').trim()) {
+                refs.push({
+                    name: g('name'), relation: g('relation'), aadhaar: g('aadhaar'), pan: g('pan'),
+                    mobile: g('mobile'), email: g('email'), whatsapp: g('whatsapp'),
+                    verify: (window._refV && window._refV[n]) || {}
+                });
+            }
+        });
+        return refs;
+    }
+    // Save the whole app state to the database (debounced) on every change.
+    var _stateTimer = null;
+    // Persist everything EXCEPT employees (authoritative in the DB table). This
+    // stops prototype/sample employees from being written back into app-state.
+    function stateForSave() {
+        if (typeof DB === 'undefined') { return {}; }
+        var copy = {}; for (var k in DB) { if (k !== 'employees') { copy[k] = DB[k]; } }
+        return copy;
+    }
+    function syncState(cfg) {
+        try {
+            fetch(cfg.stateSaveUrl, {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({ state: stateForSave() })
+            });
+        } catch (e) {}
+    }
+    function wireStatePersist(cfg) {
+        if (typeof persist !== 'function' || persist.__stateWrapped) { return; }
+        var _persist = persist;
+        window.persist = function () {
+            try { _persist.apply(this, arguments); } catch (e) {}
+            clearTimeout(_stateTimer);
+            _stateTimer = setTimeout(function () { syncState(cfg); }, 700);
+        };
+        window.persist.__stateWrapped = true;
+    }
+    // Universal row edit: employees use the full form; all other list screens
+    // reuse the prototype's add modal, pre-filled, saving back to the same record.
+    window.rowEdit = function (sid, id) {
+        if (sid === 'emp-list') { window.editEmployee(id); return; }
+        openEdit(sid, id);
+    };
+    window.openEdit = function (sid, id) {
+        if (typeof SCREENS === 'undefined' || typeof openAdd !== 'function') { return; }
+        var s = SCREENS[sid]; if (!s) { return; }
+        var coll = s.type === 'lettered' ? 'letters' : s.coll;
+        var rec = ((DB[coll]) || []).find(function (r) { return r.id === id; });
+        if (!rec) { return; }
+        openAdd(sid);
+        (window._addFields || []).forEach(function (f) {
+            var el = document.getElementById('f_' + f.k);
+            if (el && rec[f.k] != null) { el.value = rec[f.k]; }
+        });
+        window._editId = id;
+        var mh = document.querySelector('#modal .mh h3'); if (mh) { mh.textContent = 'Edit — ' + s.title; }
+    };
+    function wireGenericEdit() {
+        if (typeof saveAdd !== 'function' || saveAdd.__wrapped) { return; }
+        var _saveAdd = saveAdd;
+        window.saveAdd = function (sid) {
+            if (window._editId) {
+                var s = SCREENS[sid]; var coll = s.type === 'lettered' ? 'letters' : s.coll;
+                var id = window._editId; var rec = ((DB[coll]) || []).find(function (r) { return r.id === id; });
+                if (rec) {
+                    (window._addFields || []).forEach(function (f) {
+                        var el = document.getElementById('f_' + f.k); if (el) { rec[f.k] = el.value; }
+                    });
+                    if (typeof persist === 'function') { persist(); }
+                    if (typeof render === 'function') { render(); }
+                    if (typeof closeModal === 'function') { closeModal(); }
+                    if (typeof toast === 'function') { toast('Updated'); }
+                }
+                window._editId = null;
+                return;
+            }
+            _saveAdd(sid);
+        };
+        window.saveAdd.__wrapped = true;
+    }
+    // Build content for statutory custom screens (PF/ESIC, TDS) the prototype left empty.
+    function wireCustomScreens() {
+        // Repurpose the placeholder "Attendance Report" card screen into a live
+        // daily punch report (the nav item already exists in the prototype).
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['att-report']) { SCREENS['att-report'] = { title: 'Attendance Report', type: 'custom' }; } } catch (e) {}
+        // Turn the placeholder Daily Attendance card screen into a live today view.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['att-daily']) { SCREENS['att-daily'] = { title: 'Daily Attendance', type: 'custom' }; } } catch (e) {}
+        // Company-wise branding editor.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['branding']) { SCREENS['branding'] = { title: 'Company Branding', type: 'custom' }; } } catch (e) {}
+        // Repurpose the "Company Emails" list nav into the SMTP / email settings screen.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['company-emails']) { SCREENS['company-emails'] = { title: 'Email / SMTP Settings', type: 'custom' }; } } catch (e) {}
+        // Roles & Permissions → full module × action checkbox matrix.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['roles']) { SCREENS['roles'] = { title: 'Roles & Permissions', type: 'custom' }; } } catch (e) {}
+        // Leave → real DB-backed with hierarchy approval (apply/approve/reject).
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['leave-apply']) { SCREENS['leave-apply'] = { title: 'Leave Management', type: 'custom' }; } } catch (e) {}
+        // Approvals Inbox → real pending items awaiting the logged-in user.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['approvals-inbox']) { SCREENS['approvals-inbox'] = { title: 'Approvals Inbox', type: 'custom' }; } } catch (e) {}
+        // Salary Approval → real payroll_runs, two-step (HR→Finance), bulk select.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['salary-approval']) { SCREENS['salary-approval'] = { title: 'Salary Approval', type: 'custom' }; } } catch (e) {}
+        // Generate Payroll → create a real draft run + payslips for a chosen month.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['salary-gen']) { SCREENS['salary-gen'] = { title: 'Generate Payroll', type: 'custom' }; } } catch (e) {}
+        // Reports → real preview + CSV export over existing data.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['reports']) { SCREENS['reports'] = { title: 'Reports', type: 'custom' }; } } catch (e) {}
+        // Dashboards → live widgets (company + platform).
+        try { if (typeof SCREENS !== 'undefined') { if (SCREENS['dashboard']) { SCREENS['dashboard'] = { title: 'Dashboard', type: 'custom' }; } if (SCREENS['platform-dashboard']) { SCREENS['platform-dashboard'] = { title: 'Platform Dashboard', type: 'custom' }; } } } catch (e) {}
+        // Computed statutory reports → Gratuity + Professional Tax.
+        try { if (typeof SCREENS !== 'undefined') { if (SCREENS['gratuity']) { SCREENS['gratuity'] = { title: 'Gratuity', type: 'custom' }; } if (SCREENS['pt']) { SCREENS['pt'] = { title: 'Professional Tax', type: 'custom' }; } } } catch (e) {}
+        // Computed views (live salary / points / test reports / attrition / activity) + ID cards.
+        try { if (typeof SCREENS !== 'undefined') { var CV = { 'live-salary': 'Live Salary', 'points-scores': 'Points Leaderboard', 'test-reports': 'Test Reports', 'attrition': 'Attrition', 'activity-logs': 'Activity Logs', 'idcard': 'ID Cards' }; for (var cvk in CV) { if (SCREENS[cvk]) { SCREENS[cvk] = { title: CV[cvk], type: 'custom' }; } } } } catch (e) {}
+        // Send Message → real broadcast composer.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['send-message']) { SCREENS['send-message'] = { title: 'Send Message', type: 'custom' }; } } catch (e) {}
+        // Recruitment → ATS pipeline board.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['recruitment']) { SCREENS['recruitment'] = { title: 'Recruitment', type: 'custom' }; } } catch (e) {}
+        // User Management → real DB user logins (Admin+HR).
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['users']) { SCREENS['users'] = { title: 'User Access', type: 'custom' }; } } catch (e) {}
+        // SaaS Platform (super admin) → real tenant provisioning + plans.
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['tenants']) { SCREENS['tenants'] = { title: 'Tenants', type: 'custom' }; } } catch (e) {}
+        try { if (typeof SCREENS !== 'undefined' && SCREENS['plans']) { SCREENS['plans'] = { title: 'Plans', type: 'custom' }; } } catch (e) {}
+        // SaaS billing (super admin) → subscriptions / invoices / payments / gateways.
+        try { if (typeof SCREENS !== 'undefined') { var BL = { 'subscriptions': 'Subscriptions', 'invoices': 'Invoices', 'payments': 'Payments', 'gateways': 'Payment Gateways' }; for (var bk in BL) { if (SCREENS[bk]) { SCREENS[bk] = { title: BL[bk], type: 'custom' }; } } } } catch (e) {}
+        // Account Settings (change password) — register even though the prototype
+        // has no such nav item, so it can be reached from the topbar user menu.
+        try { if (typeof SCREENS !== 'undefined' && !SCREENS['account-settings']) { SCREENS['account-settings'] = { title: 'Account Settings', type: 'custom' }; } } catch (e) {}
+        // Commission / Incentive bulk calculator — reached from the Commission Entries button (no nav item of its own).
+        try { if (typeof SCREENS !== 'undefined' && !SCREENS['commission-calc']) { SCREENS['commission-calc'] = { title: 'Commission / Incentive Calculator', type: 'custom' }; } } catch (e) {}
+        try { if (typeof SCREENS !== 'undefined' && !SCREENS['fin-year']) { SCREENS['fin-year'] = { title: 'Financial Year', type: 'custom' }; } } catch (e) {}
+        try { if (typeof SCREENS !== 'undefined' && !SCREENS['my-subscription']) { SCREENS['my-subscription'] = { title: 'My Subscription', type: 'custom' }; } } catch (e) {}
+        try { if (typeof SCREENS !== 'undefined' && !SCREENS['transfers']) { SCREENS['transfers'] = { title: 'Employee Transfers', type: 'custom' }; } } catch (e) {}
+        // Money/HR request modules → real DB + hierarchy approval (generic engine).
+        try {
+            var RQ = { 'expenses': 'Expense Claims', 'advance': 'Salary Advance', 'loans': 'Loans & Advances', 'commissions': 'Commission Entries', 'clawbacks': 'Clawbacks / Reversals', 'increments': 'Increment / Appraisal', 'exits': 'Exit & FnF', 'bonus-enc': 'Bonus & Encashment' };
+            if (typeof SCREENS !== 'undefined') { for (var rk in RQ) { if (SCREENS[rk]) { SCREENS[rk] = { title: RQ[rk], type: 'custom' }; } } }
+        } catch (e) {}
+        // Master data → real DB-backed editors (departments / branches / banks / designations).
+        try {
+            var MM = { 'departments': 'Departments', 'branches': 'Branches', 'banks': 'Banks', 'designations': 'Designations', 'holidays': 'Holidays', 'leave-types': 'Leave Types', 'biometric-devices': 'Biometric Devices', 'assets': 'Assets', 'complaints': 'Complaints', 'helpdesk': 'HR Helpdesk', 'deductions': 'Deductions Ledger', 'payout-recon': 'Payout Reconciliation', 'salary-schedules': 'Salary Schedules', 'tds-returns': 'TDS Returns',
+                'teams': 'Teams', 'bgv': 'Background Verification', 'documents': 'Documents', 'offroll-agents': 'Off-roll Agents', 'geofence': 'Geofence Rules', 'geofence-list': 'Geofence Rules', 'late-policy': 'Late Policy', 'salary-setup': 'Salary Setup', 'incentive-schemes': 'Incentive Schemes', 'points-ledger': 'Points Ledger', 'points-rules': 'Points Rules', 'tests': 'Tests', 'training-programs': 'Training Programs', 'training-records': 'Training Records', 'code-of-conduct': 'Code of Conduct', 'faqs': 'FAQs', 'escalations': 'Escalations', 'agent-auth': 'Agent Authorization', 'messages': 'Messages', 'companies': 'Companies', 'letters-offer': 'Offer Letters', 'letters-increment': 'Increment Letters', 'letters-warning': 'Warning Letters', 'letters-relieving': 'Relieving Letters', 'letters-templates': 'Letter Templates',
+                'roster': 'Roster', 'onboarding-board': 'Onboarding', 'awards': 'Awards & Rewards', 'performance': 'Performance', 'notice-board': 'Notice Board', 'notice': 'Notice Board', 'feature-flags': 'Feature Flags', 'training-content': 'Training Content', 'test-results': 'Test Results', 'pay-cycle': 'Pay Cycle', 'wa-settings': 'WhatsApp Settings', 'sms-settings': 'SMS Settings', 'sms-templates': 'SMS Templates', 'att-manual': 'Manual Attendance', 'att-zkteco': 'ZKTeco Devices' };
+            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } }
+        } catch (e) {}
+        if (typeof renderCustom !== 'function' || renderCustom.__wrapped) { return; }
+        var _rc = renderCustom;
+        window.renderCustom = function (id) {
+            if (id === 'pf-esic' || id === 'tds') { return statutoryScreen(id); }
+            if (id === 'geofence') { return geofenceMapScreen(); }
+            if (id === 'how-it-works') { return howItWorksScreen(); }
+            if (id === 'tests') { return testsScreen(); }
+            if (id === 'onboarding-board') { return onboardingScreen(); }
+            if (id === 'performance') { return performanceScreen(); }
+            if (id === 'code-of-conduct') { return codeOfConductScreen(); }
+            if (id === 'late-policy') { return latePolicyScreen(); }
+            if (id === 'commission-calc') { return commissionCalcScreen(); }
+            if (id === 'fin-year') { return finYearScreen(); }
+            if (id === 'my-subscription') { return mySubScreen(); }
+            if (id === 'att-manual') { return attManualScreen(); }
+            if (MASTER_MAP[id]) { return masterScreen(id); }
+            if (id === 'payslip') { return payslipHistoryScreen(); }
+            if (id === 'kb') { return kbScreen(); }
+            if (id === 'att-report') { return attReportScreen(); }
+            if (id === 'att-daily') { return dailyAttendanceScreen(); }
+            if (id === 'branding') { return brandingScreen(); }
+            if (id === 'company-emails') { return mailScreen(); }
+            if (id === 'roles') { return rolesScreen(); }
+            if (id === 'leave-apply') { return leaveScreen(); }
+            if (id === 'approvals-inbox') { return approvalsInboxScreen(); }
+            if (id === 'salary-approval') { return salaryApprovalScreen(); }
+            if (id === 'salary-gen') { return salaryGenScreen(); }
+            if (id === 'reports') { return reportsScreen(); }
+            if (id === 'dashboard' || id === 'platform-dashboard') { return dashboardScreen(id); }
+            if (id === 'gratuity' || id === 'pt') { return statRptScreen(id); }
+            if (id === 'live-salary') { return liveSalaryScreen(); }
+            if (id === 'points-scores' || id === 'test-reports' || id === 'attrition' || id === 'activity-logs') { return statRptScreen(id); }
+            if (id === 'idcard') { return idcardScreen(); }
+            if (id === 'send-message') { return sendMessageScreen(); }
+            if (id === 'recruitment') { return recruitScreen(); }
+            if (id === 'compliance-alerts') { return complianceScreen(); }
+            if (id === 'users') { return usersScreen(); }
+            if (id === 'account-settings') { return changePasswordScreen(); }
+            if (id === 'tenants') { return tenantsScreen(); }
+            if (id === 'plans') { return plansScreen(); }
+            if (id === 'subscriptions' || id === 'invoices' || id === 'payments' || id === 'gateways') { return billingScreen(id); }
+            if (RQ_MAP[id]) { return requestScreen(id); }
+            return _rc(id);
+        };
+        window.renderCustom.__wrapped = true;
+    }
+    // ---- Roles & Permissions matrix (module x action checkboxes, per role) ----
+    // Saved on each role as a `perms` object via persist() (same state store as
+    // every other screen). This DEFINES permissions; it is not yet enforced on
+    // real logins (that is the next phase).
+    var SP_MODULES = [
+        ['dashboard', 'Dashboard'], ['employees', 'Employees'], ['attendance', 'Attendance'],
+        ['leave', 'Leave'], ['payroll', 'Payroll'], ['commissions', 'Commissions & Incentives'],
+        ['expenses', 'Expense Claims'], ['loans', 'Loans & Advances'], ['statutory', 'Indian Statutory'],
+        ['performance', 'Performance & Points'], ['field', 'Field Force & Compliance'],
+        ['kb', 'Knowledge Base'], ['reports', 'Reports'], ['assets', 'Assets'],
+        ['settings', 'Settings & Masters'], ['saas', 'SaaS Platform']
+    ];
+    var SP_ACTIONS = [['view', 'View'], ['create', 'Create'], ['edit', 'Edit'], ['approve', 'Approve'], ['del', 'Delete']];
+    window.__roleSel = null;
+    window.roleSelect = function (id) { window.__roleSel = id; if (typeof render === 'function') { render(); } };
+    function rolesScreen() {
+        var roles = (typeof DB !== 'undefined' && DB.roles) || [];
+        var canManage = (cfg.role === 'Super Admin' || cfg.role === 'Admin');
+        var addBtn = canManage ? '<button class="btn btn-outline" onclick="roleAdd()"><i class="fas fa-plus"></i> Add Role</button>' : '';
+        if (!roles.length) {
+            return pghead('Roles & Permissions', 'No roles yet', addBtn)
+                + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No roles defined yet. Click Add Role to create one.</div></div>';
+        }
+        var sel = roles.find(function (r) { return r.id === window.__roleSel; }) || roles[0];
+        window.__roleSel = sel.id;
+        var left = roles.map(function (r) {
+            var on = r.id === sel.id;
+            return '<div onclick="roleSelect(\'' + r.id + '\')" style="cursor:pointer;padding:10px 12px;border-radius:8px;margin-bottom:3px;' + (on ? 'background:var(--accent-soft);color:var(--accent);font-weight:700' : 'color:var(--text2)') + '">'
+                + '<div style="font-size:14px">' + (r.role || r.id) + '</div>'
+                + '<div style="font-size:11px;color:var(--text3)">' + (r.scope || 'Company') + ' · ' + (r.users || 0) + ' user(s)</div></div>';
+        }).join('');
+        var perms = sel.perms || {};
+        var thead = '<th style="text-align:left;padding:10px 12px;font-size:11px;text-transform:uppercase;color:var(--text3)">Module</th>'
+            + SP_ACTIONS.map(function (a) { return '<th style="padding:10px 8px;font-size:11px;text-transform:uppercase;color:var(--text3);text-align:center">' + a[1] + '</th>'; }).join('');
+        var bodyRows = SP_MODULES.map(function (m) {
+            var mk = m[0];
+            var cells = SP_ACTIONS.map(function (a) {
+                var checked = !!(perms[mk] && perms[mk][a[0]]);
+                return '<td style="text-align:center;padding:8px;border-top:1px solid var(--border)"><input type="checkbox" data-mod="' + mk + '" data-act="' + a[0] + '"' + (checked ? ' checked' : '') + ' style="width:17px;height:17px;cursor:pointer"></td>';
+            }).join('');
+            return '<tr><td style="padding:8px 12px;border-top:1px solid var(--border);font-size:13px;font-weight:600">' + m[1] + '</td>' + cells + '</tr>';
+        }).join('');
+        var allRow = '<td style="padding:6px 12px;font-size:11px;color:var(--text3)">Select all</td>'
+            + SP_ACTIONS.map(function (a) { return '<td style="text-align:center;padding:6px 8px"><input type="checkbox" onclick="roleToggleCol(\'' + a[0] + '\',this.checked)" style="width:15px;height:15px;cursor:pointer"></td>'; }).join('');
+        var saveBtn = canManage ? '<button class="btn btn-primary" onclick="roleSavePerms()"><i class="fas fa-check"></i> Save Permissions</button>' : '';
+        var scopeSel = '<select id="role_scope" style="padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;background:#f8fafc">'
+            + ['Group', 'Company', 'Self'].map(function (o) { return '<option' + (o === (sel.scope || 'Company') ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select>';
+        return pghead('Roles & Permissions', 'Tick what each role can do per module — View · Create · Edit · Approve · Delete', addBtn)
+            + '<div class="dash-grid" style="grid-template-columns:240px 1fr;align-items:start">'
+            + '<div class="card" style="padding:12px">' + left + '</div>'
+            + '<div class="card" style="padding:0">'
+            + '<div style="display:flex;align-items:center;gap:14px;padding:16px 18px;border-bottom:1px solid var(--border);flex-wrap:wrap">'
+            + '<div><div style="font-size:16px;font-weight:800">' + (sel.role || sel.id) + '</div><div style="font-size:12px;color:var(--text3)">Permission matrix</div></div>'
+            + '<div style="margin-left:auto;display:flex;gap:10px;align-items:center"><span style="font-size:12px;color:var(--text2)">Data scope</span>' + scopeSel + saveBtn + '</div>'
+            + '</div>'
+            + '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + thead + '</tr></thead>'
+            + '<tbody><tr style="background:#f8fafc">' + allRow + '</tr>' + bodyRows + '</tbody></table></div>'
+            + '<div style="padding:12px 18px;font-size:11px;color:var(--text3)">This defines each role\'s permissions. Enforcement on real logins is the next phase.</div>'
+            + '</div></div>';
+    }
+    window.roleToggleCol = function (act, on) {
+        document.querySelectorAll('input[type=checkbox][data-act="' + act + '"]').forEach(function (c) { c.checked = on; });
+    };
+    window.roleSavePerms = function () {
+        var roles = (typeof DB !== 'undefined' && DB.roles) || [];
+        var sel = roles.find(function (r) { return r.id === window.__roleSel; });
+        if (!sel) { return; }
+        var perms = {};
+        document.querySelectorAll('input[type=checkbox][data-mod]').forEach(function (c) {
+            var mk = c.getAttribute('data-mod'), ak = c.getAttribute('data-act');
+            perms[mk] = perms[mk] || {};
+            if (c.checked) { perms[mk][ak] = true; }
+        });
+        sel.perms = perms;
+        var sc = document.getElementById('role_scope'); if (sc) { sel.scope = sc.value; }
+        var mods = SP_MODULES.filter(function (m) { return perms[m[0]] && Object.keys(perms[m[0]]).length; }).map(function (m) { return m[1]; });
+        sel.modules = mods.length ? (mods.length > 4 ? mods.slice(0, 4).join(', ') + ' +' + (mods.length - 4) : mods.join(', ')) : '—';
+        if (typeof persist === 'function') { persist(); }
+        if (typeof toast === 'function') { toast('Permissions saved for ' + (sel.role || sel.id)); }
+        if (typeof render === 'function') { render(); }
+    };
+    window.roleAdd = function () {
+        var name = window.prompt('New role name (e.g. Branch Manager):');
+        if (!name || !name.trim()) { return; }
+        DB.roles = DB.roles || [];
+        var id = 'R-' + Math.floor(1000 + Math.random() * 9000);
+        DB.roles.push({ id: id, role: name.trim(), users: 0, modules: '—', scope: 'Company', perms: {} });
+        window.__roleSel = id;
+        if (typeof persist === 'function') { persist(); }
+        if (typeof toast === 'function') { toast('Role added — set its permissions'); }
+        if (typeof render === 'function') { render(); }
+    };
+    // ---- Leave Management (real DB) + hierarchy approval ----------------------
+    window.__LEAVE = null;
+    function leaveLoad() {
+        fetch(cfg.leavesUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__LEAVE = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__LEAVE = { rows: [], error: 'Could not load leaves' }; if (typeof render === 'function') { render(); } });
+    }
+    function leaveBadge(st) {
+        var c = st === 'Approved' ? '#16a34a' : (st === 'Rejected' ? '#dc2626' : '#d97706');
+        var bg = st === 'Approved' ? '#dcfce7' : (st === 'Rejected' ? '#fee2e2' : '#fef3c7');
+        return '<span style="background:' + bg + ';color:' + c + ';padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600">' + st + '</span>';
+    }
+    // ---- rev 86 (Ejaz): employee PROFILE POPUP ---------------------------------
+    // In large companies a name + emp id means nothing — click any employee
+    // name (registers, approvals, onboarding, masters) and a small profile
+    // card opens: photo, designation, company, department, branch, manager,
+    // contact. "View full profile" jumps to the Directory record.
+    function empFind(key) {
+        var k = String(key == null ? '' : key).trim();
+        if (!k) { return null; }
+        var list = (typeof DB !== 'undefined' && DB.employees) || [];
+        return list.find(function (e) { return String(e.id) === k; }) || list.find(function (e) { return e.name === k; }) || null;
+    }
+    function empNameLink(display, key) {
+        var hit = empFind(key != null ? key : display);
+        if (!hit) { return display == null ? '' : String(display); }
+        var safeCode = String(hit.id).replace(/[^A-Za-z0-9_-]/g, '');
+        return '<a onclick="empPop(&#39;' + safeCode + '&#39;)" title="View profile" style="cursor:pointer;color:inherit;border-bottom:1px dotted #94a3b8">' + (display || hit.name) + '</a>';
+    }
+    window.empPop = function (code) {
+        var e = empFind(code);
+        if (!e) { if (typeof toast === 'function') { toast('Employee not found'); } return; }
+        var comp = ((((typeof DB !== 'undefined' && DB.companies) || []).find(function (c2) { return String(c2.id) === String(e.companyId); })) || {}).name || '';
+        var initials = String(e.name || '?').split(' ').map(function (w) { return w.charAt(0); }).slice(0, 2).join('').toUpperCase();
+        var photo = e.photo
+            ? '<img src="' + e.photo + '" style="width:74px;height:74px;border-radius:50%;object-fit:cover;flex:none;border:3px solid #e2e8f0">'
+            : '<div style="width:74px;height:74px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#0891b2);color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800;flex:none">' + initials + '</div>';
+        var row2 = function (icon, v) { return v ? '<div style="display:flex;gap:9px;align-items:center;padding:5px 0;font-size:13px;color:var(--text2)"><i class="fas ' + icon + '" style="width:16px;color:var(--text3);font-size:12px"></i><span>' + v + '</span></div>' : ''; };
+        var canView = cfg.role === 'Admin' || cfg.role === 'Super Admin' || String(cfg.role || '').indexOf('HR') >= 0;
+        var viewBtn = canView ? '<button class="btn btn-primary btn-sm" onclick="empPopView(&#39;' + String(e.id).replace(/[^A-Za-z0-9_-]/g, '') + '&#39;)"><i class="fas fa-user"></i> View full profile</button>' : '';
+        commModal('<div class="card" style="max-width:400px;width:100%;padding:0">'
+            + '<div style="display:flex;gap:16px;align-items:flex-start;padding:20px 22px;border-bottom:1px solid var(--border)">' + photo
+            + '<div style="flex:1"><div style="font-weight:800;font-size:17px">' + e.name + '</div>'
+            + '<div style="font-size:12px;color:var(--text3)">' + (e.id || '') + (e.status && e.status !== 'Active' ? ' &middot; <span style="color:var(--red);font-weight:700">' + e.status + '</span>' : '') + '</div>'
+            + (e.designation ? '<div style="margin-top:6px"><span style="background:#eef2ff;color:#4f46e5;font-size:11.5px;font-weight:700;padding:2px 10px;border-radius:99px">' + e.designation + '</span></div>' : '')
+            + '</div>'
+            + '<button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:14px 22px">'
+            + row2('fa-building', comp) + row2('fa-sitemap', e.dept) + row2('fa-location-dot', e.branch) + row2('fa-people-group', e.team)
+            + (e.reporting ? '<div style="display:flex;gap:9px;align-items:center;padding:5px 0;font-size:13px;color:var(--text2)"><i class="fas fa-user-tie" style="width:16px;color:var(--text3);font-size:12px"></i><span>Reports to ' + empNameLink(e.reporting) + '</span></div>' : '')
+            + row2('fa-phone', e.mobile) + row2('fa-envelope', e.email)
+            + '</div>'
+            + (viewBtn ? '<div style="display:flex;justify-content:flex-end;padding:0 22px 18px">' + viewBtn + '</div>' : '<div style="padding:0 0 10px"></div>') + '</div>');
+    };
+    window.empPopView = function (code) {
+        commModalClose();
+        try { go('directory'); } catch (e) {}
+        setTimeout(function () { try { editEmployee(code); } catch (e2) {} }, 80);
+    };
+    function leaveScreen() {
+        var d = window.__LEAVE;
+        if (!d) { setTimeout(function () { if (!window.__LEAVE) { leaveLoad(); } }, 10); }
+        var applyBtn = '<button class="btn btn-primary" onclick="leaveApplyOpen()"><i class="fas fa-plus"></i> Apply Leave</button>';
+        if (!d) { return pghead('Leave Management', 'Loading…', applyBtn) + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('Leave Management', 'Error', applyBtn) + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load leaves.</b><br><span style="font-size:12px;color:var(--text2)">' + String(d.error) + '</span></div></div>'; }
+        var rows = d.rows || [];
+        var th = ['Employee', 'Type', 'From', 'To', 'Days', 'Approver', 'Status', 'Decided By', 'Action'].map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        var dash = '<span style="color:var(--text3)">—</span>';
+        var body = rows.map(function (r) {
+            var c = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+            var act = r.canDecide
+                ? '<button class="btn btn-sm btn-primary" onclick="leaveDecide(' + r.id + ',\'approve\')">Approve</button> <button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="leaveDecide(' + r.id + ',\'reject\')">Reject</button>'
+                : (r.decidedBy ? '<span style="font-size:11px;color:var(--text3)">' + r.decidedBy + (r.decidedAt ? ' · ' + r.decidedAt : '') + '</span>' : dash);
+            return '<tr>'
+                + '<td style="' + c + ';font-weight:600">' + empNameLink(r.employee, r.empCode || r.employee) + (r.empCode ? ' <span style="color:var(--text3);font-weight:400">(' + r.empCode + ')</span>' : '') + '</td>'
+                + '<td style="' + c + '">' + (r.type || dash) + '</td>'
+                + '<td style="' + c + '">' + r.from + '</td>'
+                + '<td style="' + c + '">' + r.to + '</td>'
+                + '<td style="' + c + '">' + r.days + '</td>'
+                + '<td style="' + c + '">' + (r.approver ? empNameLink(r.approver) : dash) + '</td>'
+                + '<td style="' + c + '">' + leaveBadge(r.status) + '</td>'
+                + '<td style="' + c + '">' + (r.decidedBy ? empNameLink(r.decidedBy) : dash) + '</td>'
+                + '<td style="' + c + '">' + act + '</td>'
+                + '</tr>';
+        }).join('');
+        var pend = rows.filter(function (r) { return r.status === 'Pending'; }).length;
+        var sub = rows.length + ' leave request(s) · ' + pend + ' pending · approver set automatically from each employee\'s reporting manager';
+        return pghead('Leave Management', sub, applyBtn)
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="9" style="padding:36px;text-align:center;color:var(--text3)">No leave requests yet. Click Apply Leave.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.leaveApplyOpen = function () {
+        var emps = ((typeof DB !== 'undefined' && DB.employees) || []).map(function (e) { return e.name; });
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var empOpts = '<option value="">Select employee…</option>' + emps.map(function (n) { return '<option>' + n + '</option>'; }).join('');
+        var typeOpts = ['Casual Leave', 'Sick Leave', 'Earned Leave', 'Comp-Off', 'Loss of Pay'].map(function (t) { return '<option>' + t + '</option>'; }).join('');
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var m = document.getElementById('leave-modal') || (function () { var x = document.createElement('div'); x.id = 'leave-modal'; document.body.appendChild(x); return x; })();
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+        m.innerHTML = '<div class="card" style="max-width:640px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:18px">Apply Leave</h3><button class="btn btn-outline btn-sm" onclick="leaveApplyClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:22px;display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+            + '<div><label style="' + lbl + '">Employee</label><select id="lv_emp" onchange="leaveBalLoad()" style="' + inp + '">' + empOpts + '</select></div>'
+            + '<div><label style="' + lbl + '">Leave Type</label><select id="lv_type" onchange="leaveBalHighlight()" style="' + inp + '">' + typeOpts + '</select></div>'
+            + '<div><label style="' + lbl + '">From</label><input id="lv_from" type="date" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">To</label><input id="lv_to" type="date" style="' + inp + '"></div>'
+            + '<div style="grid-column:1/3"><label style="' + lbl + '">Reason</label><textarea id="lv_reason" rows="2" style="' + inp + '"></textarea></div>'
+            + '<div style="grid-column:1/3" id="lv_balwrap"></div>'
+            + '<div style="grid-column:1/3;font-size:12px;color:var(--text3)">The approver is set automatically from the employee\'s reporting manager.</div>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 22px 20px"><button class="btn btn-outline" onclick="leaveApplyClose()">Cancel</button><button class="btn btn-primary" onclick="leaveApplySave()"><i class="fas fa-check"></i> Submit</button></div>'
+            + '</div>';
+        m.style.display = 'flex';
+        m.onclick = function (e) { if (e.target === m) { leaveApplyClose(); } };
+    };
+    window.leaveApplyClose = function () { var m = document.getElementById('leave-modal'); if (m) { m.style.display = 'none'; } };
+    // Load + show this employee's leave balances inside the apply modal.
+    window.__leaveBal = [];
+    window.leaveBalLoad = function () {
+        var emp = (document.getElementById('lv_emp') || {}).value || '';
+        var wrap = document.getElementById('lv_balwrap'); if (!wrap) { return; }
+        if (!emp) { wrap.innerHTML = ''; window.__leaveBal = []; return; }
+        wrap.innerHTML = '<div style="font-size:12px;color:var(--text3)">Loading balances…</div>';
+        fetch(cfg.leaveBalancesBase + '/' + encodeURIComponent(emp), { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                window.__leaveBal = j.rows || [];
+                leaveBalRender();
+            }).catch(function () { wrap.innerHTML = '<div style="font-size:12px;color:var(--red)">Could not load balances</div>'; });
+    };
+    function leaveBalRender() {
+        var wrap = document.getElementById('lv_balwrap'); if (!wrap) { return; }
+        var rows = window.__leaveBal || [];
+        if (!rows.length) { wrap.innerHTML = ''; return; }
+        var cur = (document.getElementById('lv_type') || {}).value || '';
+        var chips = rows.map(function (b) {
+            var on = b.type === cur;
+            var val = b.balance === null ? 'Unlimited' : (Math.max(0, b.balance - b.pending) + ' left');
+            var col = b.balance === null ? 'var(--text2)' : ((b.balance - b.pending) <= 0 ? 'var(--red)' : 'var(--green)');
+            return '<div style="border:1.5px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';border-radius:9px;padding:8px 10px;min-width:120px;background:' + (on ? 'var(--accent-soft)' : '#f8fafc') + '">'
+                + '<div style="font-size:11px;color:var(--text3)">' + b.type + '</div>'
+                + '<div style="font-weight:700;color:' + col + '">' + val + '</div>'
+                + (b.balance === null ? '' : '<div style="font-size:10px;color:var(--text3)">of ' + b.entitlement + ' · used ' + b.used + (b.pending ? ' · pending ' + b.pending : '') + '</div>')
+                + '</div>';
+        }).join('');
+        wrap.innerHTML = '<div style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Balance (this year)</div><div style="display:flex;gap:8px;flex-wrap:wrap">' + chips + '</div>';
+    }
+    window.leaveBalHighlight = function () { leaveBalRender(); };
+    window.leaveApplySave = function () {
+        var g = function (id) { var e = document.getElementById(id); return e ? e.value : ''; };
+        var payload = { employee: g('lv_emp'), type: g('lv_type'), from: g('lv_from'), to: g('lv_to'), reason: g('lv_reason') };
+        if (!payload.employee || !payload.from || !payload.to) { if (typeof toast === 'function') { toast('Employee, From and To are required'); } return; }
+        fetch(cfg.leaveApplyUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) { if (typeof toast === 'function') { toast('Leave applied · approver: ' + (d.approver || 'manager')); } leaveApplyClose(); leaveLoad(); }
+                else if (typeof toast === 'function') { toast((d && d.error) || 'Could not apply'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not apply'); } });
+    };
+    window.leaveDecide = function (id, action) {
+        var remarks = window.prompt((action === 'approve' ? 'Approve' : 'Reject') + ' this leave — remarks (optional):', '');
+        if (remarks === null) { return; }
+        fetch(cfg.leaveDecideUrl + '/' + id + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action, remarks: remarks }) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) { if (typeof toast === 'function') { toast('Leave ' + res.j.status); } leaveLoad(); window.__APPROVALS = null; }
+                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Action failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Action failed'); } });
+    };
+    // ---- Approvals Inbox (real pending items awaiting the logged-in user) -----
+    window.__APPROVALS = null;
+    function approvalsLoad() {
+        fetch(cfg.approvalsUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__APPROVALS = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__APPROVALS = { items: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function approvalsInboxScreen() {
+        var d = window.__APPROVALS;
+        if (!d) { setTimeout(function () { if (!window.__APPROVALS) { approvalsLoad(); } }, 10); }
+        if (!d) { return pghead('Approvals Inbox', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('Approvals Inbox', 'Error', '') + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load.</b><br><span style="font-size:12px;color:var(--text2)">' + String(d.error) + '</span></div></div>'; }
+        var items = d.items || [];
+        var scope = d.isManager ? 'Showing all pending approvals for your company.' : 'Showing items awaiting your approval.';
+        if (!items.length) {
+            return pghead('Approvals Inbox', scope, '') + '<div class="card"><div style="padding:44px;text-align:center;color:var(--text3)"><i class="fas fa-circle-check" style="font-size:28px;color:var(--green);margin-bottom:10px"></i><br>Nothing waiting on you. All clear.</div></div>';
+        }
+        var cards = items.map(function (it) {
+            return '<div class="card" style="padding:16px;margin-bottom:12px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">'
+                + '<div style="flex:1;min-width:220px">'
+                + '<div style="font-weight:700;font-size:14px">' + empNameLink(it.employee) + ' <span style="background:#eef2ff;color:#4f46e5;padding:1px 8px;border-radius:12px;font-size:11px;margin-left:6px">' + it.kind + '</span></div>'
+                + '<div style="font-size:13px;color:var(--text2);margin-top:3px">' + it.detail + '</div>'
+                + (it.reason ? '<div style="font-size:12px;color:var(--text3);margin-top:2px">Reason: ' + it.reason + '</div>' : '')
+                + (it.approver ? '<div style="font-size:11px;color:var(--text3);margin-top:2px">Approver: ' + empNameLink(it.approver) + '</div>' : '')
+                + '</div>'
+                + '<div style="display:flex;gap:8px"><button class="btn btn-primary btn-sm" onclick="inboxDecide(\'' + (it.module || 'leave') + '\',' + it.id + ',\'approve\')"><i class="fas fa-check"></i> Approve</button>'
+                + '<button class="btn btn-outline btn-sm" style="color:var(--red)" onclick="inboxDecide(\'' + (it.module || 'leave') + '\',' + it.id + ',\'reject\')"><i class="fas fa-xmark"></i> Reject</button></div>'
+                + '</div>';
+        }).join('');
+        return pghead('Approvals Inbox', d.count + ' item(s) pending · ' + scope, '') + cards;
+    }
+    // ---- Generic money/HR request modules (real DB + hierarchy approval) ------
+    // Maps a nav id → backend module key + apply-form fields. amount:true adds an
+    // Amount input used for the approver threshold rule.
+    var RQ_MAP = {
+        'expenses': { m: 'expenses', title: 'Expense Claims', amount: true, fields: [{ k: 'type', l: 'Type', opts: ['Travel', 'Fuel', 'Conveyance', 'Mobile/Data', 'Other'] }, { k: 'reason', l: 'Note' }] },
+        'advance': { m: 'advances', title: 'Salary Advance', amount: true, fields: [{ k: 'reason', l: 'Reason' }] },
+        'loans': { m: 'loans', title: 'Loans & Advances', amount: true, fields: [{ k: 'emi', l: 'EMI (₹)', t: 'number' }, { k: 'tenure_months', l: 'Tenure (months)', t: 'number' }, { k: 'reason', l: 'Purpose' }] },
+        'commissions': { m: 'commissions', title: 'Commission Entries', single: 'Commission Entry', amount: true, amountRO: 'Net Payable (₹) — auto: Gross − TDS', fields: [
+            { k: 'purpose', l: 'Purpose', opts: ['EMI Collection', 'Settlement / OTS', 'Recovery Incentive', 'Penalty Collection', 'Repo / Seizure', 'Target Bonus', 'Field Visit Allowance', 'Other'] },
+            { k: 'cycle_month', l: 'For Month', t: 'month' },
+            { k: 'portfolio', l: 'Portfolio / Bank' },
+            { k: 'gross_amount', l: 'Gross Amount (₹)', t: 'number', oninput: 'rqCommCalc()' },
+            { k: 'tds_rate', l: 'TDS % (194H)', t: 'number', oninput: 'rqCommCalc()', defRate: 1 },
+            { k: 'payout_date', l: 'Payout Date (decides which payslip pays it)', t: 'date' },
+            { k: 'payout_method', l: 'Payout Method', opts: ['With salary (in the payslip)', 'Separate payout (own dates - ledger)'] },
+            { k: 'description', l: 'Short Description' }] },
+        'clawbacks': { m: 'clawbacks', title: 'Clawbacks / Reversals', amount: true, fields: [{ k: 'portfolio', l: 'Portfolio' }, { k: 'cycle_month', l: 'Month' }, { k: 'reason', l: 'Reason' }] },
+        'increments': { m: 'increments', title: 'Increment / Appraisal', single: 'Increment / Appraisal', amount: false, fields: [
+            { k: 'cycle', l: 'Cycle', opts: ['Annual', 'Half-yearly', 'Quarterly', 'Promotion', 'Special / Market correction', 'Confirmation'] },
+            { k: 'old_ctc', l: 'Old CTC (₹) — auto from record', t: 'number', oninput: 'rqIncCalc(0)' },
+            { k: 'new_ctc', l: 'New CTC (₹)', t: 'number', oninput: 'rqIncCalc(0)' },
+            { k: 'pct', l: '% Increase (type either this or New CTC)', t: 'number', oninput: 'rqIncCalc(1)' },
+            { k: 'new_designation', l: 'New Designation (promotion — optional)' },
+            { k: 'effective', l: 'Effective Date', t: 'date' },
+            { k: 'reason', l: 'Reason / Justification' }] },
+        'exits': { m: 'exits', title: 'Exit & FnF', amount: false, fields: [{ k: 'last_working_day', l: 'Last Working Day', t: 'date' }, { k: 'reason', l: 'Reason' }] },
+        'bonus-enc': { m: 'bonus', title: 'Bonus & Encashment', amount: true, fields: [{ k: 'kind', l: 'Type', opts: ['Statutory Bonus', 'Festival Bonus', 'Leave Encashment'] }] },
+        'transfers': { m: 'transfers', title: 'Employee Transfers', amount: false, fields: [
+            { k: 'type', l: 'Transfer Type', opts: ['Branch transfer', 'Department transfer', 'Company transfer'] },
+            { k: 'to_company', l: 'To Company (company transfer)' },
+            { k: 'to_branch', l: 'To Branch' },
+            { k: 'to_department', l: 'To Department (dept. transfer)' },
+            { k: 'effective_date', l: 'Effective Date', t: 'date' },
+            { k: 'reason', l: 'Reason' }] }
+    };
+    window.__REQ = {};
+    window.__REQFY = {};
+    function requestLoad(navId) {
+        var cfg2 = RQ_MAP[navId]; if (!cfg2) { return; }
+        var fy = window.__REQFY[navId] || '';
+        var url = cfg.requestsBase + '/' + cfg2.m + (fy && fy !== 'all' ? ('?fy=' + encodeURIComponent(fy)) : '');
+        fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__REQ[navId] = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__REQ[navId] = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    window.reqSetFy = function (navId, fy) { window.__REQFY[navId] = fy; requestLoad(navId); };
+    // ---- rev 78: Transfer PROCESS TRACKER (per-row expandable stage pipeline) -
+    window.trTrack = function (id) { var x = document.getElementById('tr-track-' + id); if (x) { x.style.display = x.style.display === 'none' ? '' : 'none'; } };
+    function trStep(state, label, sub) {
+        var col = state === 'done' ? '#16a34a' : (state === 'fail' ? '#b91c1c' : (state === 'prog' ? '#f59e0b' : '#cbd5e1'));
+        var icon = state === 'done' ? '&#10003;' : (state === 'fail' ? '&#10005;' : (state === 'prog' ? '&#8226;' : '&#9675;'));
+        return '<div style="display:flex;flex-direction:column;align-items:center;min-width:104px">'
+            + '<div style="width:26px;height:26px;border-radius:50%;background:' + col + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex:none">' + icon + '</div>'
+            + '<div style="font-size:11.5px;font-weight:700;margin-top:5px;color:var(--text2);text-align:center">' + label + '</div>'
+            + (sub ? '<div style="font-size:10.5px;color:var(--text3);text-align:center;max-width:130px">' + sub + '</div>' : '')
+            + '</div>';
+    }
+    function trConn(done) { return '<div style="flex:1;height:2px;background:' + (done ? '#16a34a' : '#e2e8f0') + ';margin-top:13px;min-width:16px"></div>'; }
+    function trTrackRow(r, span) {
+        var t = r.timeline || {};
+        var steps = [];
+        steps.push(['done', 'Raised', t.raisedAt || '']);
+        if (r.status === 'Rejected') { steps.push(['fail', 'Rejected', (r.decidedBy || '') + (r.decidedAt ? ' &middot; ' + r.decidedAt : '')]); }
+        else if (r.status === 'Pending') { steps.push(['todo', 'Approval', 'awaiting ' + (r.approver || 'manager')]); }
+        else { steps.push(['done', 'Approved', (r.decidedBy || '') + (r.decidedAt ? ' &middot; ' + r.decidedAt : '')]); }
+        if (r.status !== 'Rejected') {
+            steps.push([t.orderSentAt ? 'done' : 'todo', 'Letter emailed', t.orderSentAt || (r.status === 'Pending' ? 'after approval' : '')]);
+            steps.push([t.acceptedAt ? 'done' : 'todo', 'Acknowledged', t.acceptedAt || 'awaiting employee']);
+            steps.push([t.appliedAt ? 'done' : 'todo', 'Applied', t.appliedAt || (r.status === 'Approved' ? 'on ' + (t.effectiveDate || 'effective date') : '')]);
+            if ((t.type || '').toLowerCase().indexOf('compan') >= 0) {
+                var ob = t.onboarding || '';
+                steps.push([ob === 'completed' ? 'done' : (ob ? 'prog' : 'todo'), 'Onboarding', ob === 'completed' ? 'formalities complete' : (ob ? 'formalities in progress' : 'starts on apply')]);
+            }
+        }
+        var h = '';
+        for (var i = 0; i < steps.length; i++) {
+            if (i > 0) { h += trConn(steps[i - 1][0] === 'done'); }
+            h += trStep(steps[i][0], steps[i][1], steps[i][2]);
+        }
+        return '<tr id="tr-track-' + r.id + '" style="display:none"><td colspan="' + span + '" style="background:#f8fafc;border-top:1px solid var(--border);padding:16px 22px"><div style="display:flex;align-items:flex-start;overflow:auto">' + h + '</div></td></tr>';
+    }
+    function requestScreen(navId) {
+        var rc = RQ_MAP[navId];
+        var d = window.__REQ[navId];
+        if (!d) { setTimeout(function () { if (!window.__REQ[navId]) { requestLoad(navId); } }, 10); }
+        var addBtn = '<button class="btn btn-primary" onclick="reqApplyOpen(\'' + navId + '\')"><i class="fas fa-plus"></i> New ' + (rc.single || rc.title.replace(/s$/, '')) + '</button>';
+        if (navId === 'commissions') {
+            addBtn = '<button class="btn btn-outline" onclick="commLedgerOpen()"><i class="fas fa-book"></i> Ledger</button> <button class="btn btn-outline" onclick="commBulkOpen()"><i class="fas fa-file-import"></i> Upload Excel / CSV</button> <button class="btn btn-outline" onclick="go(\'commission-calc\')"><i class="fas fa-calculator"></i> Calculator</button> ' + addBtn;
+            // rev 85c: orphan cleaner appears only when orphans are on screen.
+            try {
+                if ((cfg.role === 'Admin' || cfg.role === 'Super Admin') && d && (d.rows || []).some(function (x) { return String(x.employee || '').indexOf('no longer exists') >= 0; })) {
+                    addBtn = '<button class="btn btn-outline" style="color:var(--red)" onclick="commCleanOrphans()" title="Remove entries whose employee record was wiped by an old demo reset"><i class="fas fa-broom"></i> Clean orphaned entries</button> ' + addBtn;
+                }
+            } catch (e) {}
+        }
+        var fyOpts = (d && d.fyOptions) || [];
+        if (fyOpts.length) { var curFy = window.__REQFY[navId] || 'all'; addBtn = '<select onchange="reqSetFy(\'' + navId + '\',this.value)" style="padding:8px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:13px;background:#fff;margin-right:10px"><option value="all"' + (curFy === 'all' ? ' selected' : '') + '>All years</option>' + fyOpts.map(function (fy) { return '<option value="' + fy + '"' + (curFy === fy ? ' selected' : '') + '>FY ' + fy + '</option>'; }).join('') + '</select>' + addBtn; }
+        if (!d) { return pghead(rc.title, 'Loading…', addBtn) + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead(rc.title, 'Error', addBtn) + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load.</b><br><span style="font-size:12px;color:var(--text2)">' + String(d.error) + '</span></div></div>'; }
+        var rows = d.rows || [];
+        var cols = ['Employee'].concat(rc.amount ? [rc.amountRO ? 'Net Payable' : 'Amount'] : []).concat(['Details', 'Approver', 'Status', 'Decided By', 'Action']);
+        var th = cols.map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        var dash = '<span style="color:var(--text3)">—</span>';
+        var body = rows.map(function (r) {
+            var c = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+            var act = r.canDecide
+                ? '<button class="btn btn-sm btn-primary" onclick="reqDecide(\'' + rc.m + '\',' + r.id + ',\'approve\')">Approve</button> <button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="reqDecide(\'' + rc.m + '\',' + r.id + ',\'reject\')">Reject</button>'
+                : (r.decidedBy ? '<span style="font-size:11px;color:var(--text3)">' + r.decidedBy + (r.decidedAt ? ' · ' + r.decidedAt : '') + '</span>' : dash);
+            if (navId === 'transfers' && (r.status === 'Approved' || r.status === 'Applied')) {
+                act += ' <a href="' + cfg.transfersBase + '/' + r.id + '/letter" target="_blank" title="Transfer Order (PDF)"><i class="fas fa-file-pdf" style="color:var(--red);margin-left:6px"></i></a>';
+            }
+            if (navId === 'transfers') {
+                act += ' <a onclick="trTrack(' + r.id + ')" style="font-size:11px;cursor:pointer;color:var(--accent);font-weight:700;margin-left:8px">Track</a>';
+            }
+            // rev 84 (Ejaz, USP): commission lifecycle controls. LOCKED = frozen;
+            // otherwise managers can Edit (even after approval) or Reopen an
+            // approved entry; Admin can Lock manually. History always available.
+            if (navId === 'commissions') {
+                act += ' <a onclick="commHist(' + r.id + ')" title="Full history of this entry" style="cursor:pointer;color:#4f46e5;font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-clock-rotate-left"></i> History</a>';
+                // rev 85: disbursement — Record payment on approved SEPARATE
+                // entries with balance; paid/partial chip for everyone.
+                if (r.paidTotal > 0) {
+                    var full = r.balance != null && r.balance <= 0.005;
+                    act += ' <span style="background:' + (full ? '#dcfce7;color:#15803d' : '#fef9c3;color:#a16207') + ';font-size:10px;font-weight:800;padding:2px 8px;border-radius:99px;margin-left:8px;white-space:nowrap">' + (full ? 'PAID ' + inr(r.paidTotal) : 'PART-PAID ' + inr(r.paidTotal) + ' / bal ' + inr(r.balance)) + '</span>';
+                }
+                if (!r.locked && d.isManager && r.status === 'Approved' && r.payoutMethod === 'separate' && (r.balance == null || r.balance > 0.005)) {
+                    act += ' <a onclick="commPay(' + r.id + ')" title="Record a payment (partial allowed)" style="cursor:pointer;color:#15803d;font-size:12px;margin-left:8px;white-space:nowrap;font-weight:700"><i class="fas fa-money-bill-wave"></i> Record payment</a>';
+                }
+                if (r.locked) {
+                    act += ' <span title="' + (r.lockSource || 'locked') + '" style="background:#e2e8f0;color:#334155;font-size:10px;font-weight:800;padding:2px 8px;border-radius:99px;margin-left:8px;white-space:nowrap"><i class="fas fa-lock"></i> LOCKED</span>';
+                } else if (d.isManager) {
+                    act += ' <a onclick="commEdit(' + r.id + ')" title="Edit this entry (every change is recorded)" style="cursor:pointer;color:#0891b2;font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-pen"></i> Edit</a>';
+                    if (r.status === 'Approved') {
+                        act += ' <a onclick="commReopen(' + r.id + ')" title="Send back to Pending for re-decision" style="cursor:pointer;color:#d97706;font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-rotate-left"></i> Reopen</a>';
+                    }
+                    if (cfg.role === 'Admin' || cfg.role === 'Super Admin') {
+                        act += ' <a onclick="commLock(' + r.id + ')" title="Lock — freeze this entry forever" style="cursor:pointer;color:#334155;font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-lock"></i> Lock</a>';
+                    }
+                }
+            }
+            // rev 83b/84b: increments — View always; Edit until APPLIED;
+            // Delete only BEFORE approval (Ejaz's rule); letter + apply.
+            if (navId === 'increments') {
+                act += ' <a onclick="incView(' + r.id + ')" title="View full details" style="cursor:pointer;color:#4f46e5;font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-eye"></i> View</a>';
+                if (d.isManager && !r.appliedAt) {
+                    act += ' <a onclick="incEdit(' + r.id + ')" title="Edit this increment" style="cursor:pointer;color:#0891b2;font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-pen"></i> Edit</a>';
+                    if (r.status !== 'Approved') {
+                        act += ' <a onclick="incDel(' + r.id + ')" title="Delete (only possible before approval)" style="cursor:pointer;color:var(--red);font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-trash"></i> Delete</a>';
+                    }
+                }
+            }
+            if (navId === 'increments' && r.status === 'Approved') {
+                act += ' <a href="' + cfg.incrementsBase + '/' + r.id + '/letter" target="_blank" rel="noopener" title="Increment Letter (PDF)"><i class="fas fa-file-pdf" style="color:var(--red);margin-left:6px"></i></a>';
+                if (r.appliedAt) { act += ' <span style="font-size:11px;color:#16a34a;font-weight:700;margin-left:8px" title="by ' + (r.appliedBy || 'HR') + '"><i class="fas fa-check"></i> Applied ' + r.appliedAt + '</span>'; }
+                else if (d.isManager) { act += ' <button class="btn btn-sm btn-outline" style="margin-left:8px" onclick="incApply(' + r.id + ')" title="Update the employee record to the new CTC (and designation)">Apply to record</button>'; }
+            }
+            var amtCell = rc.amount ? ('<td style="' + c + '">' + (r.amount != null ? inr(r.amount) : dash) + '</td>') : '';
+            var rowHtml = '<tr>'
+                + '<td style="' + c + ';font-weight:600">' + empNameLink(r.employee, r.empCode || r.employee) + (r.empCode ? ' <span style="color:var(--text3);font-weight:400">(' + r.empCode + ')</span>' : '') + '</td>'
+                + amtCell
+                + '<td style="' + c + ';white-space:normal;min-width:240px;max-width:430px;line-height:1.5">' + (r.extra || r.reason || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.approver ? empNameLink(r.approver) : dash) + '</td>'
+                + '<td style="' + c + '">' + leaveBadge(r.status) + '</td>'
+                + '<td style="' + c + '">' + (r.decidedBy ? empNameLink(r.decidedBy) : dash) + '</td>'
+                + '<td style="' + c + '">' + act + '</td>'
+                + '</tr>';
+            if (navId === 'transfers' && r.timeline) { rowHtml += trTrackRow(r, cols.length); }
+            return rowHtml;
+        }).join('');
+        var pend = rows.filter(function (r) { return r.status === 'Pending'; }).length;
+        return pghead(rc.title, rows.length + ' record(s) · ' + pend + ' pending · approver set from each employee\'s reporting manager' + (rc.amount ? ' (large amounts escalate one level)' : ''), addBtn)
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="' + cols.length + '" style="padding:36px;text-align:center;color:var(--text3)">No records yet. Click the button above to create one.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.reqApplyOpen = function (navId) {
+        var rc = RQ_MAP[navId]; if (!rc) { return; }
+        var emps = ((typeof DB !== 'undefined' && DB.employees) || []).map(function (e) { return e.name; });
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var f = '<div><label style="' + lbl + '">Employee</label><select id="rq_emp" style="' + inp + '"><option value="">Select employee…</option>' + emps.map(function (n) { return '<option>' + n + '</option>'; }).join('') + '</select></div>';
+        // rev 83: amountRO = the amount is COMPUTED (commission net = gross − TDS),
+        // shown read-only and placed AFTER the inputs that drive it.
+        var amountHtml = rc.amount ? '<div><label style="' + lbl + '">' + (rc.amountRO || 'Amount (₹)') + '</label><input id="rq_amount" type="number"' + (rc.amountRO ? ' readonly tabindex="-1"' : '') + ' style="' + inp + (rc.amountRO ? ';background:#eef2f7;color:var(--text2);font-weight:700' : '') + '"></div>' : '';
+        if (rc.amount && !rc.amountRO) { f += amountHtml; }
+        rc.fields.forEach(function (fl) {
+            var extraAttr = fl.oninput ? ' oninput="' + fl.oninput + '"' : '';
+            var defVal = '';
+            if (fl.defRate) { defVal = '5'; try { var rr = spRates(); if (rr && rr.comm_tds_rate != null) { defVal = String(rr.comm_tds_rate); } } catch (e) {} }
+            else if (fl.t === 'month') { try { defVal = new Date().toISOString().slice(0, 7); } catch (e) {} }
+            var ctrl = fl.opts ? ('<select id="rqf_' + fl.k + '" style="' + inp + '"' + extraAttr + '>' + fl.opts.map(function (o) { return '<option>' + o + '</option>'; }).join('') + '</select>')
+                : ('<input id="rqf_' + fl.k + '" type="' + (fl.t || 'text') + '" value="' + defVal + '" style="' + inp + '"' + extraAttr + '>');
+            f += '<div><label style="' + lbl + '">' + fl.l + '</label>' + ctrl + '</div>';
+        });
+        if (rc.amount && rc.amountRO) { f += amountHtml; }
+        var m = document.getElementById('req-modal') || (function () { var x = document.createElement('div'); x.id = 'req-modal'; document.body.appendChild(x); return x; })();
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+        m.innerHTML = '<div class="card" style="max-width:640px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:18px">New ' + (rc.single || rc.title.replace(/s$/, '')) + '</h3><button class="btn btn-outline btn-sm" onclick="reqApplyClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:22px;display:grid;grid-template-columns:1fr 1fr;gap:14px">' + f
+            + '<div style="grid-column:1/3;font-size:12px;color:var(--text3)">The approver is set automatically from the employee\'s reporting manager' + (rc.amount ? '; amounts over the limit escalate one level up.' : '.') + '</div></div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 22px 20px"><button class="btn btn-outline" onclick="reqApplyClose()">Cancel</button><button class="btn btn-primary" onclick="reqApplySave(\'' + navId + '\')"><i class="fas fa-check"></i> Submit</button></div>'
+            + '</div>';
+        m.style.display = 'flex';
+        m.onclick = function (e) { if (e.target === m) { reqApplyClose(); } };
+    };
+    window.reqApplyClose = function () { var m = document.getElementById('req-modal'); if (m) { m.style.display = 'none'; } };
+    // rev 83: live net = gross − TDS% for the commission entry modal.
+    window.rqCommCalc = function () {
+        var g = Number((document.getElementById('rqf_gross_amount') || {}).value || 0);
+        var rEl = document.getElementById('rqf_tds_rate');
+        var rt = (rEl && rEl.value !== '') ? Number(rEl.value) : 5;
+        if (!(rt >= 0 && rt <= 100)) { rt = 5; }
+        var net = g > 0 ? Math.round((g - (g * rt / 100)) * 100) / 100 : 0;
+        var a = document.getElementById('rq_amount'); if (a) { a.value = net > 0 ? net : ''; }
+    };
+    window.reqApplySave = function (navId) {
+        var rc = RQ_MAP[navId]; if (!rc) { return; }
+        var emp = (document.getElementById('rq_emp') || {}).value || '';
+        if (!emp) { if (typeof toast === 'function') { toast('Select an employee'); } return; }
+        if (navId === 'commissions') {
+            var gv = Number((document.getElementById('rqf_gross_amount') || {}).value || 0);
+            if (!(gv > 0)) { if (typeof toast === 'function') { toast('Enter the gross amount'); } return; }
+            rqCommCalc();
+        }
+        var fields = {};
+        rc.fields.forEach(function (fl) { var el = document.getElementById('rqf_' + fl.k); if (el && el.value !== '') { fields[fl.k] = el.value; } });
+        var payload = { employee: emp, fields: fields };
+        if (rc.amount) { var av = (document.getElementById('rq_amount') || {}).value; if (av !== '') { payload.amount = Number(av); } }
+        fetch(cfg.requestsBase + '/' + rc.m, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) { if (typeof toast === 'function') { toast('Submitted · approver: ' + (d.approver || 'manager')); } reqApplyClose(); requestLoad(navId); window.__APPROVALS = null; }
+                else if (typeof toast === 'function') { toast((d && d.error) || 'Could not submit'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not submit'); } });
+    };
+    window.reqDecide = function (module, id, action) {
+        var remarks = window.prompt((action === 'approve' ? 'Approve' : 'Reject') + ' this request — remarks (optional):', '');
+        if (remarks === null) { return; }
+        fetch(cfg.requestsBase + '/' + module + '/' + id + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action, remarks: remarks }) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) {
+                    if (typeof toast === 'function') { toast('Request ' + res.j.status); }
+                    window.__APPROVALS = null;
+                    // Refresh whichever request screen is loaded.
+                    Object.keys(RQ_MAP).forEach(function (k) { if (RQ_MAP[k].m === module && window.__REQ[k]) { requestLoad(k); } });
+                    if (typeof render === 'function') { render(); }
+                } else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Action failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Action failed'); } });
+    };
+    // Inbox dispatcher: leave items use leaveDecide, all others use reqDecide.
+    window.inboxDecide = function (module, id, action) {
+        if (module === 'leave') { return leaveDecide(id, action); }
+        return reqDecide(module, id, action);
+    };
+    // ---- rev 83 (Ejaz): commission BULK UPLOAD (Excel/CSV) -------------------
+    // The file they already keep in Excel goes straight in: each row becomes a
+    // PENDING entry with the employee's own hierarchy approver (his choice).
+    window.commBulkTemplate = function () {
+        var nl = String.fromCharCode(10);
+        var lines = [
+            'Emp Code or Name,Month,Purpose,Portfolio / Bank,Gross Amount,TDS %,Payout Date,Payout Method (salary/separate),Description',
+            'EMP101,May 2026,EMI Collection,HDFC Two-Wheeler,8000,5,2026-07-10,salary,22 EMIs collected - Nellore branch',
+            'EMP102,May 2026,Settlement / OTS,ICICI Personal Loan,12500,,2026-07-10,separate,OTS closure incentive'
+        ];
+        var blob = new Blob([lines.join(nl)], { type: 'text/csv' });
+        var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'smartprs-commissions-template.csv'; a.click();
+    };
+    window.commBulkClose = function () { var m = document.getElementById('comm-bulk-modal'); if (m) { m.style.display = 'none'; } };
+    window.commBulkOpen = function () {
+        var m = document.getElementById('comm-bulk-modal') || (function () { var x = document.createElement('div'); x.id = 'comm-bulk-modal'; document.body.appendChild(x); return x; })();
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+        m.innerHTML = '<div class="card" style="max-width:560px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:18px">Upload Commission Entries</h3><button class="btn btn-outline btn-sm" onclick="commBulkClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:22px">'
+            + '<div style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:12px">Excel or CSV with columns: <b>Emp Code or Name, Month, Purpose, Portfolio / Bank, Gross Amount, TDS %, Payout Date, Payout Method, Description</b>. TDS % blank = 5% auto. Payout Method: <b>salary</b> = in the payslip of the payout month; <b>separate</b> = paid on its own dates through the Ledger. Every row lands as <b>Pending</b> with that employee&#39;s reporting manager. Up to 1,000 rows.</div>'
+            + '<a onclick="commBulkTemplate()" style="cursor:pointer;color:#4f46e5;font-size:13px;font-weight:600"><i class="fas fa-download"></i> Download template (CSV)</a>'
+            + '<div style="margin:14px 0"><input type="file" id="commBulkFile" accept=".xlsx,.xls,.csv,text/csv" style="width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:13px;background:#f8fafc"></div>'
+            + '<div id="commBulkMsg" style="font-size:12.5px;line-height:1.6;color:var(--text2)"></div>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 22px 20px"><button class="btn btn-outline" onclick="commBulkClose()">Close</button><button class="btn btn-primary" id="commBulkBtn" onclick="commBulkGo()"><i class="fas fa-file-import"></i> Upload</button></div>'
+            + '</div>';
+        m.style.display = 'flex';
+        m.onclick = function (e) { if (e.target === m) { commBulkClose(); } };
+    };
+    window.commBulkGo = function () {
+        var fEl = document.getElementById('commBulkFile');
+        var msg = document.getElementById('commBulkMsg');
+        if (!fEl || !fEl.files || !fEl.files.length) { if (typeof toast === 'function') { toast('Choose a file first'); } return; }
+        var setMsg = function (h) { if (msg) { msg.innerHTML = h; } };
+        setMsg('Reading file…');
+        abEnsureXLSX(function () {
+            var rd = new FileReader();
+            rd.onload = function (ev) {
+                try {
+                    var wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+                    var ws = wb.Sheets[wb.SheetNames[0]];
+                    var raw = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false });
+                    var out = [];
+                    raw.forEach(function (r) {
+                        var o = {};
+                        Object.keys(r).forEach(function (h) {
+                            var k = String(h).toLowerCase();
+                            var val = String(r[h]).trim();
+                            if (val === '') { return; }
+                            if (!o.employee && (k.indexOf('emp') >= 0 || k.indexOf('name') >= 0 || k.indexOf('code') >= 0)) { o.employee = val; }
+                            else if (k.indexOf('method') >= 0) { o.payout_method = val; }
+                            else if (k.indexOf('payout') >= 0) { o.payout_date = val; }
+                            else if (k.indexOf('month') >= 0) { o.month = val; }
+                            else if (k.indexOf('purpose') >= 0 || k.indexOf('reason') >= 0) { o.purpose = val; }
+                            else if (k.indexOf('portfolio') >= 0 || k.indexOf('bank') >= 0) { o.portfolio = val; }
+                            else if (k.indexOf('gross') >= 0 || k.indexOf('amount') >= 0) { var n = Number(val.replace(/[^0-9.]/g, '')); if (n > 0 && !o.gross) { o.gross = n; } }
+                            else if (k.indexOf('tds') >= 0) { var t = Number(val.replace(/[^0-9.]/g, '')); if (!isNaN(t)) { o.tds_rate = t; } }
+                            else if (k.indexOf('desc') >= 0 || k.indexOf('note') >= 0 || k.indexOf('remark') >= 0) { o.description = val; }
+                        });
+                        if (o.employee && o.gross > 0) { out.push(o); }
+                    });
+                    if (!out.length) { setMsg('<span style="color:var(--red)">No usable rows found. Each row needs at least an employee and a gross amount &gt; 0. Download the template to see the expected columns.</span>'); return; }
+                    if (out.length > 1000) { out = out.slice(0, 1000); }
+                    setMsg('Uploading ' + out.length + ' row(s)…');
+                    fetch(cfg.requestsBase + '/commissions/bulk', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ rows: out }) })
+                        .then(function (r) { return r.json(); })
+                        .then(function (j) {
+                            if (!j || !j.ok) { setMsg('<span style="color:var(--red)">' + ((j && j.error) || 'Upload failed') + '</span>'); return; }
+                            var h = '<span style="color:#16a34a;font-weight:700">' + (j.message || 'Done') + '</span>';
+                            if (j.errors && j.errors.length) { h += '<div style="color:var(--red);margin-top:8px">' + j.errors.join('<br>') + '</div>'; }
+                            setMsg(h);
+                            if (typeof toast === 'function') { toast((j.created || 0) + ' commission entr' + (j.created === 1 ? 'y' : 'ies') + ' created'); }
+                            requestLoad('commissions'); window.__APPROVALS = null;
+                        }).catch(function () { setMsg('<span style="color:var(--red)">Upload failed — network error.</span>'); });
+                } catch (e2) { setMsg('<span style="color:var(--red)">Could not read the file. Make sure it is a valid .xlsx or .csv.</span>'); }
+            };
+            rd.readAsArrayBuffer(fEl.files[0]);
+        });
+    };
+    // ---- rev 84 (Ejaz, USP): commission lifecycle — history / edit / reopen /
+    // lock + self-claim. Entries are NEVER deleted; everything is logged.
+    function commModal(html) {
+        var m = document.getElementById('comm-modal') || (function () { var x = document.createElement('div'); x.id = 'comm-modal'; document.body.appendChild(x); return x; })();
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+        m.innerHTML = html;
+        m.style.display = 'flex';
+        m.onclick = function (e) { if (e.target === m) { commModalClose(); } };
+    }
+    window.commModalClose = function () { var m = document.getElementById('comm-modal'); if (m) { m.style.display = 'none'; } };
+    window.commHist = function (id) {
+        commModal('<div class="card" style="max-width:620px;width:100%;padding:0"><div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px"><i class="fas fa-clock-rotate-left"></i> Entry History #' + id + '</h3><button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div><div id="commHistBody" style="padding:20px 22px;color:var(--text3);font-size:13px">Loading…</div></div>');
+        fetch(cfg.requestsBase + '/commissions/' + id + '/history', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                var b = document.getElementById('commHistBody'); if (!b) { return; }
+                var rows = (j && j.rows) || [];
+                if (j && j.error) { b.innerHTML = '<span style="color:var(--red)">' + j.error + '</span>'; return; }
+                if (!rows.length) { b.innerHTML = 'No history recorded for this entry yet (entries made before this feature have no trail).'; return; }
+                var colFor = { created: '#0891b2', edited: '#d97706', approved: '#15803d', rejected: '#b91c1c', reopened: '#d97706', locked: '#334155', payslip: '#334155' };
+                b.innerHTML = rows.map(function (l) {
+                    var col = colFor[l.action] || 'var(--text2)';
+                    return '<div style="display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);align-items:flex-start">'
+                        + '<span style="flex:none;min-width:120px;color:var(--text3);font-size:12px">' + (l.at || '') + '</span>'
+                        + '<span style="flex:none;min-width:84px;font-weight:800;text-transform:uppercase;font-size:11px;color:' + col + '">' + l.action + '</span>'
+                        + '<span style="color:var(--text2);line-height:1.5;font-size:12.5px">' + (l.details || '') + (l.by ? ' <span style="color:var(--text3)">&mdash; ' + l.by + '</span>' : '') + '</span></div>';
+                }).join('');
+            }).catch(function () { var b = document.getElementById('commHistBody'); if (b) { b.innerHTML = '<span style="color:var(--red)">Could not load history.</span>'; } });
+    };
+    window.commEdit = function (id) {
+        var d = window.__REQ['commissions']; var r = d && (d.rows || []).find(function (x) { return x.id === id; });
+        if (!r) { return; }
+        var inp2 = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var lbl2 = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var esc = function (v) { return String(v == null ? '' : v).replace(/"/g, '&quot;'); };
+        var fld = function (id2, label, type, val, oninput) {
+            return '<div><label style="' + lbl2 + '">' + label + '</label><input id="' + id2 + '" type="' + type + '" value="' + esc(val) + '" style="' + inp2 + '"' + (oninput ? ' oninput="' + oninput + '"' : '') + '></div>';
+        };
+        var html = '<div class="card" style="max-width:640px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px">Edit Commission Entry #' + id + ' <span style="font-weight:500;font-size:12px;color:var(--text3)">' + r.employee + '</span></h3><button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:22px;display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+            + fld('ce_purpose', 'Purpose', 'text', r.purpose)
+            + fld('ce_portfolio', 'Portfolio / Bank', 'text', r.portfolio)
+            + fld('ce_cycle', 'Earned Month (e.g. May 2026)', 'text', r.cycleMonth)
+            + fld('ce_payout', 'Payout Date', 'date', r.payoutDate)
+            + fld('ce_gross', 'Gross Amount (₹)', 'number', r.grossAmount, 'ceCalc()')
+            + fld('ce_tds', 'TDS %', 'number', r.tdsRate, 'ceCalc()')
+            + '<div style="grid-column:1/-1"><label style="' + lbl2 + '">Short Description</label><input id="ce_desc" type="text" value="' + esc(r.descriptionText) + '" style="' + inp2 + '"></div>'
+            + '<div style="grid-column:1/-1;font-size:12px;color:var(--text3)">Net auto-recalculates from Gross &minus; TDS. <b>Every change is written to this entry&#39;s history</b>' + (r.status === 'Approved' ? ' and will be marked &quot;edited AFTER approval&quot;.' : '.') + '</div>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 22px 20px"><button class="btn btn-outline" onclick="commModalClose()">Cancel</button><button class="btn btn-primary" onclick="commEditSave(' + id + ')"><i class="fas fa-check"></i> Save changes</button></div></div>';
+        commModal(html);
+    };
+    window.ceCalc = function () { /* informational only; server recomputes */ };
+    window.commEditSave = function (id) {
+        var g = function (x) { var el = document.getElementById(x); return el ? el.value : ''; };
+        var payload = { purpose: g('ce_purpose'), portfolio: g('ce_portfolio'), cycle_month: g('ce_cycle'), payout_date: g('ce_payout'), description: g('ce_desc') };
+        if (g('ce_gross') !== '') { payload.gross_amount = Number(g('ce_gross')); }
+        if (g('ce_tds') !== '') { payload.tds_rate = Number(g('ce_tds')); }
+        fetch(cfg.requestsBase + '/commissions/' + id + '/update', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not save'); } return; }
+                if (typeof toast === 'function') { toast(j.message || 'Saved'); }
+                commModalClose(); requestLoad('commissions'); window.__LS = null;
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not save'); } });
+    };
+    window.commReopen = function (id) {
+        var remarks = window.prompt('Send this APPROVED entry back to Pending for re-decision. Reason (recorded in history):', '');
+        if (remarks === null) { return; }
+        fetch(cfg.requestsBase + '/commissions/' + id + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: 'reopen', remarks: remarks }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not reopen'); } return; }
+                if (typeof toast === 'function') { toast('Sent back to Pending'); }
+                requestLoad('commissions'); window.__APPROVALS = null; window.__LS = null;
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not reopen'); } });
+    };
+    window.commLock = function (id) {
+        if (!window.confirm('LOCK this entry? It becomes frozen forever - no edit, no status change, no unlock. (Entries also lock automatically when their payslip is generated.)')) { return; }
+        fetch(cfg.requestsBase + '/commissions/' + id + '/lock', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not lock'); } return; }
+                if (typeof toast === 'function') { toast(j.message || 'Locked'); }
+                requestLoad('commissions');
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not lock'); } });
+    };
+    // rev 85c: remove entries whose employee record was wiped by an old
+    // deploy-time demo reseed (they can never link to live salary or ledger).
+    window.commCleanOrphans = function () {
+        if (!window.confirm('Remove all entries whose employee record no longer exists? These are leftovers from old demo resets - they can never appear in Live Salary or the Ledger. Living entries are not touched.')) { return; }
+        fetch(cfg.requestsBase + '/commissions/clean-orphans', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not clean'); } return; }
+                if (typeof toast === 'function') { toast(j.message || 'Cleaned'); }
+                requestLoad('commissions');
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not clean'); } });
+    };
+    // ---- rev 85 (Ejaz): disbursement — Record payment + employee LEDGER ------
+    window.commPay = function (id) {
+        var d = window.__REQ['commissions']; var r = d && (d.rows || []).find(function (x) { return x.id === id; });
+        if (!r) { return; }
+        var bal = r.balance != null ? r.balance : (r.amount || 0);
+        var inp4 = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var lbl4 = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var today = new Date().toISOString().slice(0, 10);
+        commModal('<div class="card" style="max-width:520px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px"><i class="fas fa-money-bill-wave"></i> Record Payment <span style="font-weight:500;font-size:12px;color:var(--text3)">' + r.employee + ' &middot; entry #' + id + '</span></h3><button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:22px;display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+            + '<div style="grid-column:1/-1;font-size:13px;color:var(--text2)">Net payable ' + inr(r.amount || 0) + ' &middot; already paid ' + inr(r.paidTotal || 0) + ' &middot; <b>balance ' + inr(bal) + '</b></div>'
+            + '<div><label style="' + lbl4 + '">Amount (₹)</label><input id="cp_amount" type="number" value="' + bal + '" style="' + inp4 + '"></div>'
+            + '<div><label style="' + lbl4 + '">Paid On</label><input id="cp_date" type="date" value="' + today + '" style="' + inp4 + '"></div>'
+            + '<div><label style="' + lbl4 + '">Mode</label><select id="cp_mode" style="' + inp4 + '"><option>Bank</option><option>UPI</option><option>Cash</option><option>Cheque</option></select></div>'
+            + '<div><label style="' + lbl4 + '">Reference (UTR / cheque no.)</label><input id="cp_ref" type="text" style="' + inp4 + '"></div>'
+            + '<div style="grid-column:1/-1"><label style="' + lbl4 + '">Note (optional)</label><input id="cp_note" type="text" style="' + inp4 + '"></div>'
+            + '<div style="grid-column:1/-1;font-size:12px;color:var(--text3)">Partial amounts are fine - the entry shows PART-PAID until the balance reaches zero, then it locks as fully paid. Every payment is written to the entry history and the employee ledger.</div>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 22px 20px"><button class="btn btn-outline" onclick="commModalClose()">Cancel</button><button class="btn btn-primary" onclick="commPaySave(' + id + ')"><i class="fas fa-check"></i> Record payment</button></div></div>');
+    };
+    window.commPaySave = function (id) {
+        var g4 = function (x) { var el = document.getElementById(x); return el ? el.value : ''; };
+        var amt = Number(g4('cp_amount') || 0);
+        if (!(amt > 0)) { if (typeof toast === 'function') { toast('Enter the amount paid'); } return; }
+        fetch(cfg.requestsBase + '/commissions/' + id + '/pay', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ amount: amt, paid_on: g4('cp_date'), mode: g4('cp_mode'), reference: g4('cp_ref'), note: g4('cp_note') }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not record'); } return; }
+                if (typeof toast === 'function') { toast(j.message || 'Recorded'); }
+                commModalClose(); requestLoad('commissions'); window.__LS = null;
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not record'); } });
+    };
+    window.commLedgerOpen = function () {
+        var d = window.__REQ['commissions'];
+        var canPickEmp = d && d.isManager !== false;
+        var picker = '';
+        if (canPickEmp) {
+            var eopts = ((typeof DB !== 'undefined' && DB.employees) || []).map(function (e2) { return '<option value="' + String(e2.name || '').replace(/"/g, '&quot;') + '">' + (e2.id || '') + '</option>'; }).join('');
+            picker = '<div style="display:flex;gap:10px;align-items:center;margin-bottom:14px"><input id="cl_emp" list="cl_empdl" placeholder="Type to pick an employee…" autocomplete="off" style="flex:1;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc"><datalist id="cl_empdl">' + eopts + '</datalist><button class="btn btn-primary btn-sm" onclick="commLedgerLoad()"><i class="fas fa-book"></i> Open ledger</button></div>';
+        }
+        commModal('<div class="card" style="max-width:860px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px"><i class="fas fa-book"></i> Commission Ledger</h3><button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:20px 22px">' + picker + '<div id="clBody" style="font-size:13px;color:var(--text3)">' + (canPickEmp ? 'Pick an employee to see their passbook.' : 'Loading your ledger…') + '</div></div></div>');
+        if (!canPickEmp) { commLedgerLoad(); }
+    };
+    // rev 87 (Ejaz): the ledger is now the COMPLETE money account — tabs
+    // All / Salary / Commissions; salary months can take partial payments.
+    window.__CLTAB = 'all';
+    window.__CLDATA = null;
+    window.clTab = function (t) { window.__CLTAB = t; clRender(); };
+    window.commLedgerLoad = function () {
+        var who = (document.getElementById('cl_emp') || {}).value || '';
+        var b = document.getElementById('clBody'); if (b) { b.innerHTML = 'Loading…'; }
+        window.__CLWHO = who;
+        fetch(cfg.requestsBase + '/commissions/ledger' + (who ? ('?employee=' + encodeURIComponent(who)) : ''), { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (!j || !j.ok) { if (b) { b.innerHTML = '<span style="color:var(--red)">' + ((j && j.error) || 'Could not load') + '</span>'; } return; }
+                window.__CLDATA = j; clRender();
+            }).catch(function () { if (b) { b.innerHTML = '<span style="color:var(--red)">Could not load the ledger.</span>'; } });
+    };
+    function clRender() {
+        var b = document.getElementById('clBody'); var j = window.__CLDATA;
+        if (!b || !j) { return; }
+        var tab = window.__CLTAB || 'all';
+        var t = j.totals || {};
+        var canPay = cfg.role === 'Admin' || cfg.role === 'Super Admin' || String(cfg.role || '').indexOf('HR') >= 0;
+        var chip = function (label, val, col) { return '<div style="flex:1;min-width:130px;background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:10px 14px"><div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + label + '</div><div style="font-size:18px;font-weight:800;color:' + col + '">' + inr(val || 0) + '</div></div>'; };
+        var tabBtn2 = function (key, label) { return '<button class="btn ' + (tab === key ? 'btn-primary' : 'btn-outline') + ' btn-sm" onclick="clTab(&#39;' + key + '&#39;)">' + label + '</button>'; };
+        var chips = tab === 'salary'
+            ? chip('Salary payable (slips)', t.salaryEarned, '#15803d') + chip('Salary paid', t.salaryPaid, '#0369a1') + chip('Salary outstanding', t.salaryOutstanding, '#b91c1c')
+            : (tab === 'commission'
+                ? chip('Earned (approved)', t.earned, '#15803d') + chip('Paid out', t.paid, '#0369a1') + chip('Outstanding', t.outstanding, '#b91c1c') + chip('Pending approval', t.pending, '#a16207')
+                : chip('Total payable', t.allEarned, '#15803d') + chip('Total paid', t.allPaid, '#0369a1') + chip('Total outstanding', t.allOutstanding, '#b91c1c'));
+        var lth = 'padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap';
+        var ltd = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border)';
+        var lines = (j.lines || []).filter(function (l) { return tab === 'all' || l.kind === tab; });
+        var run = 0;
+        var rows2 = lines.map(function (l) {
+            run += (l.credit || 0) - (l.debit || 0);
+            var kindTag = tab === 'all' ? ' <span style="background:' + (l.kind === 'salary' ? '#ecfeff;color:#0e7490' : '#eef2ff;color:#4f46e5') + ';font-size:9.5px;font-weight:800;padding:1px 7px;border-radius:99px;text-transform:uppercase">' + (l.kind === 'salary' ? 'Salary' : 'Commission') + '</span>' : '';
+            var payLink = '';
+            if (canPay && l.kind === 'salary' && l.credit && l.slipBalance > 0.005) {
+                payLink = ' <a onclick="slipPayOpen(&#39;' + l.month + '&#39;,' + l.slipBalance + ')" style="cursor:pointer;color:#15803d;font-size:11.5px;font-weight:700;white-space:nowrap"><i class="fas fa-money-bill-wave"></i> Record payment (bal ' + inr(l.slipBalance) + ')</a>';
+            } else if (l.kind === 'salary' && l.credit && l.slipBalance != null && l.slipBalance <= 0.005) {
+                payLink = ' <span style="background:#dcfce7;color:#15803d;font-size:9.5px;font-weight:800;padding:1px 7px;border-radius:99px">PAID</span>';
+            }
+            return '<tr><td style="' + ltd + ';white-space:nowrap;color:var(--text3)">' + l.date + '</td>'
+                + '<td style="' + ltd + ';white-space:normal;max-width:380px;line-height:1.45">' + l.particulars + kindTag + payLink + '</td>'
+                + '<td style="' + ltd + ';text-align:right;color:#15803d;font-weight:700">' + (l.credit ? inr(l.credit) : '') + '</td>'
+                + '<td style="' + ltd + ';text-align:right;color:#b91c1c;font-weight:700">' + (l.debit ? inr(l.debit) : '') + '</td>'
+                + '<td style="' + ltd + ';text-align:right;font-weight:800">' + inr(run) + '</td></tr>';
+        }).join('');
+        b.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">'
+            + '<div style="font-weight:800;font-size:15px;color:var(--text1)">' + (j.employee ? j.employee.name + ' (' + (j.employee.code || '') + ')' : '') + '</div>'
+            + '<div style="display:flex;gap:8px">' + tabBtn2('all', 'All') + tabBtn2('salary', 'Salary') + tabBtn2('commission', 'Commissions') + '</div></div>'
+            + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">' + chips + '</div>'
+            + '<div id="slipPayBox"></div>'
+            + '<div style="border:1px solid var(--border);border-radius:10px;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + lth + '">Date</th><th style="' + lth + '">Particulars</th><th style="' + lth + ';text-align:right">Credit (payable)</th><th style="' + lth + ';text-align:right">Debit (paid)</th><th style="' + lth + ';text-align:right">Balance</th></tr></thead><tbody>'
+            + (rows2 || '<tr><td colspan="5" style="padding:22px;text-align:center;color:var(--text3)">Nothing in this view yet' + (tab === 'salary' ? ' — generate payroll to create payslips first.' : '.') + '</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.slipPayOpen = function (month, balance) {
+        var box = document.getElementById('slipPayBox'); if (!box) { return; }
+        var inp5 = 'padding:8px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:13px;background:#fff';
+        var today = new Date().toISOString().slice(0, 10);
+        box.innerHTML = '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px 14px;margin-bottom:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">'
+            + '<div style="font-weight:800;font-size:13px;width:100%;color:#166534"><i class="fas fa-money-bill-wave"></i> Salary payment — ' + month + ' (balance ' + inr(balance) + ')</div>'
+            + '<input id="sp_amount" type="number" value="' + balance + '" placeholder="Amount" style="' + inp5 + ';width:120px">'
+            + '<input id="sp_date" type="date" value="' + today + '" style="' + inp5 + '">'
+            + '<select id="sp_mode" style="' + inp5 + '"><option>Bank</option><option>UPI</option><option>Cash</option><option>Cheque</option></select>'
+            + '<input id="sp_ref" type="text" placeholder="Reference / UTR" style="' + inp5 + ';width:150px">'
+            + '<button class="btn btn-primary btn-sm" onclick="slipPaySave(&#39;' + month + '&#39;)"><i class="fas fa-check"></i> Record</button>'
+            + '<button class="btn btn-outline btn-sm" onclick="document.getElementById(&#39;slipPayBox&#39;).innerHTML=&#39;&#39;">Cancel</button>'
+            + '</div>';
+        box.scrollIntoView({ block: 'nearest' });
+    };
+    window.slipPaySave = function (month) {
+        var j = window.__CLDATA;
+        if (!j || !j.employee) { return; }
+        var g5 = function (x) { var el = document.getElementById(x); return el ? el.value : ''; };
+        var amt = Number(g5('sp_amount') || 0);
+        if (!(amt > 0)) { if (typeof toast === 'function') { toast('Enter the amount'); } return; }
+        fetch(cfg.requestsBase + '/salary-pay', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ employee_id: j.employee.id, month: month, amount: amt, paid_on: g5('sp_date'), mode: g5('sp_mode'), reference: g5('sp_ref') }) })
+            .then(function (r) { return r.json(); }).then(function (res) {
+                if (!res || !res.ok) { if (typeof toast === 'function') { toast((res && res.error) || 'Could not record'); } return; }
+                if (typeof toast === 'function') { toast(res.message || 'Recorded'); }
+                commLedgerLoad();
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not record'); } });
+    };
+    // Self-claims: a non-manager opening the New Commission Entry dialog gets
+    // the employee selector FIXED to themself (server enforces it too).
+    (function () {
+        var origComm = window.reqApplyOpen;
+        window.reqApplyOpen = function (navId) {
+            origComm(navId);
+            if (navId !== 'commissions') { return; }
+            try {
+                var d = window.__REQ['commissions'];
+                if (d && d.isManager === false && d.me) {
+                    var sel = document.getElementById('rq_emp');
+                    if (sel) { sel.innerHTML = '<option selected>' + d.me + '</option>'; sel.disabled = false; sel.style.pointerEvents = 'none'; sel.style.background = '#eef2f7'; }
+                }
+            } catch (e) { /* generic form still works */ }
+        };
+    })();
+    // ---- rev 83b (Ejaz): Increment / Appraisal completion --------------------
+    // Old CTC auto-fills from the record; New CTC and % cross-calculate; the
+    // designation input becomes a dropdown from the Designations master.
+    window.rqIncCalc = function (fromPct) {
+        var o = Number((document.getElementById('rqf_old_ctc') || {}).value || 0);
+        var nEl = document.getElementById('rqf_new_ctc');
+        var pEl = document.getElementById('rqf_pct');
+        if (!nEl || !pEl) { return; }
+        if (fromPct) {
+            var p = Number(pEl.value || 0);
+            if (o > 0 && p !== 0) { nEl.value = Math.round(o * (1 + p / 100) * 100) / 100; }
+        } else {
+            var n = Number(nEl.value || 0);
+            if (o > 0 && n > 0) { pEl.value = Math.round(((n - o) / o) * 10000) / 100; }
+        }
+    };
+    (function () {
+        var origInc = window.reqApplyOpen;
+        window.reqApplyOpen = function (navId) {
+            origInc(navId);
+            if (navId !== 'increments') { return; }
+            try {
+                var empSel = document.getElementById('rq_emp');
+                if (empSel) {
+                    empSel.onchange = function () {
+                        var hit = ((typeof DB !== 'undefined' && DB.employees) || []).find(function (e) { return e.name === empSel.value; });
+                        var o = document.getElementById('rqf_old_ctc');
+                        if (o && hit && Number(hit.ctc) > 0) { o.value = Number(hit.ctc); rqIncCalc(0); }
+                    };
+                }
+                fetch(cfg.masterBase + '/designations', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+                    .then(function (r) { return r.json(); })
+                    .then(function (j) {
+                        var el = document.getElementById('rqf_new_designation');
+                        var rows = (j && j.rows) || [];
+                        if (!el || !rows.length) { return; }
+                        var s2 = document.createElement('select');
+                        s2.id = 'rqf_new_designation';
+                        s2.style.cssText = el.style.cssText;
+                        s2.innerHTML = '<option value="">No change (pay revision only)</option>' + rows.map(function (b) { return '<option>' + (b.name || '') + '</option>'; }).join('');
+                        el.parentNode.replaceChild(s2, el);
+                    }).catch(function () { /* keep the free-text input */ });
+            } catch (e) { /* generic form still works */ }
+        };
+    })();
+    // rev 84b (Ejaz): increment View / Edit / Delete dialogs. Delete only
+    // before approval; edit until APPLIED; corrected letter auto re-emails.
+    function incRow(id) {
+        var d = window.__REQ['increments'];
+        return d && (d.rows || []).find(function (x) { return x.id === id; });
+    }
+    window.incView = function (id) {
+        var r = incRow(id); if (!r) { return; }
+        var line = function (l, v) { return '<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid var(--border)"><span style="flex:none;min-width:150px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);padding-top:2px">' + l + '</span><span style="font-size:13.5px;color:var(--text2);line-height:1.5">' + (v || '&mdash;') + '</span></div>'; };
+        commModal('<div class="card" style="max-width:560px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px"><i class="fas fa-eye"></i> Increment #' + id + '</h3><button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:18px 22px">'
+            + line('Employee', r.employee + (r.empCode ? ' (' + r.empCode + ')' : ''))
+            + line('Cycle', r.cycle)
+            + line('Old CTC', r.oldCtc != null ? inr(r.oldCtc) : '')
+            + line('New CTC', r.newCtc != null ? inr(r.newCtc) : '')
+            + line('% Increase', r.pct != null ? r.pct + '%' : '')
+            + line('Promotion', r.newDesignation)
+            + line('Effective', r.effectiveDate)
+            + line('Reason', r.reason)
+            + line('Status', r.status + (r.decidedBy ? ' &middot; by ' + r.decidedBy + (r.decidedAt ? ' &middot; ' + r.decidedAt : '') : ''))
+            + line('Remarks', r.remarks)
+            + line('Letter', r.letterAt ? 'emailed ' + r.letterAt : 'sent on approval')
+            + line('Applied to record', r.appliedAt ? r.appliedAt + (r.appliedBy ? ' by ' + r.appliedBy : '') : 'not yet')
+            + '</div>'
+            + '<div style="display:flex;justify-content:flex-end;padding:0 22px 20px"><button class="btn btn-outline" onclick="commModalClose()">Close</button></div></div>');
+    };
+    window.incEdit = function (id) {
+        var r = incRow(id); if (!r) { return; }
+        var inp3 = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var lbl3 = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var esc3 = function (v) { return String(v == null ? '' : v).replace(/"/g, '&quot;'); };
+        var f3 = function (id2, label, type, val, oninput) { return '<div><label style="' + lbl3 + '">' + label + '</label><input id="' + id2 + '" type="' + type + '" value="' + esc3(val) + '" style="' + inp3 + '"' + (oninput ? ' oninput="' + oninput + '"' : '') + '></div>'; };
+        commModal('<div class="card" style="max-width:640px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px">Edit Increment #' + id + ' <span style="font-weight:500;font-size:12px;color:var(--text3)">' + r.employee + '</span></h3><button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:22px;display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+            + f3('ie_cycle', 'Cycle', 'text', r.cycle)
+            + f3('ie_effective', 'Effective Date', 'date', r.effectiveDate)
+            + f3('ie_old', 'Old CTC (₹)', 'number', r.oldCtc, 'ieCalc(0)')
+            + f3('ie_new', 'New CTC (₹)', 'number', r.newCtc, 'ieCalc(0)')
+            + f3('ie_pct', '% Increase', 'number', r.pct, 'ieCalc(1)')
+            + f3('ie_desig', 'New Designation (promotion)', 'text', r.newDesignation)
+            + '<div style="grid-column:1/-1"><label style="' + lbl3 + '">Reason / Justification</label><input id="ie_reason" type="text" value="' + esc3(r.reason) + '" style="' + inp3 + '"></div>'
+            + '<div style="grid-column:1/-1;font-size:12px;color:var(--text3)">' + (r.status === 'Approved' ? '<b>This increment is APPROVED</b> &mdash; saving changes will re-email the corrected letter to the employee automatically.' : 'New CTC and % recalculate from each other.') + '</div>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 22px 20px"><button class="btn btn-outline" onclick="commModalClose()">Cancel</button><button class="btn btn-primary" onclick="incEditSave(' + id + ')"><i class="fas fa-check"></i> Save changes</button></div></div>');
+    };
+    window.ieCalc = function (fromPct) {
+        var o = Number((document.getElementById('ie_old') || {}).value || 0);
+        var nEl = document.getElementById('ie_new'); var pEl = document.getElementById('ie_pct');
+        if (!nEl || !pEl) { return; }
+        if (fromPct) { var p = Number(pEl.value || 0); if (o > 0 && p !== 0) { nEl.value = Math.round(o * (1 + p / 100) * 100) / 100; } }
+        else { var n = Number(nEl.value || 0); if (o > 0 && n > 0) { pEl.value = Math.round(((n - o) / o) * 10000) / 100; } }
+    };
+    window.incEditSave = function (id) {
+        var g3 = function (x) { var el = document.getElementById(x); return el ? el.value : ''; };
+        var payload = { cycle: g3('ie_cycle'), effective: g3('ie_effective'), new_designation: g3('ie_desig'), reason: g3('ie_reason') };
+        if (g3('ie_old') !== '') { payload.old_ctc = Number(g3('ie_old')); }
+        if (g3('ie_new') !== '') { payload.new_ctc = Number(g3('ie_new')); }
+        if (g3('ie_pct') !== '') { payload.pct = Number(g3('ie_pct')); }
+        fetch(cfg.incrementsBase + '/' + id + '/update', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not save'); } return; }
+                if (typeof toast === 'function') { toast(j.message || 'Saved'); }
+                commModalClose(); requestLoad('increments');
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not save'); } });
+    };
+    window.incDel = function (id) {
+        if (!window.confirm('Delete this increment request? Only possible before approval - this cannot be undone.')) { return; }
+        fetch(cfg.incrementsBase + '/' + id + '/delete', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not delete'); } return; }
+                if (typeof toast === 'function') { toast(j.message || 'Deleted'); }
+                requestLoad('increments');
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not delete'); } });
+    };
+    // Apply an approved increment to the employee record (HR one-click; Ejaz
+    // chose MANUAL application — nothing changes until HR presses this).
+    window.incApply = function (id) {
+        if (!window.confirm('Apply this increment to the employee record now? CTC (and designation, if a promotion) will update, and payroll uses the new salary from the next generation.')) { return; }
+        fetch(cfg.incrementsBase + '/' + id + '/apply', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not apply'); } return; }
+                if (typeof toast === 'function') { toast(j.message || 'Applied'); }
+                requestLoad('increments');
+                fetch(cfg.dataUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+                    .then(function (r2) { return r2.json(); })
+                    .then(function (live) { if (live && Array.isArray(live.employees)) { DB.employees = live.employees; } });
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not apply'); } });
+    };
+    // rev 77: smarter Transfer form — company picker from live companies, branch
+    // picker fetched from the branches master (falls back to free text). Wraps
+    // the generic request dialog so the engine itself stays untouched.
+    (function () {
+        if (!window.reqApplyOpen || window.reqApplyOpen.__trWrapped) { return; }
+        var _open = window.reqApplyOpen;
+        window.reqApplyOpen = function (navId) {
+            _open(navId);
+            if (navId !== 'transfers') { return; }
+            try {
+                var co = document.getElementById('rqf_to_company');
+                var names = ((typeof DB !== 'undefined' && DB.companies) || []).map(function (c) { return c.name || c; });
+                if (co && names.length) {
+                    var sel = document.createElement('select');
+                    sel.id = 'rqf_to_company';
+                    sel.style.cssText = co.style.cssText;
+                    sel.innerHTML = '<option value="">Same company (branch move)</option>' + names.map(function (n) { return '<option>' + n + '</option>'; }).join('');
+                    co.parentNode.replaceChild(sel, co);
+                }
+                var mkSel = function (master, inputId, emptyLabel) {
+                    fetch(cfg.masterBase + '/' + master, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (j) {
+                            var el = document.getElementById(inputId);
+                            var rows = (j && j.rows) || [];
+                            if (!el || !rows.length) { return; }
+                            var s2 = document.createElement('select');
+                            s2.id = inputId;
+                            s2.style.cssText = el.style.cssText;
+                            s2.innerHTML = '<option value="">' + emptyLabel + '</option>' + rows.map(function (b) { return '<option>' + (b.name || '') + '</option>'; }).join('');
+                            el.parentNode.replaceChild(s2, el);
+                        }).catch(function () { /* keep the free-text input */ });
+                };
+                mkSel('branches', 'rqf_to_branch', 'Keep current branch');
+                mkSel('departments', 'rqf_to_department', 'Keep current department');
+            } catch (e) { /* generic form still works */ }
+        };
+        window.reqApplyOpen.__trWrapped = true;
+    })();
+    // ---- Salary Approval (real payroll_runs, two-step HR→Finance, bulk select) -
+    window.__SALRUNS = null;
+    window.__salSel = {};
+    function salaryLoad() {
+        fetch(cfg.salaryRunsUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__SALRUNS = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__SALRUNS = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function salStatusBadge(s, label) {
+        var map = { draft: ['#fef3c7', '#d97706'], hr_approved: ['#dbeafe', '#2563eb'], approved: ['#dcfce7', '#16a34a'], paid: ['#dcfce7', '#16a34a'], rejected: ['#fee2e2', '#dc2626'] };
+        var col = map[s] || ['#f1f5f9', '#64748b'];
+        return '<span style="background:' + col[0] + ';color:' + col[1] + ';padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600;white-space:nowrap">' + label + '</span>';
+    }
+    function salaryApprovalScreen() {
+        var d = window.__SALRUNS;
+        if (!d) { setTimeout(function () { if (!window.__SALRUNS) { salaryLoad(); } }, 10); }
+        if (!d) { return pghead('Salary Approval', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('Salary Approval', 'Error', '') + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load.</b><br><span style="font-size:12px;color:var(--text2)">' + String(d.error) + '</span></div></div>'; }
+        var rows = d.rows || [];
+        var selable = rows.filter(function (r) { return r.canApprove; });
+        var bulkBar = selable.length
+            ? '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap"><button class="btn btn-outline btn-sm" onclick="salSelectAll(true)">Select all actionable</button><button class="btn btn-outline btn-sm" onclick="salSelectAll(false)">Clear</button>'
+                + '<button class="btn btn-primary btn-sm" onclick="salBulk(\'approve\')"><i class="fas fa-check-double"></i> Approve selected</button>'
+                + '<button class="btn btn-outline btn-sm" style="color:var(--red)" onclick="salBulk(\'reject\')"><i class="fas fa-xmark"></i> Reject selected</button>'
+                + '<span style="font-size:12px;color:var(--text3)">Two-step: Draft → HR approved → Finance approved (final).</span></div>'
+            : '<div style="font-size:12px;color:var(--text3);margin-bottom:12px">Two-step approval: Draft → HR approved → Finance approved (final). You can act on runs where you are the authority.</div>';
+        var th = ['', 'Company', 'Cycle', 'Pay Date', 'Emp', 'Net Total', 'Status', 'HR By', 'Finance By', 'Action']
+            .map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        var dash = '<span style="color:var(--text3)">—</span>';
+        var body = rows.map(function (r) {
+            var c = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+            var chk = r.canApprove ? '<input type="checkbox" ' + (window.__salSel[r.id] ? 'checked' : '') + ' onclick="salToggle(' + r.id + ',this.checked)" style="width:16px;height:16px;cursor:pointer">' : '';
+            var act = '';
+            if (r.canApprove) {
+                var lbl = r.next === 'hr' ? 'HR Approve' : 'Finance Approve';
+                act = '<button class="btn btn-sm btn-primary" onclick="salDecide(' + r.id + ',\'approve\')">' + lbl + '</button> <button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="salDecide(' + r.id + ',\'reject\')">Reject</button>';
+            } else if (r.finBy) { act = '<span style="font-size:11px;color:var(--text3)">' + r.finBy + (r.finAt ? ' · ' + r.finAt : '') + '</span>'; }
+            else if (r.hrBy) { act = '<span style="font-size:11px;color:var(--text3)">awaiting Finance</span>'; }
+            else { act = dash; }
+            return '<tr>'
+                + '<td style="' + c + '">' + chk + '</td>'
+                + '<td style="' + c + '">' + (r.company || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.cycle || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.payDate || dash) + '</td>'
+                + '<td style="' + c + '"><a href="#" onclick="salSheet(' + r.id + ',event);return false" title="View per-employee salary sheet" style="color:var(--primary);font-weight:600;text-decoration:underline;cursor:pointer">' + r.employees + '</a></td>'
+                + '<td style="' + c + ';font-weight:600">' + inr(r.net) + '</td>'
+                + '<td style="' + c + '">' + salStatusBadge(r.status, r.statusLabel) + '</td>'
+                + '<td style="' + c + '">' + (r.hrBy ? r.hrBy + (r.hrAt ? '<br><span style="font-size:10px;color:var(--text3)">' + r.hrAt + '</span>' : '') : dash) + '</td>'
+                + '<td style="' + c + '">' + (r.finBy ? r.finBy + (r.finAt ? '<br><span style="font-size:10px;color:var(--text3)">' + r.finAt + '</span>' : '') : dash) + '</td>'
+                + '<td style="' + c + '">' + act + (d.isFinance && (r.status === 'approved' || r.status === 'paid') ? ' <button class="btn btn-sm btn-outline" title="Bank disbursement (NEFT) file" onclick="bankFile(' + r.id + ')"><i class="fas fa-building-columns"></i> Bank File</button>' : '') + '</td>'
+                + '</tr>';
+        }).join('');
+        var awaitingHR = rows.filter(function (r) { return r.next === 'hr'; }).length;
+        var awaitingFin = rows.filter(function (r) { return r.next === 'finance'; }).length;
+        var sub = rows.length + ' run(s) · ' + awaitingHR + ' awaiting HR · ' + awaitingFin + ' awaiting Finance';
+        return pghead('Salary Approval', sub, '')
+            + bulkBar
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="10" style="padding:36px;text-align:center;color:var(--text3)">No salary runs yet. Generate payroll first.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    // Bank disbursement (NEFT) file — preview (included/skipped) then download CSV.
+    window.bankFile = function (runId) {
+        var NL = String.fromCharCode(10);   // heredoc-safe line break
+        fetch(cfg.salaryRunsBase + '/' + runId + '/bank-file/preview', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (d.error) { if (typeof toast === 'function') { toast(d.error); } return; }
+                if (!d.canDownload) {
+                    var why = d.skippedCount ? (d.skippedCount + ' employee(s) have no bank account/IFSC — fix their bank details first.') : 'No approved salary lines awaiting a bank file for this run.';
+                    alert('Nothing to disburse.' + NL + NL + why);
+                    return;
+                }
+                var msg = 'Generate NEFT bank file for ' + (d.cycle || 'this run') + '?' + NL + NL
+                    + '• ' + d.includedCount + ' beneficiary(ies), total ₹' + (d.total != null ? d.total.toLocaleString('en-IN') : '');
+                if (d.skippedCount) {
+                    msg += NL + '• ' + d.skippedCount + ' SKIPPED (missing bank details):' + NL + '   '
+                        + d.skipped.slice(0, 10).map(function (s) { return s.code + ' ' + s.name + ' — ' + s.reason; }).join(NL + '   ')
+                        + (d.skippedCount > 10 ? NL + '   …and ' + (d.skippedCount - 10) + ' more' : '');
+                }
+                msg += NL + NL + 'Approved lines will be marked disbursed (paid). Continue?';
+                if (!confirm(msg)) { return; }
+                var fmt = (prompt('Bank file format — type one: generic, icici, hdfc, sbi', 'generic') || 'generic').toLowerCase().trim();
+                if (['generic', 'icici', 'hdfc', 'sbi'].indexOf(fmt) < 0) { fmt = 'generic'; }
+                // Trigger the CSV download (cookie-authed GET).
+                window.location = cfg.salaryRunsBase + '/' + runId + '/bank-file?bank=' + encodeURIComponent(fmt);
+                if (typeof toast === 'function') { toast('Bank file downloading…'); }
+                setTimeout(function () { if (typeof salaryLoad === 'function') { salaryLoad(); } }, 1500);
+            })
+            .catch(function () { if (typeof toast === 'function') { toast('Could not prepare bank file'); } });
+    };
+    window.salToggle = function (id, on) { if (on) { window.__salSel[id] = true; } else { delete window.__salSel[id]; } };
+    window.salSelectAll = function (on) {
+        window.__salSel = {};
+        if (on && window.__SALRUNS && window.__SALRUNS.rows) { window.__SALRUNS.rows.forEach(function (r) { if (r.canApprove) { window.__salSel[r.id] = true; } }); }
+        if (typeof render === 'function') { render(); }
+    };
+    window.salDecide = function (id, action) {
+        var remarks = window.prompt((action === 'approve' ? 'Approve' : 'Reject') + ' this salary run — remarks (optional):', '');
+        if (remarks === null) { return; }
+        fetch(cfg.salaryRunsBase + '/' + id + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action, remarks: remarks }) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) { if (typeof toast === 'function') { toast('Run ' + res.j.status.replace('_', ' ')); } salaryLoad(); }
+                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Action failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Action failed'); } });
+    };
+    window.salBulk = function (action) {
+        var ids = Object.keys(window.__salSel).map(Number);
+        if (!ids.length) { if (typeof toast === 'function') { toast('Select at least one run'); } return; }
+        var remarks = window.prompt('Bulk ' + action + ' ' + ids.length + ' run(s) — remarks (optional):', '');
+        if (remarks === null) { return; }
+        fetch(cfg.salaryRunsBase + '/bulk', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action, ids: ids, remarks: remarks }) })
+            .then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) { if (typeof toast === 'function') { toast(d.message || 'Done'); } window.__salSel = {}; salaryLoad(); }
+                else if (typeof toast === 'function') { toast((d && d.error) || 'Bulk action failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Bulk action failed'); } });
+    };
+    // Drill-down: per-employee salary sheet for ONE run, with the full per-line
+    // lifecycle (Hold → Review → Approve → Disburse → Acknowledged). HR/Admin can
+    // hold/review/approve/reject each line, Finance/Admin disburses, and the
+    // employee e-signs receipt on their own line. Individual + bulk actions.
+    window.__salLineSel = {};
+    function salLineBadge(st, label) {
+        var map = { pending: ['#fef3c7', '#d97706'], on_hold: ['#fee2e2', '#b91c1c'], in_review: ['#e0e7ff', '#4338ca'], approved: ['#dbeafe', '#2563eb'], disbursed: ['#dcfce7', '#15803d'], acknowledged: ['#bbf7d0', '#166534'], rejected: ['#fee2e2', '#dc2626'] };
+        var c = map[st] || ['#f1f5f9', '#64748b'];
+        return '<span style="background:' + c[0] + ';color:' + c[1] + ';padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap">' + label + '</span>';
+    }
+    window.salSheet = function (id, ev) {
+        if (ev && ev.preventDefault) { ev.preventDefault(); }
+        window.__salLineSel = {};
+        var ov = document.getElementById('sal-sheet-ov');
+        if (!ov) {
+            ov = document.createElement('div');
+            ov.id = 'sal-sheet-ov';
+            ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+            ov.onclick = function (e) { if (e.target === ov) { ov.remove(); } };
+            document.body.appendChild(ov);
+        }
+        ov.innerHTML = '<div style="background:var(--card,#fff);border-radius:12px;max-width:1180px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">'
+            + '<div style="padding:16px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:12px">'
+            + '<div><div style="font-size:17px;font-weight:700">Salary Sheet</div><div style="font-size:12px;color:var(--text3)" id="sal-sheet-sub">Loading…</div></div>'
+            + '<button class="btn btn-sm btn-outline" onclick="document.getElementById(\'sal-sheet-ov\').remove()">Close</button></div>'
+            + '<div id="sal-sheet-body" style="max-height:74vh;overflow:auto"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div></div>';
+        salSheetLoad(id);
+    };
+    function salSheetLoad(id) {
+        window.__salSheetRun = id;
+        fetch(cfg.salaryRunsBase + '/' + id + '/sheet', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) { window.__salSheetData = d; salSheetRender(); })
+            .catch(function () { var b = document.getElementById('sal-sheet-body'); if (b) { b.innerHTML = '<div style="padding:30px;color:var(--red)">Could not load sheet.</div>'; } });
+    }
+    function salSheetRender() {
+        var d = window.__salSheetData || {};
+        var sub = document.getElementById('sal-sheet-sub');
+        var bodyEl = document.getElementById('sal-sheet-body');
+        if (!bodyEl) { return; }
+        if (d.error || !d.rows) { bodyEl.innerHTML = '<div style="padding:30px;color:var(--red)">Could not load sheet. ' + (d.error || '') + '</div>'; return; }
+        var rows = d.rows;
+        var t = d.totals || { gross: 0, ded: 0, net: 0, count: rows.length };
+        if (sub) { sub.textContent = (d.cycle || '') + ' · run ' + (d.status || '') + ' · ' + t.count + ' employee(s)'; }
+        if (!rows.length) { bodyEl.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text3)">No prepared salaries found for this run.</div>'; return; }
+        var ALL = { approve: ['Approve', 'btn-primary'], reject: ['Reject', 'btn-outline'], hold: ['Hold', 'btn-outline'], review: ['Review', 'btn-outline'], disburse: ['Disburse', 'btn-primary'], acknowledge: ['Acknowledge', 'btn-primary'] };
+        // Bulk bar: any line with an HR/Finance action is selectable.
+        var selable = rows.filter(function (r) { return (r.actions || []).some(function (a) { return a !== 'acknowledge'; }); });
+        var bulk = selable.length
+            ? '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:#f8fafc;border-bottom:1px solid var(--border)">'
+                + '<button class="btn btn-sm btn-outline" onclick="salLineSelAll(true)">Select all actionable</button>'
+                + '<button class="btn btn-sm btn-outline" onclick="salLineSelAll(false)">Clear</button>'
+                + '<span style="color:var(--text3);font-size:12px">Bulk:</span>'
+                + '<button class="btn btn-sm btn-primary" onclick="salLineBulk(\'approve\')">Approve</button>'
+                + '<button class="btn btn-sm btn-primary" onclick="salLineBulk(\'disburse\')">Disburse</button>'
+                + '<button class="btn btn-sm btn-outline" onclick="salLineBulk(\'hold\')">Hold</button>'
+                + '<button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="salLineBulk(\'reject\')">Reject</button>'
+                + '<span style="color:var(--text3);font-size:11px">Invalid lines for a given action are skipped automatically.</span></div>'
+            : '';
+        var hd = ['', 'Code', 'Employee', 'Gross', 'PF', 'ESI', 'PT', 'TDS', 'Net', 'Status', 'Action'];
+        var th = hd.map(function (h, i) { var al = (i >= 3 && i <= 8) ? 'right' : 'left'; return '<th style="padding:9px 10px;text-align:' + al + ';font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap;position:sticky;top:0;background:var(--card,#fff)">' + h + '</th>'; }).join('');
+        var cs = 'padding:8px 10px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+        var csr = cs + ';text-align:right';
+        var tb = rows.map(function (r) {
+            var pdf = (cfg.payslipBase || '/app/payslip') + '/' + encodeURIComponent(r.code) + '/pdf?month=' + encodeURIComponent(d.cycle || '');
+            var acts = r.actions || [];
+            var canSel = acts.some(function (a) { return a !== 'acknowledge'; });
+            var chk = canSel ? '<input type="checkbox" ' + (window.__salLineSel[r.id] ? 'checked' : '') + ' onclick="salLineToggle(' + r.id + ',this.checked)" style="width:15px;height:15px;cursor:pointer">' : '';
+            var btns = acts.map(function (a) {
+                var def = ALL[a] || [a, 'btn-outline'];
+                var extra = (a === 'reject') ? ' style="color:var(--red)"' : '';
+                if (a === 'acknowledge') { return '<button class="btn btn-sm btn-primary" onclick="salAck(' + r.id + ',\'' + (r.name || '').replace(/'/g, '') + '\')">Acknowledge</button>'; }
+                return '<button class="btn btn-sm ' + def[1] + '"' + extra + ' onclick="salLineDo(' + r.id + ',\'' + a + '\')">' + def[0] + '</button>';
+            }).join(' ');
+            if (!btns) { btns = r.stamp ? '<span style="font-size:11px;color:var(--text3)">' + r.stamp + '</span>' : '<span style="color:var(--text3)">—</span>'; }
+            return '<tr><td style="' + cs + '">' + chk + '</td>'
+                + '<td style="' + cs + '">' + r.code + '</td><td style="' + cs + '">' + r.name + '</td>'
+                + '<td style="' + csr + ';font-weight:600">' + inr(r.gross) + '</td>'
+                + '<td style="' + csr + '">' + inr(r.pf) + '</td><td style="' + csr + '">' + inr(r.esi) + '</td><td style="' + csr + '">' + inr(r.pt) + '</td><td style="' + csr + '">' + inr(r.tds) + '</td>'
+                + '<td style="' + csr + ';font-weight:700;color:#16a34a">' + inr(r.net) + '</td>'
+                + '<td style="' + cs + '">' + salLineBadge(r.lineStatus, r.lineLabel) + (r.lineRemarks ? '<br><span style="font-size:10px;color:var(--text3)">' + r.lineRemarks + '</span>' : '') + ' <a href="' + pdf + '" target="_blank" rel="noopener" title="Payslip PDF" style="color:var(--primary);font-size:11px">PDF</a>' + ((r.lineStatus === 'disbursed' || r.lineStatus === 'acknowledged') ? ' <a href="' + cfg.salaryLinesBase + '/' + r.id + '/voucher" target="_blank" rel="noopener" title="Signed salary voucher PDF" style="color:#16a34a;font-size:11px">Voucher</a>' : '') + '</td>'
+                + '<td style="' + cs + '">' + btns + '</td></tr>';
+        }).join('');
+        var foot = '<tr style="background:#f8fafc;font-weight:700"><td style="' + cs + '" colspan="3">Total — ' + t.count + ' employee(s)</td>'
+            + '<td style="' + csr + '">' + inr(t.gross) + '</td><td colspan="4"></td>'
+            + '<td style="' + csr + '">' + inr(t.net) + '</td><td colspan="2"></td></tr>';
+        bodyEl.innerHTML = bulk + '<table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>' + tb + foot + '</tbody></table>';
+    }
+    window.salLineToggle = function (id, on) { if (on) { window.__salLineSel[id] = true; } else { delete window.__salLineSel[id]; } };
+    window.salLineSelAll = function (on) {
+        window.__salLineSel = {};
+        if (on && window.__salSheetData && window.__salSheetData.rows) { window.__salSheetData.rows.forEach(function (r) { if ((r.actions || []).some(function (a) { return a !== 'acknowledge'; })) { window.__salLineSel[r.id] = true; } }); }
+        salSheetRender();
+    };
+    window.salLineDo = function (lineId, action) {
+        var remarks = '';
+        if (action === 'reject' || action === 'hold') { remarks = window.prompt(action.charAt(0).toUpperCase() + action.slice(1) + ' — remarks (optional):', ''); if (remarks === null) { return; } }
+        fetch(cfg.salaryLinesBase + '/' + lineId + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action, remarks: remarks }) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) { if (typeof toast === 'function') { toast('Line ' + String(res.j.status).replace('_', ' ')); } salSheetLoad(window.__salSheetRun); salaryLoad(); }
+                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Action failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Action failed'); } });
+    };
+    window.salLineBulk = function (action) {
+        var ids = Object.keys(window.__salLineSel).map(Number);
+        if (!ids.length) { if (typeof toast === 'function') { toast('Select at least one line'); } return; }
+        var remarks = window.prompt('Bulk ' + action + ' ' + ids.length + ' line(s) — remarks (optional):', '');
+        if (remarks === null) { return; }
+        fetch(cfg.salaryLinesBase + '/bulk', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action, ids: ids, remarks: remarks }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Done'); } window.__salLineSel = {}; salSheetLoad(window.__salSheetRun); salaryLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Bulk failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Bulk failed'); } });
+    };
+    // Employee e-sign acknowledgement of own disbursed salary (from the sheet or the Payslip screen).
+    window.salAck = function (lineId, defName) {
+        var name = window.prompt('Acknowledge receipt of this salary. Type your full name to e-sign:', defName || '');
+        if (name === null) { return; }
+        if (!String(name).trim()) { if (typeof toast === 'function') { toast('Name is required to sign'); } return; }
+        fetch(cfg.salaryLinesBase + '/' + lineId + '/acknowledge', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ name: name, confirm: true }) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) { if (typeof toast === 'function') { toast('Salary acknowledged — thank you'); } if (window.__salSheetRun) { salSheetLoad(window.__salSheetRun); } if (typeof render === 'function') { render(); } }
+                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Could not acknowledge'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not acknowledge'); } });
+    };
+    // ---- Company user logins (User Access): list / add / edit / invite -------
+    window.__USERS = null;
+    function usersLoad() {
+        fetch(cfg.usersUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__USERS = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__USERS = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function usersScreen() {
+        var d = window.__USERS;
+        if (!d) { setTimeout(function () { if (!window.__USERS) { usersLoad(); } }, 10); }
+        if (!d) { return pghead('User Access', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('User Access', 'Error', '') + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load.</b><br><span style="font-size:12px;color:var(--text2)">' + String(d.error) + '</span></div></div>'; }
+        var rows = d.rows || [];
+        var addBtn = (d.canManage !== false) ? '<button class="btn btn-primary" onclick="userEdit(null)"><i class="fas fa-user-plus"></i> Add User</button>' : '';
+        var dash = '<span style="color:var(--text3)">—</span>';
+        var body = rows.map(function (u) {
+            var cs = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+            var stCol = (u.status === 'disabled') ? ['#fee2e2', '#dc2626', 'Disabled'] : ['#dcfce7', '#15803d', 'Active'];
+            var st = '<span style="background:' + stCol[0] + ';color:' + stCol[1] + ';padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600">' + stCol[2] + '</span>';
+            var acts = '';
+            if (d.canManage !== false) {
+                acts += '<button class="btn btn-sm btn-outline" onclick="userEdit(' + u.id + ')">Edit</button> ';
+                acts += '<button class="btn btn-sm btn-outline" onclick="userInvite(' + u.id + ')" title="Email a set-password link">Invite</button> ';
+                acts += '<button class="btn btn-sm btn-outline" onclick="userSetPassword(' + u.id + ',\'' + (u.name || '').replace(/[^A-Za-z0-9 ]/g, '') + '\')" title="Set a password manually">Set Password</button> ';
+                if (!u.isSelf) {
+                    acts += (u.status === 'disabled')
+                        ? '<button class="btn btn-sm btn-outline" onclick="userStatus(' + u.id + ',\'active\')">Enable</button>'
+                        : '<button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="userStatus(' + u.id + ',\'disabled\')">Disable</button>';
+                }
+            }
+            return '<tr>'
+                + '<td style="' + cs + ';font-weight:600">' + u.name + (u.isSelf ? ' <span style="font-size:10px;color:var(--text3)">(you)</span>' : '') + '</td>'
+                + '<td style="' + cs + '">' + u.email + '</td>'
+                + '<td style="' + cs + '">' + (u.roleLabel || dash) + '</td>'
+                + '<td style="' + cs + '">' + (u.employee ? u.employee : '<span style="color:var(--text3);font-size:11px">not linked</span>') + '</td>'
+                + '<td style="' + cs + '">' + st + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + (acts || dash) + '</td>'
+                + '</tr>';
+        }).join('');
+        var th = ['Name', 'Email (login)', 'Role', 'Employee', 'Status', '']
+            .map(function (h) { return '<th style="padding:10px 12px;text-align:' + (h === '' ? 'right' : 'left') + ';font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
+        return pghead('User Access', rows.length + ' user login(s) — new users get an email to set their own password', addBtn)
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="6" style="padding:36px;text-align:center;color:var(--text3)">No users yet.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.userEdit = function (id) {
+        var d = window.__USERS || {}; var roles = d.roles || {};
+        var u = id ? (d.rows || []).find(function (x) { return x.id === id; }) : null;
+        var roleOpts = Object.keys(roles).map(function (k) { return '<option value="' + k + '"' + (u && u.role === k ? ' selected' : '') + '>' + roles[k] + '</option>'; }).join('');
+        var emps = d.employees || [];
+        var curEmp = u && u.employeeId ? u.employeeId : null;
+        var empOpts = '<option value="">— Not linked —</option>' + emps.map(function (e) { return '<option value="' + e.id + '"' + (curEmp === e.id ? ' selected' : '') + '>' + (e.code ? e.code + ' · ' : '') + e.name + '</option>'; }).join('');
+        var ov = document.getElementById('user-edit-ov');
+        if (!ov) { ov = document.createElement('div'); ov.id = 'user-edit-ov'; ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding:60px 16px;overflow:auto'; ov.onclick = function (e) { if (e.target === ov) { ov.remove(); } }; document.body.appendChild(ov); }
+        ov.innerHTML = '<div style="background:var(--card,#fff);border-radius:12px;max-width:460px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">'
+            + '<div style="padding:16px 22px;border-bottom:1px solid var(--border);font-size:16px;font-weight:700">' + (id ? 'Edit User' : 'Add User') + '</div>'
+            + '<div style="padding:20px 22px">'
+            + '<div style="margin-bottom:12px"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Full name</label><input id="u_name" class="filter-select" style="width:100%" value="' + (u ? u.name.replace(/"/g, "&quot;") : "") + '"></div>'
+            + '<div style="margin-bottom:12px"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Email (login)</label><input id="u_email" type="email" class="filter-select" style="width:100%" value="' + (u ? u.email : "") + '"></div>'
+            + '<div style="margin-bottom:12px"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Role</label><select id="u_role" class="filter-select" style="width:100%">' + roleOpts + '</select></div>'
+            + '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Linked employee</label><select id="u_emp" class="filter-select" style="width:100%">' + empOpts + '</select><div style="font-size:11px;color:var(--text3);margin-top:4px">Links this login to an employee record (for their own payslip, leave, attendance). Leave blank to auto-match by email.</div></div>'
+            + (id ? '' : '<div style="font-size:12px;color:var(--text3);margin-top:8px"><i class="fas fa-envelope"></i> An email will be sent to this address with a link to set their password.</div>')
+            + '</div>'
+            + '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px">'
+            + '<button class="btn btn-outline" onclick="document.getElementById(\'user-edit-ov\').remove()">Cancel</button>'
+            + '<button class="btn btn-primary" onclick="userSave(' + (id || 'null') + ')">' + (id ? 'Save' : 'Create &amp; invite') + '</button>'
+            + '</div></div>';
+    };
+    window.userSave = function (id) {
+        var name = (document.getElementById('u_name') || {}).value || '';
+        var email = (document.getElementById('u_email') || {}).value || '';
+        var role = (document.getElementById('u_role') || {}).value || '';
+        var empSel = (document.getElementById('u_emp') || {}).value || '';
+        if (!name.trim() || !email.trim()) { if (typeof toast === 'function') { toast('Name and email are required'); } return; }
+        var payload = { id: id || null, name: name, email: email, role: role, employee_id: empSel ? Number(empSel) : null };
+        fetch(cfg.usersBase, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) {
+                    var ov = document.getElementById('user-edit-ov'); if (ov) { ov.remove(); }
+                    if (typeof toast === 'function') { toast(res.j.invited ? 'User created — invite emailed' : 'User saved'); }
+                    usersLoad();
+                } else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Could not save'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not save'); } });
+    };
+    window.userInvite = function (id) {
+        fetch(cfg.usersBase + '/' + id + '/invite', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: '{}' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (typeof toast === 'function') { toast(j && j.ok ? (j.message || 'Invite sent') : ((j && j.error) || 'Could not send invite')); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not send invite'); } });
+    };
+    window.userSetPassword = function (id, name) {
+        var pw = window.prompt('Set a new password for ' + (name || 'this user') + ' (minimum 8 characters).' + String.fromCharCode(10) + 'They can change it later from Account Settings:', '');
+        if (pw === null) { return; }
+        if (String(pw).length < 8) { if (typeof toast === 'function') { toast('Password must be at least 8 characters'); } return; }
+        fetch(cfg.usersBase + '/' + id + '/password', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ password: pw }) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) { if (typeof toast === 'function') { toast(res.j.message || 'Password set'); } }
+                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Could not set password'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not set password'); } });
+    };
+    window.userStatus = function (id, status) {
+        fetch(cfg.usersBase + '/' + id + '/status', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ status: status }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('User ' + status); } usersLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not update'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not update'); } });
+    };
+    // ---- Account / My Space: ESS snapshot + photo + password -----------------
+    window.__ESS = window.__ESS || null;
+    function essLoad() {
+        if (window.__ESSloading) { return; }
+        window.__ESSloading = true;
+        fetch(cfg.essMeUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__ESS = j || { linked: false }; window.__ESSloading = false; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__ESS = { linked: false }; window.__ESSloading = false; if (typeof render === 'function') { render(); } });
+    }
+    function essCard(title, inner) { return '<div class="card" style="margin-bottom:14px"><div style="font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);margin-bottom:10px">' + title + '</div>' + inner + '</div>'; }
+    function essSection() {
+        var d = window.__ESS;
+        if (!d) { return '<div class="card" style="margin-bottom:14px"><div style="padding:18px;color:var(--text3)">Loading your space…</div></div>'; }
+        if (d.error) { return ''; }
+        if (!d.linked) { return '<div class="card" style="margin-bottom:14px"><div style="padding:14px;font-size:13px;color:var(--text2)">Your login is not linked to an employee record yet, so your personal payslips/attendance are not shown. Ask HR to link your account.</div></div>'; }
+        var te = teEsc;
+        var p = d.profile || {};
+        var prof = '<div style="display:flex;align-items:center;gap:14px">'
+            + '<img src="' + (p.photo || cfg.myPhotoUrl) + '?t=' + Date.now() + '" onerror="this.onerror=null;this.src=window.__DEFAULT_AVATAR" style="width:56px;height:56px;border-radius:50%;object-fit:cover;background:#f1f5f9">'
+            + '<div><div style="font-weight:700;font-size:15px">' + te(p.name) + ' <span style="color:var(--text3);font-weight:400;font-size:12px">' + te(p.emp_code) + '</span></div>'
+            + '<div style="font-size:12.5px;color:var(--text2)">' + (te(p.designation) || '—') + (p.department ? ' · ' + te(p.department) : '') + '</div>'
+            + '<div style="font-size:12px;color:var(--text3)">' + te(p.email) + (p.joined ? ' · joined ' + String(p.joined).slice(0, 10) : '') + '</div></div></div>';
+        var att = d.attendance || {};
+        var attHtml = '<div style="font-size:13px">Present this month (' + te(att.month) + '): <b>' + (att.present || 0) + '</b> day(s)' + (att.last_punch ? ' · last punch ' + te(att.last_punch) : '') + '</div>';
+        var pays = (d.payslips && d.payslips.length) ? d.payslips.map(function (s) {
+            return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border);font-size:13px"><span>' + te(s.label) + '</span><span>net ' + inr(s.net) + (s.pdf ? ' · <a href="' + s.pdf + '" target="_blank" style="color:#4f46e5"><i class="fas fa-download"></i></a>' : '') + '</span></div>';
+        }).join('') : '<div style="color:var(--text3);font-size:13px">No payslips yet.</div>';
+        var lv = (d.leaves && d.leaves.length) ? d.leaves.map(function (l) {
+            var col = l.status === 'approved' ? '#16a34a' : (l.status === 'rejected' ? '#dc2626' : '#f59e0b');
+            return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border);font-size:13px"><span>' + te(l.type) + ' · ' + te(l.from) + (l.to && l.to !== l.from ? ' → ' + te(l.to) : '') + '</span><span style="color:' + col + ';font-weight:600">' + te(l.status) + '</span></div>';
+        }).join('') : '<div style="color:var(--text3);font-size:13px">No leave records.</div>';
+        var no = (d.notices && d.notices.length) ? d.notices.map(function (n) {
+            return '<div style="padding:6px 0;border-top:1px solid var(--border)"><div style="font-weight:600;font-size:13px">' + te(n.title) + (n.date ? ' <span style="color:var(--text3);font-size:11px;font-weight:400">' + String(n.date).slice(0, 10) + '</span>' : '') + '</div>' + (n.body ? '<div style="font-size:12px;color:var(--text2)">' + te(n.body) + '</div>' : '') + '</div>';
+        }).join('') : '';
+        return '<div style="max-width:760px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+            + essCard('My profile', prof) + essCard('My attendance', attHtml)
+            + essCard('My recent payslips', pays) + essCard('My recent leave', lv)
+            + '</div>' + (no ? essCard('Notice board', no) : '') + '</div>';
+    }
+    // ---- Account / My Space: change your own password ------------------------
+    function changePasswordScreen() {
+        if (!window.__ESS) { setTimeout(essLoad, 10); }
+        return pghead('My Space', 'Your profile, payslips, attendance, leave & notices', '<button class="btn btn-outline btn-sm" onclick="essLoad()"><i class="fas fa-rotate"></i> Refresh</button>')
+            + essSection()
+            + '<div class="card" style="max-width:480px;margin-bottom:16px"><div style="padding:22px;display:flex;align-items:center;gap:16px">'
+            + '<img src="' + cfg.myPhotoUrl + '?t=' + Date.now() + '" onerror="this.onerror=null;this.src=window.__DEFAULT_AVATAR" style="width:64px;height:64px;border-radius:50%;object-fit:cover;background:#f1f5f9">'
+            + '<div><div style="font-weight:600;margin-bottom:2px">Profile photo</div><div style="font-size:12px;color:var(--text3);margin-bottom:8px">Upload a photo or take a selfie. It appears on your ID card.</div><button class="btn btn-outline btn-sm" onclick="openPhotoModal(' + "'me'" + ')"><i class="fas fa-camera"></i> Set my photo</button></div>'
+            + '</div></div>'
+            + '<div class="card" style="max-width:480px"><div style="padding:22px">'
+            + '<div style="font-weight:600;margin-bottom:14px">Change password</div>'
+            + '<div style="margin-bottom:14px"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Current password</label><input id="cp_cur" type="password" class="filter-select" style="width:100%"></div>'
+            + '<div style="margin-bottom:14px"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">New password (min 8 characters)</label><input id="cp_new" type="password" class="filter-select" style="width:100%"></div>'
+            + '<div style="margin-bottom:18px"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Confirm new password</label><input id="cp_conf" type="password" class="filter-select" style="width:100%"></div>'
+            + '<button class="btn btn-primary" onclick="changePassword()"><i class="fas fa-key"></i> Update password</button>'
+            + '</div></div>';
+    }
+    window.changePassword = function () {
+        var cur = (document.getElementById('cp_cur') || {}).value || '';
+        var nw = (document.getElementById('cp_new') || {}).value || '';
+        var cf = (document.getElementById('cp_conf') || {}).value || '';
+        if (!cur || !nw) { if (typeof toast === 'function') { toast('Fill in all fields'); } return; }
+        if (nw.length < 8) { if (typeof toast === 'function') { toast('New password must be at least 8 characters'); } return; }
+        if (nw !== cf) { if (typeof toast === 'function') { toast('New passwords do not match'); } return; }
+        fetch(cfg.changePasswordUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ current: cur, password: nw, password_confirmation: cf }) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) {
+                    if (typeof toast === 'function') { toast('Password changed'); }
+                    ['cp_cur', 'cp_new', 'cp_conf'].forEach(function (i) { var el = document.getElementById(i); if (el) { el.value = ''; } });
+                } else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Could not change password'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not change password'); } });
+    };
+    // ---- SaaS Platform (super admin): Tenants provisioning + Plans ----------
+    window.__TENANTS = null;
+    function tenantsLoad() {
+        fetch(cfg.saasTenantsUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__TENANTS = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__TENANTS = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function tenantsScreen() {
+        var d = window.__TENANTS;
+        if (!d) { setTimeout(function () { if (!window.__TENANTS) { tenantsLoad(); } }, 10); }
+        if (!d) { return pghead('Tenants', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('Tenants', 'Error', '') + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load.</b><br><span style="font-size:12px;color:var(--text2)">' + String(d.error) + '</span></div></div>'; }
+        var rows = d.rows || [];
+        var addBtn = '<button class="btn btn-primary" onclick="tenantNew()"><i class="fas fa-plus"></i> New Tenant</button>';
+        var dash = '<span style="color:var(--text3)">—</span>';
+        var body = rows.map(function (t) {
+            var cs = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+            var stCol = (t.status === 'suspended') ? ['#fee2e2', '#dc2626', 'Suspended'] : ((t.status === 'trial') ? ['#fef9c3', '#a16207', 'Trial'] : ['#dcfce7', '#15803d', 'Active']);
+            var st = '<span style="background:' + stCol[0] + ';color:' + stCol[1] + ';padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600">' + stCol[2] + '</span>';
+            var act = '<button class="btn btn-sm btn-outline" onclick="tenantEdit(' + t.id + ')">Edit</button> '
+                + ((t.status === 'suspended')
+                    ? '<button class="btn btn-sm btn-outline" onclick="tenantStatus(' + t.id + ',\'active\')">Activate</button>'
+                    : '<button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="tenantStatus(' + t.id + ',\'suspended\')">Suspend</button>');
+            return '<tr>'
+                + '<td style="' + cs + ';font-weight:600">' + t.name + (t.ownerEmail ? '<br><span style="font-size:11px;color:var(--text3)">' + t.ownerEmail + '</span>' : '') + '</td>'
+                + '<td style="' + cs + '">' + (t.plan || dash) + (t.customDomain ? '<br><span style="font-size:11px;color:var(--text3)"><i class="fas fa-globe"></i> ' + t.customDomain + '</span>' : '') + '</td>'
+                + '<td style="' + cs + '">' + t.users + ' user(s)<br><span style="font-size:11px;color:var(--text3)">' + t.employees + ' employee(s)</span></td>'
+                + '<td style="' + cs + '">' + (t.seatsLicensed || dash) + '</td>'
+                + '<td style="' + cs + '">' + st + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + act + '</td>'
+                + '</tr>';
+        }).join('');
+        var th = ['Tenant', 'Plan', 'Usage', 'Seats', 'Status', '']
+            .map(function (h) { return '<th style="padding:10px 12px;text-align:' + (h === '' ? 'right' : 'left') + ';font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
+        return pghead('Tenants', rows.length + ' tenant(s) — creating a tenant sets up its first company and emails the admin a set-password link', addBtn)
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="6" style="padding:36px;text-align:center;color:var(--text3)">No tenants yet.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.tenantNew = function () {
+        var d = window.__TENANTS || {}; var plans = d.plans || [];
+        var planOpts = '<option value="">— No plan —</option>' + plans.map(function (p) { return '<option value="' + p.id + '">' + p.name + (p.seatMax ? ' (up to ' + p.seatMax + ')' : '') + '</option>'; }).join('');
+        var ov = document.getElementById('tenant-ov');
+        if (!ov) { ov = document.createElement('div'); ov.id = 'tenant-ov'; ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding:50px 16px;overflow:auto'; ov.onclick = function (e) { if (e.target === ov) { ov.remove(); } }; document.body.appendChild(ov); }
+        var lab = 'font-size:12px;color:var(--text2);display:block;margin-bottom:4px';
+        ov.innerHTML = '<div style="background:var(--card,#fff);border-radius:12px;max-width:480px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">'
+            + '<div style="padding:16px 22px;border-bottom:1px solid var(--border);font-size:16px;font-weight:700">New Tenant</div>'
+            + '<div style="padding:20px 22px">'
+            + '<div style="margin-bottom:12px"><label style="' + lab + '">Tenant / organisation name</label><input id="t_name" class="filter-select" style="width:100%" placeholder="Acme Collections Group"></div>'
+            + '<div style="margin-bottom:12px"><label style="' + lab + '">First company name <span style="color:var(--text3)">(optional)</span></label><input id="t_company" class="filter-select" style="width:100%" placeholder="defaults to tenant name"></div>'
+            + '<div style="margin-bottom:12px"><label style="' + lab + '">Admin full name</label><input id="t_aname" class="filter-select" style="width:100%"></div>'
+            + '<div style="margin-bottom:12px"><label style="' + lab + '">Admin email (their login)</label><input id="t_aemail" type="email" class="filter-select" style="width:100%"></div>'
+            + '<div style="display:flex;gap:10px;margin-bottom:6px"><div style="flex:1"><label style="' + lab + '">Plan</label><select id="t_plan" class="filter-select" style="width:100%">' + planOpts + '</select></div>'
+            + '<div style="width:120px"><label style="' + lab + '">Seats</label><input id="t_seats" type="number" min="0" class="filter-select" style="width:100%" placeholder="50"></div></div>'
+            + '<div style="font-size:12px;color:var(--text3);margin-top:8px"><i class="fas fa-envelope"></i> The admin gets an email to set their password and can then add companies, employees and users.</div>'
+            + '</div>'
+            + '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px">'
+            + '<button class="btn btn-outline" onclick="document.getElementById(\'tenant-ov\').remove()">Cancel</button>'
+            + '<button class="btn btn-primary" onclick="tenantCreate()">Create &amp; invite admin</button>'
+            + '</div></div>';
+    };
+    window.tenantCreate = function () {
+        var g = function (id) { var e = document.getElementById(id); return e ? e.value : ''; };
+        var payload = { name: g('t_name'), company_name: g('t_company'), admin_name: g('t_aname'), admin_email: g('t_aemail'), plan_id: g('t_plan') ? Number(g('t_plan')) : null, seats_licensed: g('t_seats') ? Number(g('t_seats')) : null };
+        if (!payload.name.trim() || !payload.admin_name.trim() || !payload.admin_email.trim()) { if (typeof toast === 'function') { toast('Tenant name, admin name and admin email are required'); } return; }
+        fetch(cfg.saasTenantsUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) { var ov = document.getElementById('tenant-ov'); if (ov) { ov.remove(); } if (typeof toast === 'function') { toast(res.j.message || 'Tenant created'); } tenantsLoad(); }
+                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Could not create tenant'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not create tenant'); } });
+    };
+    window.tenantEdit = function (id) {
+        var d = window.__TENANTS || {}; var plans = d.plans || [];
+        var t = (d.rows || []).find(function (x) { return x.id === id; });
+        if (!t) { return; }
+        var planOpts = '<option value="">— No plan —</option>' + plans.map(function (p) { return '<option value="' + p.id + '"' + (t.planId === p.id ? ' selected' : '') + '>' + p.name + (p.seatMax ? ' (up to ' + p.seatMax + ')' : '') + '</option>'; }).join('');
+        var lab = 'font-size:12px;color:var(--text2);display:block;margin-bottom:4px';
+        var esc = function (s) { return String(s || '').replace(/"/g, '&quot;'); };
+        var ov = document.getElementById('tenant-ov');
+        if (!ov) { ov = document.createElement('div'); ov.id = 'tenant-ov'; ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding:50px 16px;overflow:auto'; ov.onclick = function (e) { if (e.target === ov) { ov.remove(); } }; document.body.appendChild(ov); }
+        ov.innerHTML = '<div style="background:var(--card,#fff);border-radius:12px;max-width:480px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">'
+            + '<div style="padding:16px 22px;border-bottom:1px solid var(--border);font-size:16px;font-weight:700">Edit Tenant</div>'
+            + '<div style="padding:20px 22px">'
+            + '<div style="margin-bottom:12px"><label style="' + lab + '">Tenant / organisation name</label><input id="te_name" class="filter-select" style="width:100%" value="' + esc(t.name) + '"></div>'
+            + '<div style="margin-bottom:12px"><label style="' + lab + '">Owner / admin email</label><input id="te_email" type="email" class="filter-select" style="width:100%" value="' + esc(t.ownerEmail) + '"></div>'
+            + '<div style="display:flex;gap:10px;margin-bottom:12px"><div style="flex:1"><label style="' + lab + '">Plan</label><select id="te_plan" class="filter-select" style="width:100%">' + planOpts + '</select></div>'
+            + '<div style="width:120px"><label style="' + lab + '">Seats</label><input id="te_seats" type="number" min="0" class="filter-select" style="width:100%" value="' + (t.seatsLicensed || '') + '"></div></div>'
+            + '<div style="margin-bottom:12px"><label style="' + lab + '">Subdomain <span style="color:var(--text3)">(login portal path / vanity)</span></label><input id="te_sub" class="filter-select" style="width:100%" value="' + esc(t.subdomain) + '" placeholder="acme"></div>'
+            + '<div style="margin-bottom:4px"><label style="' + lab + '">Custom domain <span style="color:var(--text3)">(e.g. hr.acme.com)</span></label><input id="te_domain" class="filter-select" style="width:100%" value="' + esc(t.customDomain) + '" placeholder="hr.acme.com"></div>'
+            + '<div style="font-size:11px;color:var(--text3);margin-top:4px">Point the domain\'s DNS at this server for the tenant\'s branded login to work.</div>'
+            + '</div>'
+            + '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px">'
+            + '<button class="btn btn-outline" onclick="document.getElementById(\'tenant-ov\').remove()">Cancel</button>'
+            + '<button class="btn btn-primary" onclick="tenantUpdate(' + id + ')">Save</button>'
+            + '</div></div>';
+    };
+    window.tenantUpdate = function (id) {
+        var g = function (i) { var e = document.getElementById(i); return e ? e.value : ''; };
+        var payload = { name: g('te_name'), owner_email: g('te_email'), plan_id: g('te_plan') ? Number(g('te_plan')) : null, seats_licensed: g('te_seats') ? Number(g('te_seats')) : null, subdomain: g('te_sub'), custom_domain: g('te_domain') };
+        if (!payload.name.trim()) { if (typeof toast === 'function') { toast('Tenant name is required'); } return; }
+        fetch(cfg.saasTenantsUrl + '/' + id, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) { var ov = document.getElementById('tenant-ov'); if (ov) { ov.remove(); } if (typeof toast === 'function') { toast(res.j.message || 'Tenant updated'); } tenantsLoad(); }
+                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Could not update tenant'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not update tenant'); } });
+    };
+    window.tenantStatus = function (id, status) {
+        if (status === 'suspended' && !confirm('Suspend this tenant? All its user logins will be blocked until reactivated.')) { return; }
+        fetch(cfg.saasTenantsUrl + '/' + id + '/status', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ status: status }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('Tenant ' + status); } tenantsLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not update'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not update'); } });
+    };
+    // ---- Plans (super admin): price + seat cap + included module groups ------
+    window.__PLANS = null;
+    function plansLoad() {
+        fetch(cfg.saasPlansUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__PLANS = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__PLANS = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function plansScreen() {
+        var d = window.__PLANS;
+        if (!d) { setTimeout(function () { if (!window.__PLANS) { plansLoad(); } }, 10); }
+        if (!d) { return pghead('Plans', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('Plans', 'Error', '') + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load.</b><br><span style="font-size:12px;color:var(--text2)">' + String(d.error) + '</span></div></div>'; }
+        var rows = d.rows || []; var mg = d.moduleGroups || {};
+        var addBtn = '<button class="btn btn-primary" onclick="planEdit(null)"><i class="fas fa-plus"></i> New Plan</button>';
+        var dash = '<span style="color:var(--text3)">—</span>';
+        var body = rows.map(function (p) {
+            var cs = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border);vertical-align:top';
+            var mods = (p.modules || []).map(function (k) { return mg[k] || k; }).join(', ') || dash;
+            return '<tr>'
+                + '<td style="' + cs + ';font-weight:600">' + p.name + '</td>'
+                + '<td style="' + cs + '">' + inr(p.basePrice) + '<span style="font-size:11px;color:var(--text3)">/' + (p.billingCycle || 'mo') + '</span>' + (p.perUserPrice ? '<br><span style="font-size:11px;color:var(--text3)">+ ' + inr(p.perUserPrice) + '/user</span>' : '') + '</td>'
+                + '<td style="' + cs + '">' + (p.seatMax || 'Unlimited') + '</td>'
+                + '<td style="' + cs + ';white-space:normal;max-width:340px">' + mods + '</td>'
+                + '<td style="' + cs + ';text-align:right"><button class="btn btn-sm btn-outline" onclick="planEdit(' + p.id + ')">Edit</button></td>'
+                + '</tr>';
+        }).join('');
+        var th = ['Plan', 'Price', 'Seat cap', 'Included modules', '']
+            .map(function (h) { return '<th style="padding:10px 12px;text-align:' + (h === '' ? 'right' : 'left') + ';font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
+        return pghead('Plans', rows.length + ' plan(s) — each plan defines price, seat cap and which module groups its tenants get', addBtn)
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="5" style="padding:36px;text-align:center;color:var(--text3)">No plans yet.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.planEdit = function (id) {
+        var d = window.__PLANS || {}; var mg = d.moduleGroups || {};
+        var p = id ? (d.rows || []).find(function (x) { return x.id === id; }) : null;
+        var cur = (p && p.modules) || [];
+        var lab = 'font-size:12px;color:var(--text2);display:block;margin-bottom:4px';
+        var modKeys = Object.keys(mg);
+        var allOn = (modKeys.length && modKeys.every(function (k) { return cur.indexOf(k) >= 0; })) ? ' checked' : '';
+        var modChecks = modKeys.map(function (k) {
+            var on = cur.indexOf(k) >= 0 ? ' checked' : '';
+            return '<label style="display:flex;align-items:center;gap:7px;font-size:13px;padding:3px 0"><input type="checkbox" class="pl_mod" value="' + k + '"' + on + ' onclick="planSyncAll()" style="width:15px;height:15px"> ' + mg[k] + '</label>';
+        }).join('');
+        var cycles = ['quarterly', 'halfyear', 'annual'].map(function (c) { return '<option value="' + c + '"' + (p && p.billingCycle === c ? ' selected' : '') + '>' + c + '</option>'; }).join('');
+        var ov = document.getElementById('plan-ov');
+        if (!ov) { ov = document.createElement('div'); ov.id = 'plan-ov'; ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto'; ov.onclick = function (e) { if (e.target === ov) { ov.remove(); } }; document.body.appendChild(ov); }
+        ov.innerHTML = '<div style="background:var(--card,#fff);border-radius:12px;max-width:520px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">'
+            + '<div style="padding:16px 22px;border-bottom:1px solid var(--border);font-size:16px;font-weight:700">' + (id ? 'Edit Plan' : 'New Plan') + '</div>'
+            + '<div style="padding:20px 22px">'
+            + '<div style="margin-bottom:12px"><label style="' + lab + '">Plan name</label><input id="pl_name" class="filter-select" style="width:100%" value="' + (p ? p.name.replace(/"/g, '&quot;') : '') + '"></div>'
+            + '<div style="display:flex;gap:10px;margin-bottom:12px"><div style="flex:1"><label style="' + lab + '">Base price ₹/month (includes the employees below)</label><input id="pl_base" type="number" min="0" class="filter-select" style="width:100%" value="' + (p ? p.basePrice : 0) + '"></div>'
+            + '<div style="flex:1"><label style="' + lab + '">Extra employee ₹/month (beyond included)</label><input id="pl_user" type="number" min="0" class="filter-select" style="width:100%" value="' + (p ? p.perUserPrice : 0) + '"></div></div>'
+            + '<div style="display:flex;gap:10px;margin-bottom:12px"><div style="flex:1"><label style="' + lab + '">Default billing cycle</label><select id="pl_cycle" class="filter-select" style="width:100%">' + cycles + '</select></div>'
+            + '<div style="width:150px"><label style="' + lab + '">Employees included</label><input id="pl_seat" type="number" min="0" class="filter-select" style="width:100%" value="' + (p && p.seatMax ? p.seatMax : '') + '" placeholder="e.g. 25"></div></div>'
+            + '<div><label style="' + lab + '">Included modules <span style="color:var(--text3);font-weight:400">— tick what this package unlocks</span></label><div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:240px;overflow:auto">'
+            + '<label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;padding:3px 0 7px;border-bottom:1px solid var(--border);margin-bottom:6px"><input type="checkbox" id="pl_mod_all" onclick="planToggleAll(this)"' + allOn + ' style="width:15px;height:15px"> Select all modules</label>'
+            + modChecks + '</div></div>'
+            + '</div>'
+            + '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px">'
+            + '<button class="btn btn-outline" onclick="document.getElementById(\'plan-ov\').remove()">Cancel</button>'
+            + '<button class="btn btn-primary" onclick="planSave(' + (id || 'null') + ')">Save</button>'
+            + '</div></div>';
+    };
+    window.planToggleAll = function (el) {
+        document.querySelectorAll('.pl_mod').forEach(function (c) { c.checked = el.checked; });
+    };
+    window.planSyncAll = function () {
+        var all = document.querySelectorAll('.pl_mod'); var on = document.querySelectorAll('.pl_mod:checked');
+        var master = document.getElementById('pl_mod_all'); if (master) { master.checked = all.length > 0 && all.length === on.length; }
+    };
+    window.planSave = function (id) {
+        var g = function (i) { var e = document.getElementById(i); return e ? e.value : ''; };
+        var mods = []; document.querySelectorAll('.pl_mod:checked').forEach(function (c) { mods.push(c.value); });
+        var payload = { id: id || null, name: g('pl_name'), base_price: Number(g('pl_base') || 0), per_user_price: Number(g('pl_user') || 0), billing_cycle: g('pl_cycle') || 'quarterly', seat_max: g('pl_seat') ? Number(g('pl_seat')) : null, modules: mods };
+        if (!payload.name.trim()) { if (typeof toast === 'function') { toast('Plan name is required'); } return; }
+        fetch(cfg.saasPlansUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) { var ov = document.getElementById('plan-ov'); if (ov) { ov.remove(); } if (typeof toast === 'function') { toast('Plan saved'); } plansLoad(); }
+                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Could not save plan'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not save plan'); } });
+    };
+    // ---- Field-force compliance: DRA / PCC expiry alerts ---------------------
+    window.__COMPLIANCE = null;
+    function complianceLoad() {
+        fetch(cfg.complianceUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__COMPLIANCE = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__COMPLIANCE = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function complianceScreen() {
+        var d = window.__COMPLIANCE;
+        if (!d) { setTimeout(function () { if (!window.__COMPLIANCE) { complianceLoad(); } }, 10); }
+        if (!d) { return pghead('Compliance Alerts', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('Compliance Alerts', 'Error', '') + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load.</b><br><span style="font-size:12px;color:var(--text2)">' + String(d.error) + '</span></div></div>'; }
+        var rows = d.rows || [];
+        var c = d.counts || { expired: 0, critical: 0, soon: 0 };
+        var sendBtn = (d.canManage !== false) ? '<button class="btn btn-primary" onclick="complianceRun()"><i class="fas fa-paper-plane"></i> Send alerts now</button>' : '';
+        var band = '<div class="stats-grid" style="margin-bottom:14px">'
+            + statBox(String(c.expired), 'Expired', '#dc2626', 'fa-triangle-exclamation')
+            + statBox(String(c.critical), 'Due within 7 days', '#f97316', 'fa-clock')
+            + statBox(String(c.soon), 'Due within 30 days', '#eab308', 'fa-hourglass-half')
+            + statBox(String(rows.length), 'Total flagged', '#3b82f6', 'fa-flag')
+            + '</div>';
+        var bk = { expired: ['#fee2e2', '#dc2626', 'Expired'], critical: ['#ffedd5', '#c2410c', 'Critical'], soon: ['#fef9c3', '#a16207', 'Upcoming'] };
+        var dash = '<span style="color:var(--text3)">—</span>';
+        var body = rows.map(function (r) {
+            var cs = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+            var b = bk[r.bucket] || ['#f1f5f9', '#64748b', r.bucket];
+            var badge = '<span style="background:' + b[0] + ';color:' + b[1] + ';padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600">' + b[2] + '</span>';
+            var when = r.days < 0 ? ('Expired ' + Math.abs(r.days) + 'd ago') : ('in ' + r.days + 'd');
+            return '<tr>'
+                + '<td style="' + cs + '">' + badge + '</td>'
+                + '<td style="' + cs + '"><b>' + r.type + '</b></td>'
+                + '<td style="' + cs + '">' + (r.name || dash) + (r.code ? '<br><span style="font-size:11px;color:var(--text3)">' + r.code + '</span>' : '') + '</td>'
+                + '<td style="' + cs + '">' + (r.company || dash) + '</td>'
+                + '<td style="' + cs + '">' + (r.portfolio || dash) + '</td>'
+                + '<td style="' + cs + '">' + r.date + '</td>'
+                + '<td style="' + cs + ';font-weight:600;color:' + b[1] + '">' + when + '</td>'
+                + '</tr>';
+        }).join('');
+        var th = ['Status', 'Type', 'Employee', 'Company', 'Portfolio', 'Expiry', 'When']
+            .map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        return pghead('Compliance Alerts', 'DRA & PCC certifications expired or expiring within ' + (d.window || 30) + ' days', sendBtn)
+            + band
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="7" style="padding:36px;text-align:center;color:var(--text3)">No DRA/PCC items expiring soon. All clear.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.complianceRun = function () {
+        if (!confirm('Email a compliance digest now to HR/Admin for all expiring DRA/PCC items?')) { return; }
+        fetch(cfg.complianceRunUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: '{}' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Alerts queued'); } }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not send'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not send'); } });
+    };
+    // ---- Generate Payroll (real draft run + payslips for a chosen month) -------
+    function pgDefaultMonth() { var d = new Date(); var m = d.getMonth() + 1; return d.getFullYear() + '-' + (m < 10 ? '0' + m : m); }
+    window.pgSet = function (k, v) { if (window.__PG) { window.__PG[k] = v; } };
+    window.pgPreview = function () {
+        var pg = window.__PG; if (!pg) { return; }
+        if (!pg.company) { if (typeof toast === 'function') { toast('Pick a company first'); } return; }
+        if (typeof toast === 'function') { toast('Computing salaries…'); }
+        var url = cfg.payrollPreviewUrl + '?company_id=' + encodeURIComponent(pg.company) + '&month=' + encodeURIComponent(pg.month) + '&lop=' + (pg.lop ? 1 : 0);
+        fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__PG.preview = (j && j.ok) ? j : { error: (j && j.error) || 'Could not compute' }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__PG.preview = { error: 'Could not compute' }; if (typeof render === 'function') { render(); } });
+    };
+    function pgSubmit(payload, after) {
+        fetch(cfg.payrollGenUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); }).then(after)
+            .catch(function () { if (typeof toast === 'function') { toast('Could not generate'); } });
+    }
+    function pgDone(j) {
+        if (j && j.ok) {
+            if (typeof toast === 'function') { toast(j.message || 'Draft payroll created'); }
+            window.__PG.preview = null; window.__SALRUNS = null;
+            if (typeof go === 'function') { go('salary-approval'); } else if (typeof render === 'function') { render(); }
+        } else if (typeof toast === 'function') { toast((j && j.error) || 'Could not generate'); }
+    }
+    window.pgGenerate = function () {
+        var pg = window.__PG; var p = pg && pg.preview; if (!p || !p.rows || !p.rows.length) { return; }
+        var msg = p.exists
+            ? ('Replace the existing ' + (p.existingStatus || 'draft') + ' run for ' + p.monthLabel + ' with a fresh draft of ' + p.totals.count + ' employees?')
+            : ('Create a draft payroll for ' + p.monthLabel + ' — ' + p.totals.count + ' employees, net ' + inr(p.totals.net) + '?');
+        if (!window.confirm(msg)) { return; }
+        pgSubmit({ company_id: pg.company, month: pg.month, lop: pg.lop ? 1 : 0, regenerate: p.exists ? 1 : 0 }, pgDone);
+    };
+    window.pgNote = function (i) { var el = document.getElementById('pgn_' + i); if (el) { el.style.display = el.style.display === 'none' ? '' : 'none'; } };
+    function salaryGenScreen() {
+        if (!window.__PG) { window.__PG = { month: pgDefaultMonth(), company: '', lop: false, preview: null }; }
+        var pg = window.__PG;
+        var comps = (typeof DB !== 'undefined' && DB.companies) || [];
+        if (!pg.company && comps.length) { pg.company = comps[0].id; }
+        var inp = 'padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var compSel = '<select id="pg_company" onchange="pgSet(' + "'company'" + ',this.value)" style="' + inp + ';min-width:200px">' + comps.map(function (c) { return '<option value="' + c.id + '"' + (String(c.id) === String(pg.company) ? ' selected' : '') + '>' + c.name + '</option>'; }).join('') + '</select>';
+        var monthInp = '<input id="pg_month" type="month" value="' + pg.month + '" onchange="pgSet(' + "'month'" + ',this.value)" style="' + inp + '">';
+        var lopChk = '<label style="display:flex;align-items:center;gap:7px;font-size:13px;color:var(--text2);cursor:pointer"><input type="checkbox" ' + (pg.lop ? 'checked' : '') + ' onchange="pgSet(' + "'lop'" + ',this.checked)"> Prorate by attendance (LOP)</label>';
+        var controls = '<div class="card" style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:16px;margin-bottom:14px">'
+            + '<div><label style="' + lbl + '">Company</label>' + compSel + '</div>'
+            + '<div><label style="' + lbl + '">Month</label>' + monthInp + '</div>'
+            + '<div style="padding-bottom:8px">' + lopChk + '</div>'
+            + '<div style="margin-left:auto"><button class="btn btn-primary" onclick="pgPreview()"><i class="fas fa-calculator"></i> Preview</button></div>'
+            + '</div>';
+        var out = pghead('Generate Payroll', 'Compute a month’s salaries, then create a draft run for Salary Approval', '') + controls;
+        var p = pg.preview;
+        if (!p) { return out + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Pick a company and month, then click <b>Preview</b> to compute salaries.</div></div>'; }
+        if (p.error) { return out + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + String(p.error) + '</b></div></div>'; }
+        out += '<div class="stats-grid" style="margin-bottom:14px">'
+            + statBox(String(p.totals.count), 'Employees', '#3b82f6', 'fa-users')
+            + statBox(inr(p.totals.gross), 'Total Gross', '#10b981', 'fa-coins')
+            + statBox(inr(p.totals.ded), 'Total Deductions', '#f97316', 'fa-scissors')
+            + statBox(inr(p.totals.net), 'Total Net Pay', '#6366f1', 'fa-wallet')
+            + '</div>';
+        var notes = [];
+        if (p.exists) { notes.push('<b style="color:#b45309">A ' + (p.existingStatus || 'draft') + ' run already exists for ' + p.monthLabel + '</b> — generating will replace the draft.'); }
+        if (p.skipped) { notes.push(p.skipped + ' employee(s) skipped (no CTC set).'); }
+        if (p.lop) { notes.push('LOP on: ' + p.workingDays + ' working days of ' + p.daysInMonth + ' (excl. Sundays' + (p.holidays ? ' + ' + p.holidays + ' holiday(s)' : '') + '). Approved paid leave counts as present; employees with no punches are paid in full.'); }
+        if (notes.length) { out += '<div class="card" style="padding:12px 16px;margin-bottom:14px;font-size:13px;color:var(--text2);background:#fffbeb;border:1px solid #fde68a">' + notes.join(' · ') + '</div>'; }
+        var th = ['Code', 'Employee']; if (p.lop) { th.push('Present'); th.push('Leave'); }
+        th = th.concat(['Basic', 'HRA', 'Gross', 'PF', 'ESI', 'PT', 'Deductions', 'Net']);
+        var thHtml = th.map(function (h) { var left = (h === 'Code' || h === 'Employee'); return '<th style="padding:10px 12px;text-align:' + (left ? 'left' : 'right') + ';font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        var rows = p.rows.map(function (r, i) {
+            var c = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+            var cr = c + ';text-align:right';
+            var info = r.note ? '<a onclick="pgNote(' + i + ')" style="cursor:pointer;color:#0891b2;margin-right:6px" title="How this pay was calculated"><i class="fas fa-circle-info"></i></a>' : '';
+            var cells = '<td style="' + c + ';font-weight:600">' + info + r.code + '</td><td style="' + c + '">' + r.name + '</td>';
+            if (p.lop) { cells += '<td style="' + cr + '">' + (r.presentDays != null ? r.presentDays : '—') + (r.lateCut ? ' <span style="color:#dc2626" title="late cut (days)">-' + r.lateCut + '</span>' : '') + (r.breakCut ? ' <span style="color:#b45309" title="break cut (days)">-' + r.breakCut + '</span>' : '') + '</td>'; cells += '<td style="' + cr + '">' + (r.leaveDays ? r.leaveDays : '—') + '</td>'; }
+            cells += '<td style="' + cr + '">' + inr(r.basic) + '</td><td style="' + cr + '">' + inr(r.hra) + '</td><td style="' + cr + ';font-weight:600">' + inr(r.gross) + '</td><td style="' + cr + '">' + inr(r.pf) + '</td><td style="' + cr + '">' + inr(r.esi) + '</td><td style="' + cr + '">' + inr(r.pt) + '</td><td style="' + cr + '">' + inr(r.ded) + '</td><td style="' + cr + ';font-weight:700;color:#4f46e5">' + inr(r.net) + '</td>';
+            var noteRow = r.note ? '<tr id="pgn_' + i + '" style="display:none"><td colspan="' + th.length + '" style="padding:10px 14px;background:#f8fafc;font-size:12px;line-height:1.6;color:var(--text2);white-space:normal"><b>How this was calculated:</b> ' + String(r.note).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>' : '';
+            return '<tr>' + cells + '</tr>' + noteRow;
+        }).join('');
+        out += '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + thHtml + '</tr></thead><tbody>'
+            + (p.rows.length ? rows : '<tr><td colspan="' + th.length + '" style="padding:30px;text-align:center;color:var(--text3)">No active employees with a CTC for this company.</td></tr>')
+            + '</tbody></table></div>';
+        if (p.rows.length) {
+            var genLabel = p.exists ? 'Regenerate draft' : 'Generate payroll';
+            out += '<div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-primary" onclick="pgGenerate()"><i class="fas fa-bolt"></i> ' + genLabel + ' — ' + p.totals.count + ' employees</button></div>';
+        }
+        return out;
+    }
+    // ---- Reports (real preview + CSV export over existing data) ---------------
+    var RPT_DATASETS = [
+        { key: 'employees', label: 'Employees', month: false },
+        { key: 'payslips', label: 'Payslips', month: true },
+        { key: 'leaves', label: 'Leave records', month: true },
+        { key: 'attendance', label: 'Attendance punches', month: true }
+    ];
+    window.rptSet = function (k, v) {
+        if (!window.__RPT) { return; }
+        window.__RPT[k] = v;
+        if (k === 'dataset') { window.__RPT.preview = null; if (typeof render === 'function') { render(); } }
+    };
+    window.rptLoad = function () {
+        var r = window.__RPT; if (!r) { return; }
+        var u = cfg.reportsPreviewUrl + '?dataset=' + encodeURIComponent(r.dataset) + '&month=' + encodeURIComponent(r.month || '') + '&company_id=' + encodeURIComponent(r.company || '');
+        fetch(u, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (x) { return x.json(); })
+            .then(function (j) { window.__RPT.preview = (j && j.ok) ? j : { error: (j && j.error) || 'Could not load' }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__RPT.preview = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    window.rptExport = function () {
+        var r = window.__RPT; if (!r) { return; }
+        window.location = cfg.reportsExportUrl + '?dataset=' + encodeURIComponent(r.dataset) + '&month=' + encodeURIComponent(r.month || '') + '&company_id=' + encodeURIComponent(r.company || '');
+    };
+    function reportsScreen() {
+        if (!window.__RPT) { window.__RPT = { dataset: 'employees', month: pgDefaultMonth(), company: '', preview: null }; }
+        var rpt = window.__RPT;
+        var cur = RPT_DATASETS.find(function (d) { return d.key === rpt.dataset; }) || RPT_DATASETS[0];
+        var inp = 'padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var dsSel = '<select onchange="rptSet(' + "'dataset'" + ',this.value)" style="' + inp + ';min-width:170px">' + RPT_DATASETS.map(function (d) { return '<option value="' + d.key + '"' + (d.key === rpt.dataset ? ' selected' : '') + '>' + d.label + '</option>'; }).join('') + '</select>';
+        var comps = (typeof DB !== 'undefined' && DB.companies) || [];
+        var compSel = '<select onchange="rptSet(' + "'company'" + ',this.value)" style="' + inp + '"><option value="">All companies</option>' + comps.map(function (c) { return '<option value="' + c.id + '"' + (String(c.id) === String(rpt.company) ? ' selected' : '') + '>' + c.name + '</option>'; }).join('') + '</select>';
+        var monthCtrl = cur.month ? '<div><label style="' + lbl + '">Month</label><input type="month" value="' + rpt.month + '" onchange="rptSet(' + "'month'" + ',this.value)" style="' + inp + '"></div>' : '';
+        var controls = '<div class="card" style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:16px;margin-bottom:14px">'
+            + '<div><label style="' + lbl + '">Dataset</label>' + dsSel + '</div>'
+            + '<div><label style="' + lbl + '">Company</label>' + compSel + '</div>'
+            + monthCtrl
+            + '<div style="margin-left:auto;display:flex;gap:10px"><button class="btn btn-outline" onclick="rptLoad()"><i class="fas fa-magnifying-glass"></i> Preview</button><button class="btn btn-primary" onclick="rptExport()"><i class="fas fa-file-csv"></i> Export CSV</button></div>'
+            + '</div>';
+        var out = pghead('Reports', 'Preview any dataset and export it to CSV', '') + controls;
+        var p = rpt.preview;
+        if (!p) { setTimeout(function () { if (!window.__RPT.preview) { rptLoad(); } }, 10); return out + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (p.error) { return out + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + String(p.error) + '</b></div></div>'; }
+        var cols = p.columns || []; var rows = p.rows || [];
+        var thHtml = cols.map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        var body = rows.map(function (r) {
+            var c = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+            return '<tr>' + cols.map(function (h) { var v = r[h]; return '<td style="' + c + '">' + (v === '' || v == null ? '—' : String(v)) + '</td>'; }).join('') + '</tr>';
+        }).join('');
+        var note = '<div style="font-size:13px;color:var(--text2);margin-bottom:10px">' + p.label + ': <b>' + p.count + '</b> row(s)' + (p.shown < p.count ? (' · showing first ' + p.shown + ' (full set in the CSV)') : '') + '</div>';
+        out += note + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + thHtml + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="' + (cols.length || 1) + '" style="padding:30px;text-align:center;color:var(--text3)">No data for this selection.</td></tr>')
+            + '</tbody></table></div>';
+        return out;
+    }
+    // ---- Live dashboard widgets + global search ------------------------------
+    window.__DASH = window.__DASH || {};
+    window.dashLoad = function () {
+        fetch(cfg.dashboardStatsUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) { window.__DASH.data = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__DASH.data = { cards: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    function dashboardScreen(id) {
+        var title = id === 'platform-dashboard' ? 'Platform Dashboard' : 'Dashboard';
+        var d = window.__DASH.data;
+        if (!d) { setTimeout(function () { if (!window.__DASH.data) { dashLoad(); } }, 10); return pghead(title, 'Loading live figures…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        var cards = d.cards || [];
+        var grid = '<div class="stats-grid" style="margin-bottom:16px">' + cards.map(function (c) {
+            return '<div class="stat-card"><div class="icon" style="background:' + c.color + '22;color:' + c.color + '"><i class="fas ' + (c.icon || 'fa-chart-simple') + '"></i></div><h3>' + c.value + '</h3><p>' + c.label + '</p></div>';
+        }).join('') + '</div>';
+        var links = d.scope === 'platform'
+            ? [['tenants', 'Tenants'], ['subscriptions', 'Subscriptions'], ['invoices', 'Invoices'], ['plans', 'Plans']]
+            : [['salary-approval', 'Salary Approval'], ['approvals-inbox', 'Approvals'], ['att-daily', 'Attendance'], ['compliance-alerts', 'Compliance'], ['reports', 'Reports']];
+        var quick = '<div class="card" style="margin-bottom:28px;padding:18px 24px"><div style="font-weight:700;font-size:14px;margin-bottom:12px"><i class="fas fa-bolt" style="color:#f97316;margin-right:7px"></i>Quick links</div><div style="display:flex;flex-wrap:wrap;gap:10px">'
+            + links.map(function (l) { return '<button class="btn btn-outline btn-sm" onclick="go(' + "'" + l[0] + "'" + ')">' + l[1] + '</button>'; }).join('') + '</div></div>';
+        var err = d.error ? '<div style="font-size:12px;color:var(--text3);margin-top:8px">' + d.error + '</div>' : '';
+        var ne = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+        var fmtDate = function (s) {
+            var p = String(s || '').slice(0, 10).split('-');
+            if (p.length !== 3) { return String(s || ''); }
+            var mn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            var mi = parseInt(p[1], 10) - 1;
+            return parseInt(p[2], 10) + ' ' + (mn[mi] || p[1]) + ' ' + p[0];
+        };
+        var notices = (d.notices && d.notices.length) ? '<div class="card" style="margin-bottom:16px;padding:18px 24px"><div style="font-weight:700;font-size:14px;margin-bottom:4px"><i class="fas fa-bullhorn" style="color:#f97316;margin-right:7px"></i>Notice Board</div>'
+            + d.notices.map(function (n) {
+                var when = n.date ? '<span style="background:#fff7ed;color:#c2410c;font-size:11px;font-weight:600;border-radius:20px;padding:2px 10px;white-space:nowrap;flex-shrink:0">' + fmtDate(n.date) + '</span>' : '';
+                var bdy = n.body ? '<div style="font-size:12.5px;color:var(--text2);margin-top:3px;line-height:1.55;white-space:pre-wrap">' + ne(n.body) + '</div>' : '';
+                return '<div style="padding:11px 0;border-top:1px solid var(--border)"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><div style="font-weight:600;font-size:13.5px">' + ne(n.title) + '</div>' + when + '</div>' + bdy + '</div>';
+            }).join('') + '</div>' : '';
+        return pghead(title, 'Live figures from your data', '<button class="btn btn-outline btn-sm" onclick="dashLoad()"><i class="fas fa-rotate"></i> Refresh</button>') + grid + (id === 'platform-dashboard' ? '' : lsDashCard()) + notices + quick + err;
+    }
+    // rev 79c: compact LIVE SALARY card on the dashboard (Ejaz) — big net figure
+    // always visible; the "How you earned it" entries are COLLAPSED by default
+    // and expand on click. Hidden quietly when the login has no employee view.
+    window.lsDashToggle = function () {
+        var x = document.getElementById('lsdash-ent');
+        var ic = document.getElementById('lsdash-chev');
+        if (!x) { return; }
+        var open = x.style.display === 'none';
+        x.style.display = open ? '' : 'none';
+        if (ic) { ic.className = open ? 'fas fa-chevron-up' : 'fas fa-chevron-down'; }
+    };
+    function lsDashCard() {
+        var d = window.__LS;
+        if (!d) {
+            setTimeout(function () { if (!window.__LS) { lsLoad(); } }, 10);
+            return '<div class="card" style="margin-bottom:16px;color:var(--text3);font-size:13px">Loading live salary…</div>';
+        }
+        if (!d.ok) { return ''; }
+        var e = d.employee || {}; var m = d.meta || {};
+        var n = (d.entries || []).length;
+        var rows = (d.entries || []).map(function (en) {
+            var pending = en.status === 'pending';
+            var info = en.status === 'info';
+            var col = en.sign === '+' ? '#86efac' : '#fca5a5';
+            return '<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid rgba(255,255,255,.12);font-size:12.5px' + (pending ? ';opacity:.6' : '') + '">'
+                + '<span><span style="opacity:.6;margin-right:8px">' + en.date + '</span><b>' + en.head + '</b>'
+                + (pending ? ' <span style="font-size:10px;background:rgba(254,243,199,.25);color:#fde68a;padding:1px 7px;border-radius:99px;text-transform:uppercase;font-weight:700">awaiting approval</span>' : '')
+                + (info ? ' <span style="font-size:10px;opacity:.6;text-transform:uppercase;font-weight:700">not counted</span>' : '')
+                + '<span style="opacity:.65;display:block;font-size:11.5px">' + (en.detail || '') + '</span></span>'
+                + '<b style="color:' + (pending || info ? 'rgba(255,255,255,.55)' : col) + ';white-space:nowrap">' + en.sign + ' ' + inr(en.amount) + '</b></div>';
+        }).join('');
+        return '<div class="card" style="margin-bottom:16px;background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'
+            + '<div><div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;opacity:.7"><i class="fas fa-bolt" style="margin-right:6px"></i>Live Salary &mdash; ' + e.name + ' (' + e.code + ')</div>'
+            + '<div style="font-size:32px;font-weight:800;margin-top:2px">' + inr(d.net) + '</div>'
+            + '<div style="font-size:12px;opacity:.75">earned till ' + m.today + ' &middot; ' + m.factorPct + '% of ' + m.monthLabel + ' &middot; projection ' + inr(m.fullMonthNet) + '</div></div>'
+            + '<div style="display:flex;gap:10px;align-items:center">'
+            + '<button class="btn btn-sm" style="background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.25)" onclick="lsDashToggle()"><i id="lsdash-chev" class="fas fa-chevron-down"></i> Entries (' + n + ')</button>'
+            + '<button class="btn btn-sm" style="background:#f97316;color:#fff;border:none" onclick="go(&#39;live-salary&#39;)">Open Live Salary</button>'
+            + '</div></div>'
+            + '<div id="lsdash-ent" style="display:none;margin-top:12px">' + (rows || '<div style="padding:10px 0;opacity:.7;font-size:12.5px">No entries yet this month</div>') + '</div>'
+            + '</div>';
+    }
+    function wireSearch(cfg) {
+        var bar = document.querySelector('.topbar-actions') || document.querySelector('.topbar');
+        if (!bar || document.getElementById('sp-search')) { return; }
+        var wrap = document.createElement('div');
+        wrap.style.cssText = 'position:relative;margin-right:8px';
+        var inp = document.createElement('input');
+        inp.id = 'sp-search'; inp.type = 'search'; inp.placeholder = 'Search employees…'; inp.className = 'sp-keep';
+        inp.style.cssText = 'padding:7px 11px;border:1px solid var(--border);border-radius:8px;font-size:13px;width:180px;background:#fff';
+        var dd = document.createElement('div');
+        dd.id = 'sp-search-dd';
+        dd.style.cssText = 'position:absolute;top:38px;right:0;width:300px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 28px rgba(0,0,0,.14);z-index:1200;display:none;max-height:360px;overflow:auto';
+        wrap.appendChild(inp); wrap.appendChild(dd);
+        var t = null;
+        inp.addEventListener('input', function () {
+            var q = inp.value.trim();
+            if (t) { clearTimeout(t); }
+            if (q.length < 2) { dd.style.display = 'none'; return; }
+            t = setTimeout(function () { spSearchRun(cfg, q, dd); }, 220);
+        });
+        document.addEventListener('click', function (e) { if (!wrap.contains(e.target)) { dd.style.display = 'none'; } });
+        bar.insertBefore(wrap, bar.firstChild);
+    }
+    function spSearchRun(cfg, q, dd) {
+        var screens = [];
+        try { if (typeof SCREENS !== 'undefined') { for (var k in SCREENS) { var s = SCREENS[k]; var ttl = (s && s.title) || k; if (String(ttl).toLowerCase().indexOf(q.toLowerCase()) >= 0) { screens.push([k, ttl]); } } } } catch (e) {}
+        screens = screens.slice(0, 6);
+        fetch(cfg.searchUrl + '?q=' + encodeURIComponent(q), { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                var emps = (j && j.employees) || [];
+                var html = '';
+                if (emps.length) {
+                    html += '<div style="padding:6px 12px;font-size:10px;text-transform:uppercase;color:var(--text3);letter-spacing:.4px">Employees</div>';
+                    html += emps.map(function (e) { return '<div class="sp-sr" data-screen="emp-list" style="padding:8px 12px;cursor:pointer;font-size:13px;border-top:1px solid var(--border)"><b>' + e.name + '</b> <span style="color:var(--text3)">' + e.code + '</span>' + (e.company ? '<br><span style="font-size:11px;color:var(--text3)">' + e.company + '</span>' : '') + '</div>'; }).join('');
+                }
+                if (screens.length) {
+                    html += '<div style="padding:6px 12px;font-size:10px;text-transform:uppercase;color:var(--text3);letter-spacing:.4px;border-top:1px solid var(--border)">Screens</div>';
+                    html += screens.map(function (s) { return '<div class="sp-sr" data-screen="' + s[0] + '" style="padding:8px 12px;cursor:pointer;font-size:13px;border-top:1px solid var(--border)">' + s[1] + '</div>'; }).join('');
+                }
+                if (!html) { html = '<div style="padding:14px 12px;color:var(--text3);font-size:13px">No matches.</div>'; }
+                dd.innerHTML = html; dd.style.display = 'block';
+                Array.prototype.forEach.call(dd.querySelectorAll('.sp-sr'), function (el) {
+                    el.onclick = function () { dd.style.display = 'none'; var sc = el.getAttribute('data-screen'); if (typeof go === 'function' && sc) { go(sc); } };
+                });
+            }).catch(function () { dd.innerHTML = '<div style="padding:14px 12px;color:var(--red);font-size:13px">Search failed.</div>'; dd.style.display = 'block'; });
+    }
+    // ---- App-wide employee avatars: default avatar everywhere + real photo when available ----
+    var DEFAULT_AVATAR = window.__DEFAULT_AVATAR = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMDAgMTAwJz48cmVjdCB3aWR0aD0nMTAwJyBoZWlnaHQ9JzEwMCcgZmlsbD0nI2UyZThmMCcvPjxjaXJjbGUgY3g9JzUwJyBjeT0nMzcnIHI9JzE3JyBmaWxsPScjOTRhM2I4Jy8+PHBhdGggZD0nTTIwIDg2YzAtMTcgMTMtMjggMzAtMjhzMzAgMTEgMzAgMjh6JyBmaWxsPScjOTRhM2I4Jy8+PC9zdmc+';
+    function decorateAvatars() {
+        try {
+            var map = window.__AVMAP;
+            if (typeof DB !== 'undefined' && DB.employees && (!map || window.__AVN !== DB.employees.length)) {
+                map = [];
+                DB.employees.forEach(function (e) {
+                    var photo = e.photo || '';
+                    // Match by emp-code (most reliable; shown in every table) AND by name.
+                    if (e.id) { map.push([String(e.id).trim().toLowerCase(), photo, 1]); }
+                    if (e.name) { map.push([String(e.name).trim().toLowerCase(), photo, 0]); }
+                });
+                // Longest keys first so EMP100 wins over EMP1, full names over partials.
+                map.sort(function (a, b) { return b[0].length - a[0].length; });
+                window.__AVMAP = map; window.__AVN = DB.employees.length;
+            }
+            map = window.__AVMAP || [];
+            // Returns {p: photoOrEmpty} when the text belongs to a known employee, else null.
+            function matchEmp(txt) {
+                txt = (txt || '').toLowerCase();
+                for (var k = 0; k < map.length; k++) {
+                    var key = map[k][0];
+                    if (key.length >= 3 && txt.indexOf(key) >= 0) { return { p: map[k][1] }; }
+                }
+                return null;
+            }
+            var main = document.querySelector('.content') || document.querySelector('.main-wrap') || document.body;
+            // Every employee avatar circle gets the default image; the real photo overrides it when found.
+            var avs = main.querySelectorAll('.avatar-sm, .emp-avatar');
+            for (var a = 0; a < avs.length; a++) {
+                var av = avs[a]; if (av.__av) { continue; }
+                var m = null, ctx = av;
+                for (var up = 0; up < 4 && ctx && !m; up++) { ctx = ctx.parentElement; if (ctx) { m = matchEmp(ctx.textContent); } }
+                av.style.backgroundImage = 'url("' + ((m && m.p) || DEFAULT_AVATAR) + '")';
+                av.style.backgroundSize = 'cover';
+                av.style.backgroundPosition = 'center';
+                av.style.backgroundRepeat = 'no-repeat';
+                av.style.color = 'transparent';
+                av.__av = 1;
+            }
+            // Plain tables: any row that belongs to a known employee gets an avatar in its first cell.
+            // Default silhouette always shows; a real uploaded photo overrides it. Non-employee tables
+            // (holidays, leave types, devices…) never match, so they are left untouched.
+            var rows = main.querySelectorAll('tbody tr');
+            for (var i = 0; i < rows.length; i++) {
+                var tr = rows[i]; if (tr.__av) { continue; }
+                var cell = tr.querySelector('td'); if (!cell) { tr.__av = 1; continue; }
+                // Skip rows whose first cell already shows an avatar (img, an avatar class, or a fa-user placeholder).
+                if (cell.querySelector('img') || cell.querySelector('.avatar-sm, .emp-avatar, .sp-av') || cell.querySelector('.fa-user')) { tr.__av = 1; continue; }
+                var em = matchEmp(tr.textContent);
+                if (em) {
+                    var img = document.createElement('img');
+                    img.src = em.p || DEFAULT_AVATAR; img.className = 'sp-av';
+                    img.style.cssText = 'width:28px;height:28px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:9px;background:#e2e8f0';
+                    cell.insertBefore(img, cell.firstChild);
+                    tr.__av = 1;
+                }
+            }
+        } catch (e) {}
+    }
+    function wireAvatars() {
+        try {
+            var main = document.querySelector('.content') || document.querySelector('.main-wrap');
+            if (!main || main.__avObs) { return; }
+            var t = null;
+            var obs = new MutationObserver(function () { if (t) { clearTimeout(t); } t = setTimeout(decorateAvatars, 150); });
+            obs.observe(main, { childList: true, subtree: true });
+            main.__avObs = true;
+            setTimeout(decorateAvatars, 250);
+        } catch (e) {}
+    }
+    // ---- Geo-Fence Map: real interactive map of all geofence rules -----------
+    window.__GEO = window.__GEO || null;
+    function geoLoad() {
+        fetch(cfg.masterBase + '/geofence', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__GEO = j || { rows: [] }; if (typeof render === 'function') { render(); } setTimeout(geoInitMap, 80); })
+            .catch(function () { window.__GEO = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function ensureLeaflet(cb) {
+        if (window.L) { return cb(); }
+        if (!document.getElementById('leaflet-css')) {
+            var lk = document.createElement('link'); lk.id = 'leaflet-css'; lk.rel = 'stylesheet';
+            lk.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'; document.head.appendChild(lk);
+        }
+        var iv = setInterval(function () { if (window.L) { clearInterval(iv); cb(); } }, 100);
+        setTimeout(function () { clearInterval(iv); }, 8000);
+        if (!window.__leafletLoading) {
+            window.__leafletLoading = true;
+            var sc = document.createElement('script'); sc.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+            document.body.appendChild(sc);
+        }
+    }
+    window.__geoMap = null; window.__geoMarkers = {};
+    function geoInitMap() {
+        var host = document.getElementById('geo-map'); if (!host) { return; }
+        var g = window.__GEO || { rows: [] };
+        var rows = (g.rows || []).filter(function (r) { return r.lat && r.lng; });
+        ensureLeaflet(function () {
+            try {
+                if (host.__map) { host.__map.remove(); host.__map = null; }
+                var center = rows.length ? [parseFloat(rows[0].lat), parseFloat(rows[0].lng)] : [17.385, 78.4867];
+                var map = L.map(host).setView(center, rows.length ? 14 : 11);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
+                host.__map = map; window.__geoMap = map; window.__geoMarkers = {};
+                var pts = [];
+                rows.forEach(function (r, i) {
+                    var la = parseFloat(r.lat), ln = parseFloat(r.lng), rad = (parseFloat(r.radius_km) || 0.25) * 1000;
+                    var strict = String(r.outside) === 'strict'; var color = strict ? '#dc2626' : '#f59e0b';
+                    var mk = L.marker([la, ln]).addTo(map);
+                    mk.bindPopup('<b>' + (r.employee || 'Employee') + '</b><br>Start: ' + (r.start || '&mdash;') + '<br>Radius: ' + (r.radius_km || '?') + ' km<br>Outside rule: ' + (r.outside || '&mdash;'));
+                    L.circle([la, ln], { radius: rad, color: color, fillColor: color, fillOpacity: 0.12, weight: 2 }).addTo(map);
+                    window.__geoMarkers[i] = mk; pts.push([la, ln]);
+                });
+                if (pts.length > 1) { map.fitBounds(pts, { padding: [40, 40] }); }
+                setTimeout(function () { map.invalidateSize(); }, 150);
+            } catch (e) {}
+        });
+    }
+    window.geoFocus = function (i) {
+        var r = ((window.__GEO && window.__GEO.rows) || [])[i]; if (!r || !window.__geoMap) { return; }
+        window.__geoMap.setView([parseFloat(r.lat), parseFloat(r.lng)], 16);
+        var mk = window.__geoMarkers[i]; if (mk) { mk.openPopup(); }
+    };
+    window.geoImportPick = function () { var el = document.getElementById('geo-import-file'); if (el) { el.value = ''; el.click(); } };
+    window.geoImportFile = function (input) {
+        var f = input.files && input.files[0]; if (!f) { return; }
+        var fd = new FormData(); fd.append('file', f);
+        if (typeof toast === 'function') { toast('Uploading…'); }
+        fetch(cfg.masterBase + '/geofence/import', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('Imported ' + j.count + ' rule(s)' + (j.skipped ? (' · ' + j.skipped + ' skipped') : '')); } window.__GEO = null; geoLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Import failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Import failed'); } });
+    };
+    function geofenceMapScreen() {
+        if (!window.__GEO) { setTimeout(geoLoad, 10); return pghead('Geo-Fence Map', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading map…</div></div>'; }
+        var g = window.__GEO; var rows = (g.rows || []);
+        setTimeout(geoInitMap, 80);
+        var manageBtn = '<a class="btn btn-outline" href="' + cfg.masterBase + '/geofence/template" style="margin-right:8px"><i class="fas fa-download"></i> Sample CSV</a>'
+            + '<button class="btn btn-outline" onclick="geoImportPick()" style="margin-right:8px"><i class="fas fa-file-import"></i> Import CSV</button>'
+            + '<button class="btn btn-primary" onclick="go(\'geofence-list\')"><i class="fas fa-list"></i> Manage Rules</button>'
+            + '<input id="geo-import-file" type="file" accept=".csv,.txt" style="display:none" onchange="geoImportFile(this)">';
+        if (g.error) { return pghead('Geo-Fence Map', 'Error', manageBtn) + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load geofence rules.</b></div></div>'; }
+        var list = rows.length ? rows.map(function (r, i) {
+            var strict = String(r.outside) === 'strict';
+            return '<div onclick="geoFocus(' + i + ')" style="padding:11px 14px;border-bottom:1px solid var(--border);cursor:pointer" onmouseover="this.style.background=\'#f8fafc\'" onmouseout="this.style.background=\'\'">'
+                + '<div style="font-weight:600;font-size:14px">' + (r.employee || 'Employee') + '</div>'
+                + '<div style="font-size:12px;color:var(--text3);margin-top:2px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (strict ? '#dc2626' : '#f59e0b') + ';margin-right:5px"></span>' + (r.start || '—') + ' · ' + (r.radius_km || '?') + ' km · ' + (r.outside || '—') + '</div></div>';
+        }).join('') : '<div style="padding:24px;text-align:center;color:var(--text3);font-size:13px">No geofence rules yet.<br>Add them under <b>Geo-Fence Rules</b>.</div>';
+        return pghead('Geo-Fence Map', rows.length + ' rule(s) · click an employee to zoom; red = strict, amber = lenient', manageBtn)
+            + '<div class="card" style="padding:0;overflow:hidden"><div style="display:flex;flex-wrap:wrap">'
+            + '<div style="width:260px;min-width:220px;border-right:1px solid var(--border);overflow:auto;max-height:560px">' + list + '</div>'
+            + '<div id="geo-map" style="flex:1;min-width:320px;height:560px;background:#eef2f7"></div>'
+            + '</div></div>';
+    }
+    // ---- How It Works: in-app guide to the key modules ------------------------
+    function howItWorksScreen() {
+        var card = function (icon, color, title, body) {
+            return '<div class="card" style="margin-bottom:0;padding:18px 20px"><div style="display:flex;align-items:flex-start;gap:14px"><div style="flex:0 0 auto;width:38px;height:38px;border-radius:10px;background:' + color + '22;color:' + color + ';display:flex;align-items:center;justify-content:center;font-size:16px"><i class="fas ' + icon + '"></i></div><div><div style="font-weight:700;font-size:14px;margin-bottom:3px">' + title + '</div><div style="font-size:12.5px;color:var(--text2);line-height:1.55">' + body + '</div></div></div></div>';
+        };
+        var cards = [
+            card('fa-fingerprint', '#10b981', 'Attendance &amp; Geo-fence', 'Staff punch in/out from the app, the desktop/mobile app, or a ZKTeco device (register it under Biometric Devices, set its IP, then Sync). Field staff can be GPS-fenced under Geo-Fence Rules — a punch outside the allowed area is blocked. The Attendance Report flags late arrivals (L1/L2/L3) and over-budget breaks per each company Late Policy.'),
+            card('fa-rupee-sign', '#6366f1', 'Payroll', 'Define each company pay structure under Salary Structure (Basic, HRA, allowances, deductions — per company, team, or one employee). Generate Payroll prorates by attendance, applies the Late Policy cuts, adds approved Commission for the month, and computes PF / ESI / PT / TDS. Every payslip carries a plain-English calc note. Flows into Salary Approval &rarr; Disburse &rarr; Bank file.'),
+            card('fa-plane-departure', '#f59e0b', 'Leave', 'Employees apply for leave; managers/HR approve. Approved PAID leave counts as present in payroll; unpaid (LOP) leave reduces pay. Holidays and week-offs are excluded from working days.'),
+            card('fa-trophy', '#8b5cf6', 'Points &amp; Rewards', 'Define Points Rules (e.g. Late arrival -5, Perfect attendance +20, Test passed +10). Once a month, click Auto-apply — the engine scans attendance, awards and tests and writes entries into the Points Ledger. Scores &amp; Leaderboard ranks everyone by total points.'),
+            card('fa-pen-to-square', '#0891b2', 'Tests &amp; Training', 'Build a question bank per Test (multiple-choice, marks, correct answer). Employees take the test in-app and are auto-scored; pass/fail feeds Test Results &amp; Reports.'),
+            card('fa-user-plus', '#16a34a', 'Recruitment &amp; Onboarding', 'Recruitment is a pipeline board (Applied &rarr; Screening &rarr; Interview &rarr; Offer &rarr; Hired); hiring creates a real employee. Each new hire gets an Onboarding checklist whose status advances as items are ticked.'),
+            card('fa-file-signature', '#ef4444', 'HR Letters &amp; Documents', 'Create reusable letter templates with placeholders, then generate a branded PDF for any employee/candidate and email it. Offer letters can carry an online acceptance link.'),
+            card('fa-star', '#eab308', 'Performance', 'A staged review: Draft &rarr; Self-review &rarr; Manager review &rarr; Finalized — each stage captures its own rating and comments.'),
+            card('fa-id-badge', '#3b82f6', 'My Space (every employee)', 'From the avatar menu, each employee sees their own profile, recent payslips (with download), this month attendance, recent leave, and the notice board.'),
+            card('fa-bullhorn', '#f97316', 'Messaging &amp; Notices', 'Broadcast to staff by Email, SMS or WhatsApp (configure providers under settings). Notice Board posts appear on everyone dashboard.')
+        ];
+        return pghead('How SmartPRS Works', 'A quick guide to each module — for admins and employees', '')
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:980px">' + cards.join('') + '</div>'
+            + '<div style="max-width:980px;margin-top:14px;font-size:12px;color:var(--text3)">Tip: most config screens (Late Policy, Salary Structure, Points Rules) have an in-form guide — open Add/Edit to see worked examples.</div>';
+    }
+    // ---- Tests engine: question bank (admin) + take-test + auto-score ---------
+    window.__TESTS = window.__TESTS || null;
+    function teEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+    function testsLoad() {
+        fetch(cfg.testsBase + '/list', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__TESTS = j || { tests: [] }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__TESTS = { tests: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function testsScreen() {
+        if (!window.__TESTS) { setTimeout(testsLoad, 10); return pghead('Tests', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        var d = window.__TESTS;
+        if (d.error) { return pghead('Tests', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + teEsc(d.error) + '</b></div></div>'; }
+        var mgr = d.isManager;
+        var c = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+        var th = ['Test', 'Category', 'Pass %', 'Questions', 'My Result', ''];
+        var thHtml = th.map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
+        var rows = (d.tests || []).map(function (t) {
+            var res = t.my_status ? '<span style="background:' + (t.my_status === 'passed' ? '#16a34a' : '#dc2626') + ';color:#fff;font-size:11px;padding:2px 8px;border-radius:8px;font-weight:700">' + String(t.my_status).toUpperCase() + ' ' + (t.my_score != null ? t.my_score + '%' : '') + '</span>' : '<span style="color:var(--text3)">—</span>';
+            var acts = '';
+            if (mgr) { acts += '<button class="btn btn-outline btn-sm" onclick="testQOpen(' + t.id + ')"><i class="fas fa-list-check"></i> Questions</button> '; }
+            if (t.questions > 0 && d.hasEmployee) { acts += '<button class="btn btn-primary btn-sm" onclick="testTakeOpen(' + t.id + ')"><i class="fas fa-pen-to-square"></i> Take Test</button>'; }
+            if (t.questions === 0 && !mgr) { acts = '<span style="color:var(--text3);font-size:12px">No questions yet</span>'; }
+            return '<tr><td style="' + c + ';font-weight:600">' + teEsc(t.name) + '</td><td style="' + c + '">' + teEsc(t.category) + '</td><td style="' + c + '">' + t.pass_mark + '%</td><td style="' + c + '">' + t.questions + '</td><td style="' + c + '">' + res + '</td><td style="' + c + ';text-align:right;white-space:nowrap">' + acts + '</td></tr>';
+        }).join('');
+        var act = mgr ? '<button class="btn btn-outline btn-sm" onclick="testsLoad()"><i class="fas fa-rotate"></i> Refresh</button> <button class="btn btn-primary btn-sm" onclick="masterEdit(\'tests\')"><i class="fas fa-plus"></i> Add Test</button>' : '<button class="btn btn-outline btn-sm" onclick="testsLoad()"><i class="fas fa-rotate"></i> Refresh</button>';
+        var sub = mgr ? 'Manage each test question bank; employees take tests and are auto-scored.' : 'Take your assigned tests — you are scored instantly.';
+        return pghead('Tests', sub, act)
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + thHtml + '</tr></thead><tbody>'
+            + ((d.tests && d.tests.length) ? rows : '<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--text3)">No tests yet. Click Add Test, then Refresh.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    function testModal() { var m = document.getElementById('test-modal') || (function () { var x = document.createElement('div'); x.id = 'test-modal'; document.body.appendChild(x); return x; })(); m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1100;display:flex;align-items:flex-start;justify-content:center;padding:32px 16px;overflow:auto'; m.style.display = 'flex'; return m; }
+    window.testQOpen = function (testId) { var t = ((window.__TESTS && window.__TESTS.tests) || []).filter(function (x) { return x.id === testId; })[0] || {}; window.__TQ = { id: testId, name: t.name || 'Test', questions: null }; testQFetch(); testQRender(); };
+    function testQFetch() { if (!window.__TQ) { return; } fetch(cfg.testsBase + '/' + window.__TQ.id + '/questions', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' }).then(function (r) { return r.json(); }).then(function (j) { if (window.__TQ) { window.__TQ.questions = (j && j.questions) || []; testQRender(); } }).catch(function () {}); }
+    function testQRender() {
+        var tq = window.__TQ; if (!tq) { return; }
+        var m = testModal();
+        var inp = 'width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;background:#f8fafc';
+        var list = tq.questions == null ? '<div style="color:var(--text3);padding:10px">Loading…</div>'
+            : (tq.questions.length ? tq.questions.map(function (q, i) {
+                var opts = ['a', 'b', 'c', 'd'].map(function (k) { var v = q['opt_' + k]; if (!v) { return ''; } var ok = String(q.correct).toLowerCase() === k; return '<div style="font-size:12px;' + (ok ? 'color:#16a34a;font-weight:700' : 'color:var(--text2)') + '">' + k.toUpperCase() + ') ' + teEsc(v) + (ok ? ' ✓' : '') + '</div>'; }).join('');
+                return '<div style="padding:10px 0;border-top:1px solid var(--border)"><div style="font-weight:600;font-size:13px">' + (i + 1) + '. ' + teEsc(q.question) + ' <span style="color:var(--text3);font-weight:400">(' + (q.marks || 1) + ' mark)</span> <a onclick="testQDelete(' + q.id + ')" style="cursor:pointer;color:var(--red);float:right"><i class="fas fa-trash"></i></a></div>' + opts + '</div>';
+            }).join('') : '<div style="color:var(--text3);padding:10px">No questions yet — add the first below.</div>');
+        m.innerHTML = '<div class="card" style="max-width:640px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px">Questions — ' + teEsc(tq.name) + '</h3><button class="btn btn-outline btn-sm" onclick="testQClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:14px 20px;max-height:300px;overflow:auto">' + list + '</div>'
+            + '<div style="padding:14px 20px;border-top:1px solid var(--border);background:#f8fafc">'
+            + '<div style="font-weight:700;font-size:13px;margin-bottom:8px">Add a question</div>'
+            + '<textarea id="tq_q" rows="2" placeholder="Question text" style="' + inp + ';margin-bottom:8px"></textarea>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px"><input id="tq_a" placeholder="Option A" style="' + inp + '"><input id="tq_b" placeholder="Option B" style="' + inp + '"><input id="tq_c" placeholder="Option C" style="' + inp + '"><input id="tq_d" placeholder="Option D" style="' + inp + '"></div>'
+            + '<div style="display:flex;gap:10px;align-items:center"><label style="font-size:12px">Correct <select id="tq_correct" style="' + inp + ';width:auto"><option value="a">A</option><option value="b">B</option><option value="c">C</option><option value="d">D</option></select></label><label style="font-size:12px">Marks <input id="tq_marks" type="number" value="1" style="' + inp + ';width:70px"></label><button class="btn btn-primary btn-sm" onclick="testQSave()" style="margin-left:auto"><i class="fas fa-plus"></i> Add</button></div>'
+            + '</div></div>';
+    }
+    window.testQSave = function () {
+        var tq = window.__TQ; if (!tq) { return; }
+        var g = function (id) { return (document.getElementById(id) || {}).value || ''; };
+        if (!g('tq_q').trim()) { if (typeof toast === 'function') { toast('Question text is required'); } return; }
+        var body = { test_id: tq.id, question: g('tq_q'), opt_a: g('tq_a'), opt_b: g('tq_b'), opt_c: g('tq_c'), opt_d: g('tq_d'), correct: g('tq_correct') || 'a', marks: g('tq_marks') || 1 };
+        fetch(cfg.testsBase + '/questions', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body) })
+            .then(function (r) { return r.json(); }).then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Question added'); } testQFetch(); } else if (typeof toast === 'function') { toast((j && j.error) || 'Could not save'); } }).catch(function () { if (typeof toast === 'function') { toast('Could not save'); } });
+    };
+    window.testQDelete = function (id) { if (!window.confirm('Delete this question?')) { return; } fetch(cfg.testsBase + '/questions/' + id + '/delete', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } }).then(function (r) { return r.json(); }).then(function () { testQFetch(); }).catch(function () {}); };
+    window.testQClose = function () { window.__TQ = null; var m = document.getElementById('test-modal'); if (m) { m.style.display = 'none'; } testsLoad(); };
+    window.testTakeOpen = function (testId) {
+        fetch(cfg.testsBase + '/' + testId + '/take', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not load test'); } return; }
+                window.__TT = { test: j.test, questions: j.questions, answers: {} }; testTakeRender();
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not load test'); } });
+    };
+    function testTakeRender() {
+        var tt = window.__TT; if (!tt) { return; }
+        var m = testModal();
+        var qs = tt.questions.map(function (q, i) {
+            var opts = ['a', 'b', 'c', 'd'].map(function (k) { var v = q['opt_' + k]; if (!v) { return ''; } return '<label style="display:block;padding:5px 0;font-size:13px;cursor:pointer"><input type="radio" name="tt_' + q.id + '" onchange="testTakeAns(' + q.id + ',\'' + k + '\')"> ' + k.toUpperCase() + ') ' + teEsc(v) + '</label>'; }).join('');
+            return '<div style="padding:12px 0;border-top:1px solid var(--border)"><div style="font-weight:600;font-size:13px;margin-bottom:4px">' + (i + 1) + '. ' + teEsc(q.question) + '</div>' + opts + '</div>';
+        }).join('');
+        m.innerHTML = '<div class="card" style="max-width:600px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px">' + teEsc(tt.test.name) + ' <span style="color:var(--text3);font-weight:400;font-size:13px">(pass ' + tt.test.pass_mark + '%)</span></h3><button class="btn btn-outline btn-sm" onclick="testTakeClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:8px 20px;max-height:380px;overflow:auto">' + qs + '</div>'
+            + '<div style="padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px"><button class="btn btn-outline" onclick="testTakeClose()">Cancel</button><button class="btn btn-primary" onclick="testSubmit()"><i class="fas fa-check"></i> Submit &amp; Score</button></div>'
+            + '</div>';
+    }
+    window.testTakeAns = function (qid, opt) { if (window.__TT) { window.__TT.answers[qid] = opt; } };
+    window.testSubmit = function () {
+        var tt = window.__TT; if (!tt) { return; }
+        if (!window.confirm('Submit your answers for scoring?')) { return; }
+        fetch(cfg.testsBase + '/' + tt.test.id + '/submit', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ answers: tt.answers }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) {
+                    var m = testModal();
+                    m.innerHTML = '<div class="card" style="max-width:420px;width:100%;text-align:center;padding:28px 24px"><div style="font-size:40px;color:' + (j.passed ? '#16a34a' : '#dc2626') + '"><i class="fas fa-' + (j.passed ? 'circle-check' : 'circle-xmark') + '"></i></div><h3 style="margin:10px 0 4px">' + (j.passed ? 'Passed' : 'Not passed') + '</h3><div style="font-size:15px;color:var(--text2)">Scored <b>' + j.score + '%</b> (' + j.earned + '/' + j.total + '), pass mark ' + j.pass_mark + '%.</div><button class="btn btn-primary" style="margin-top:18px" onclick="testTakeClose()">Done</button></div>';
+                    window.__TT = null; testsLoad();
+                } else if (typeof toast === 'function') { toast((j && j.error) || 'Could not submit'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not submit'); } });
+    };
+    window.testTakeClose = function () { window.__TT = null; var m = document.getElementById('test-modal'); if (m) { m.style.display = 'none'; } };
+    // ---- Workflow screens: Onboarding checklist + Performance review ----------
+    function wfBadge(s) {
+        var map = { pending: ['#94a3b8', 'Pending'], in_progress: ['#f59e0b', 'In Progress'], completed: ['#16a34a', 'Completed'], draft: ['#94a3b8', 'Draft'], self_done: ['#3b82f6', 'Self-review done'], reviewed: ['#8b5cf6', 'Manager reviewed'], finalized: ['#16a34a', 'Finalized'] };
+        var m = map[s] || ['#94a3b8', s || '—'];
+        return '<span style="background:' + m[0] + ';color:#fff;font-size:11px;padding:2px 9px;border-radius:9px;font-weight:700">' + m[1] + '</span>';
+    }
+    window.__ONB = window.__ONB || null;
+    function onbLoad() {
+        fetch(cfg.onboardingBase + '/board', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__ONB = j || { rows: [] }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__ONB = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function onboardingScreen() {
+        if (!window.__ONB) { setTimeout(onbLoad, 10); return pghead('Onboarding', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        var d = window.__ONB;
+        if (d.error) { return pghead('Onboarding', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + teEsc(d.error) + '</b></div></div>'; }
+        var act = '<button class="btn btn-outline btn-sm" onclick="onbLoad()"><i class="fas fa-rotate"></i> Refresh</button> <button class="btn btn-primary btn-sm" onclick="masterEdit(\'onboarding-board\')"><i class="fas fa-plus"></i> New Hire</button>';
+        var cards = (d.rows || []).map(function (r) {
+            var pct = r.total ? Math.round(r.done * 100 / r.total) : 0;
+            var items = (r.items || []).map(function (it) {
+                return '<label style="display:block;padding:4px 0;font-size:13px;cursor:pointer"><input type="checkbox" ' + (it.done ? 'checked' : '') + ' onchange="onbToggle(' + it.id + ')"> ' + (it.done ? '<span style="color:var(--text3);text-decoration:line-through">' : '') + teEsc(it.label) + (it.done ? '</span>' : '') + '</label>';
+            }).join('');
+            var trBadge = r.transfer ? ' <span style="background:#ede9fe;color:#6d28d9;font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;text-transform:uppercase">Transfer</span>' : '';
+            var assignLink = (r.transfer && r.employeeCode)
+                ? '<div style="margin:2px 0 6px"><a onclick="editEmployee(&#39;' + r.employeeCode + '&#39;)" style="font-size:12.5px;color:var(--accent);font-weight:700;cursor:pointer"><i class="fas fa-user-gear"></i> Assign role, manager &amp; team</a></div>'
+                : '';
+            return '<div class="card" style="margin-bottom:12px;max-width:560px"><div style="display:flex;justify-content:space-between;align-items:center"><div><b>' + empNameLink(teEsc(r.employee), r.employeeCode || r.employee) + '</b>' + trBadge + ' <span style="color:var(--text3);font-size:12px">joined ' + (r.joined_on ? String(r.joined_on).slice(0, 10) : '—') + '</span></div>' + wfBadge(r.status) + '</div>'
+                + '<div style="height:6px;background:#e2e8f0;border-radius:3px;margin:8px 0"><div style="height:6px;border-radius:3px;background:#16a34a;width:' + pct + '%"></div></div>'
+                + '<div style="font-size:12px;color:var(--text3);margin-bottom:6px">' + r.done + ' / ' + r.total + ' done</div>' + assignLink + items + '</div>';
+        }).join('');
+        return pghead('Onboarding', 'A checklist per new hire — ticking items advances the status automatically', act)
+            + (d.rows && d.rows.length ? cards : '<div class="card"><div style="padding:30px;text-align:center;color:var(--text3)">No onboarding records yet. Click New Hire, then Refresh.</div></div>');
+    }
+    window.onbToggle = function (itemId) {
+        fetch(cfg.onboardingBase + '/item/' + itemId + '/toggle', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); }).then(function (j) { if (j && j.ok) { onbLoad(); } else if (typeof toast === 'function') { toast((j && j.error) || 'Could not update'); } }).catch(function () { if (typeof toast === 'function') { toast('Could not update'); } });
+    };
+    window.__PERF = window.__PERF || null;
+    function perfLoad() {
+        fetch(cfg.performanceBase + '/board', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__PERF = j || { rows: [] }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__PERF = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function performanceScreen() {
+        if (!window.__PERF) { setTimeout(perfLoad, 10); return pghead('Performance', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        var d = window.__PERF;
+        if (d.error) { return pghead('Performance', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + teEsc(d.error) + '</b></div></div>'; }
+        var c = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+        var th = ['Employee', 'Cycle', 'Stage', 'Self', 'Manager', 'Final', 'Next action'];
+        var thHtml = th.map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
+        var rows = (d.rows || []).map(function (r) {
+            var nb;
+            if (!r.status || r.status === 'draft') { nb = '<button class="btn btn-primary btn-sm" onclick="perfAct(' + r.id + ',\'self\')">Self-review</button>'; }
+            else if (r.status === 'self_done') { nb = '<button class="btn btn-primary btn-sm" onclick="perfAct(' + r.id + ',\'manager\')">Manager review</button>'; }
+            else if (r.status === 'reviewed') { nb = '<button class="btn btn-primary btn-sm" onclick="perfAct(' + r.id + ',\'finalize\')">Finalize</button>'; }
+            else { nb = '<span style="color:var(--text3)">Done</span>'; }
+            var dash = '<span style="color:var(--text3)">—</span>';
+            return '<tr><td style="' + c + ';font-weight:600">' + teEsc(r.employee) + '</td><td style="' + c + '">' + teEsc(r.cycle) + '</td><td style="' + c + '">' + wfBadge(r.status) + '</td>'
+                + '<td style="' + c + '">' + (r.self_rating != null ? r.self_rating : dash) + '</td><td style="' + c + '">' + (r.manager_rating != null ? r.manager_rating : dash) + '</td><td style="' + c + ';font-weight:700">' + (r.final_rating != null ? r.final_rating : dash) + '</td><td style="' + c + '">' + nb + '</td></tr>';
+        }).join('');
+        var act = '<button class="btn btn-outline btn-sm" onclick="perfLoad()"><i class="fas fa-rotate"></i> Refresh</button> <button class="btn btn-primary btn-sm" onclick="masterEdit(\'performance\')"><i class="fas fa-plus"></i> New Review</button>';
+        return pghead('Performance', 'Review workflow: Draft → Self-review → Manager review → Finalized', act)
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + thHtml + '</tr></thead><tbody>'
+            + (d.rows && d.rows.length ? rows : '<tr><td colspan="7" style="padding:30px;text-align:center;color:var(--text3)">No reviews yet. Click New Review, then Refresh.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.perfAct = function (id, action) {
+        var rec = ((window.__PERF && window.__PERF.rows) || []).filter(function (x) { return x.id === id; })[0] || {};
+        var title = action === 'self' ? 'Self-review' : (action === 'manager' ? 'Manager review' : 'Finalize review');
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var ctx = '';
+        if (action === 'manager' && rec.self_comments) { ctx = '<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px;font-size:12px;margin-bottom:12px"><b>Self-review:</b> ' + teEsc(rec.self_comments) + (rec.self_rating != null ? ' (rated ' + rec.self_rating + ')' : '') + '</div>'; }
+        if (action === 'finalize') { ctx = '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:10px;font-size:12px;margin-bottom:12px">Self ' + (rec.self_rating != null ? rec.self_rating : '—') + ' · Manager ' + (rec.manager_rating != null ? rec.manager_rating : '—') + '. Set the final rating.</div>'; }
+        var fields = '<div style="margin-bottom:12px"><label style="' + lbl + '">Rating (1–5)</label><input id="pf_rating" type="number" min="1" max="5" step="0.5" value="' + (action === 'finalize' && rec.manager_rating != null ? rec.manager_rating : '') + '" style="' + inp + '"></div>';
+        if (action !== 'finalize') { fields += '<div style="margin-bottom:12px"><label style="' + lbl + '">Comments</label><textarea id="pf_comments" rows="4" style="' + inp + ';resize:vertical">' + teEsc(action === 'self' ? rec.self_comments : rec.manager_comments) + '</textarea></div>'; }
+        if (action === 'self') { fields += '<div style="margin-bottom:12px"><label style="' + lbl + '">Goals (next cycle)</label><textarea id="pf_goals" rows="3" style="' + inp + ';resize:vertical">' + teEsc(rec.goals) + '</textarea></div>'; }
+        var m = testModal();
+        m.innerHTML = '<div class="card" style="max-width:520px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px">' + title + ' — ' + teEsc(rec.employee) + '</h3><button class="btn btn-outline btn-sm" onclick="perfClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:18px 20px">' + ctx + fields + '</div>'
+            + '<div style="padding:0 20px 18px;display:flex;justify-content:flex-end;gap:10px"><button class="btn btn-outline" onclick="perfClose()">Cancel</button><button class="btn btn-primary" onclick="perfSubmit(' + id + ',\'' + action + '\')"><i class="fas fa-check"></i> Save</button></div>'
+            + '</div>';
+    };
+    window.perfClose = function () { var m = document.getElementById('test-modal'); if (m) { m.style.display = 'none'; } };
+    window.perfSubmit = function (id, action) {
+        var g = function (k) { var el = document.getElementById(k); return el ? el.value : ''; };
+        var body = { action: action, rating: g('pf_rating'), comments: g('pf_comments'), goals: g('pf_goals') };
+        fetch(cfg.performanceBase + '/' + id + '/advance', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body) })
+            .then(function (r) { return r.json(); }).then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Saved'); } perfClose(); perfLoad(); } else if (typeof toast === 'function') { toast((j && j.error) || 'Could not save'); } }).catch(function () { if (typeof toast === 'function') { toast('Could not save'); } });
+    };
+    // ---- Computed statutory reports (Gratuity / Professional Tax) -------------
+    var STAT_TITLES = { gratuity: 'Gratuity', pt: 'Professional Tax', 'live-salary': 'Live Salary', 'points-scores': 'Points Leaderboard', 'test-reports': 'Test Reports', attrition: 'Attrition', 'activity-logs': 'Activity Logs' };
+    var STAT_STATUTORY = { gratuity: 1, pt: 1 };
+    window.__STATRPT = window.__STATRPT || {};
+    window.statRptLoad = function (id) {
+        var base = STAT_STATUTORY[id] ? cfg.statutoryReportBase : cfg.computedBase;
+        fetch(base + '/' + id, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (x) { return x.json(); })
+            .then(function (j) { window.__STATRPT[id] = (j && j.ok) ? j : { error: (j && j.error) || 'Could not load' }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__STATRPT[id] = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    window.srNote = function (id, i) { var el = document.getElementById('sr_' + id + '_' + i); if (el) { el.style.display = el.style.display === 'none' ? '' : 'none'; } };
+    window.pointsAutoApply = function () {
+        var def = new Date().toISOString().slice(0, 7);
+        var m = window.prompt('Auto-apply attendance points rules for which month? Format YYYY-MM. Rules whose Event contains late, absent or perfect attendance are applied from that month attendance.', def);
+        if (!m) { return; }
+        fetch(cfg.pointsAutoApplyUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ month: m }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Applied'); } window.__STATRPT['points-scores'] = null; statRptLoad('points-scores'); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not apply'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not apply'); } });
+    };
+    function statRptScreen(id) {
+        var title = STAT_TITLES[id] || 'Statutory';
+        var d = window.__STATRPT[id];
+        if (!d) { setTimeout(function () { if (!window.__STATRPT[id]) { statRptLoad(id); } }, 10); return pghead(title, 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead(title, 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + String(d.error) + '</b></div></div>'; }
+        var cols = d.columns || []; var rows = d.rows || [];
+        var moneyCols = { 'Monthly Basic': 1, 'Gratuity': 1, 'Monthly Gross': 1, 'Monthly PT': 1, 'Annual PT': 1 };
+        var thHtml = cols.map(function (h) { var num = moneyCols[h]; return '<th style="padding:10px 12px;text-align:' + (num ? 'right' : 'left') + ';font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        var body = rows.map(function (r, i) {
+            var c = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+            var tds = cols.map(function (h, ci) {
+                var v = r[h]; var num = moneyCols[h]; var disp = (v === '' || v == null) ? '—' : (num ? inr(v) : String(v));
+                var info = (ci === 0 && r._note) ? '<a onclick="srNote(\'' + id + '\',' + i + ')" style="cursor:pointer;color:#0891b2;margin-right:6px" title="How this pay was calculated"><i class="fas fa-circle-info"></i></a>' : '';
+                return '<td style="' + c + (num ? ';text-align:right' : '') + (h === 'Code' ? ';font-weight:600' : '') + '">' + info + disp + '</td>';
+            }).join('');
+            var noteRow = r._note ? '<tr id="sr_' + id + '_' + i + '" style="display:none"><td colspan="' + cols.length + '" style="padding:10px 14px;background:#f8fafc;font-size:12px;line-height:1.6;color:var(--text2);white-space:normal"><b>How this was calculated:</b> ' + String(r._note).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>' : '';
+            return '<tr>' + tds + '</tr>' + noteRow;
+        }).join('');
+        var note = d.note ? '<div class="card" style="padding:12px 16px;margin-bottom:14px;font-size:13px;color:var(--text2);background:#f0f9ff;border:1px solid #bae6fd">' + d.note + '</div>' : '';
+        var act = (id === 'points-scores') ? '<button class="btn btn-primary btn-sm" onclick="pointsAutoApply()"><i class="fas fa-wand-magic-sparkles"></i> Auto-apply rules</button>' : '';
+        return pghead(title, d.label || '', act) + note
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + thHtml + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="' + (cols.length || 1) + '" style="padding:30px;text-align:center;color:var(--text3)">No active employees.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    // ---- SaaS billing (super admin): subscriptions / invoices / payments / gateways
+    window.__BILL = window.__BILL || {};
+    function billPost(path, body, cb) {
+        fetch(cfg.billingBase + path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body || {}) })
+            .then(function (r) { return r.json(); }).then(cb).catch(function () { if (typeof toast === 'function') { toast('Request failed'); } });
+    }
+    window.billLoad = function (tab) {
+        var path = tab === 'subscriptions' ? '/subscriptions' : (tab === 'invoices' ? '/invoices' : (tab === 'payments' ? '/payments' : '/gateways'));
+        fetch(cfg.billingBase + path, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) { window.__BILL[tab] = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__BILL[tab] = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    function billTh(arr) { return arr.map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join(''); }
+    function billTable(thHtml, body, ncol) { return '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + thHtml + '</tr></thead><tbody>' + (body || '<tr><td colspan="' + ncol + '" style="padding:30px;text-align:center;color:var(--text3)">No records yet.</td></tr>') + '</tbody></table></div>'; }
+    function billingScreen(tab) {
+        var titles = { subscriptions: 'Subscriptions', invoices: 'Invoices', payments: 'Payments', gateways: 'Payment Gateways' };
+        var title = titles[tab] || 'Billing';
+        var d = window.__BILL[tab];
+        if (!d) { setTimeout(function () { if (!window.__BILL[tab]) { billLoad(tab); } }, 10); return pghead(title, 'Loading…', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead(title, 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + String(d.error) + '</b></div></div>'; }
+        var cs = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+        if (tab === 'subscriptions') {
+            var rows = (d.rows || []).map(function (r) {
+                var exp = '—';
+                if (r.daysLeft !== null && r.daysLeft !== undefined) {
+                    if (r.lifecycle === 'locked') { exp = '<span style="color:#b91c1c;font-weight:700">LOCKED</span>'; }
+                    else if (r.lifecycle === 'grace') { exp = '<span style="color:#b45309;font-weight:700">GRACE (' + Math.abs(r.daysLeft) + 'd over)</span>'; }
+                    else if (r.daysLeft <= 15) { exp = '<span style="color:var(--accent);font-weight:700">' + r.daysLeft + ' days</span>'; }
+                    else { exp = r.daysLeft + ' days'; }
+                }
+                return '<tr><td style="' + cs + ';font-weight:600">' + r.tenant + '</td><td style="' + cs + '">' + r.plan + '</td><td style="' + cs + ';text-align:right">' + r.seats + '</td><td style="' + cs + ';text-align:right">' + (r.companies || 1) + '</td><td style="' + cs + '">' + r.cycle + '</td><td style="' + cs + ';text-align:right">' + inr(r.amount) + '</td><td style="' + cs + '">' + r.status + '</td><td style="' + cs + '">' + (r.renewal || '—') + '</td><td style="' + cs + '">' + exp + '</td><td style="' + cs + ';text-align:right"><button class="btn btn-sm btn-outline" onclick="billSubEdit(' + r.tenantId + ')">Edit</button></td></tr>';
+            }).join('');
+            var alertRows = (d.alerts || []).map(function (a) {
+                var stc = a.status === 'sent' ? '#15803d' : (a.status === 'failed' ? '#b91c1c' : 'var(--text3)');
+                return '<tr><td style="' + cs + '">' + a.at + '</td><td style="' + cs + ';font-weight:600">' + a.tenant + '</td><td style="' + cs + '">' + a.kind + '</td><td style="' + cs + '">' + a.channel + '</td><td style="' + cs + '"><span style="color:' + stc + ';font-weight:700;text-transform:uppercase;font-size:11px">' + a.status + '</span></td><td style="' + cs + '">' + (a.detail || '') + '</td></tr>';
+            }).join('');
+            if (!alertRows) { alertRows = '<tr><td colspan="6" style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No alerts sent yet — reminders go out daily at 08:00 (15/7/3/1 days before expiry, expiry day, and through the 7-day grace).</td></tr>'; }
+            var thA = 'padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)';
+            var alertCard = '<div class="card" style="padding:0;overflow:auto;margin-top:16px">'
+                + '<div style="padding:14px 18px;font-weight:700;border-bottom:1px solid var(--border)">Expiry alert log <span style="font-weight:500;color:var(--text3);font-size:12px">(email + WhatsApp reminders sent to clients)</span></div>'
+                + '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + thA + '">Sent at</th><th style="' + thA + '">Tenant</th><th style="' + thA + '">Alert</th><th style="' + thA + '">Channel</th><th style="' + thA + '">Status</th><th style="' + thA + '">To</th></tr></thead><tbody>' + alertRows + '</tbody></table></div>';
+            return pghead('Subscriptions', 'Each tenant’s plan, seats & billing cycle', '') + billTable(billTh(['Tenant', 'Plan', 'Seats', 'Companies', 'Cycle', 'Amount', 'Status', 'Renewal', 'Expiry', '']), rows, 10) + alertCard;
+        }
+        if (tab === 'invoices') {
+            var gen = '<button class="btn btn-primary" onclick="billGenInvoice()"><i class="fas fa-file-invoice-dollar"></i> Generate invoice</button>';
+            var rows2 = (d.rows || []).map(function (r) {
+                var view = '<button class="btn btn-sm btn-outline" onclick="billInvoicePdf(' + r.id + ')">PDF</button> <button class="btn btn-sm btn-outline" onclick="billEmailInvoice(' + r.id + ')">Email</button>';
+                var act = (r.status === 'due' || r.status === 'overdue') ? (view + ' <button class="btn btn-sm btn-outline" onclick="billPay(' + r.id + ')">Mark paid (test)</button> <button class="btn btn-sm btn-primary" onclick="billRazorpay(' + r.id + ')">Razorpay</button>') : view;
+                return '<tr><td style="' + cs + ';font-weight:600">' + r.number + '</td><td style="' + cs + '">' + r.tenant + '</td><td style="' + cs + ';text-align:right">' + inr(r.amount) + '</td><td style="' + cs + ';text-align:right">' + inr(r.tax) + '</td><td style="' + cs + ';text-align:right;font-weight:600">' + inr(r.total) + '</td><td style="' + cs + '">' + r.status + '</td><td style="' + cs + '">' + (r.due || '—') + '</td><td style="' + cs + '">' + act + '</td></tr>';
+            }).join('');
+            return pghead('Invoices', 'Generate + collect tenant invoices (GST 18%)', gen) + billTable(billTh(['Number', 'Tenant', 'Amount', 'Tax', 'Total', 'Status', 'Due', '']), rows2, 8);
+        }
+        if (tab === 'payments') {
+            var rows3 = (d.rows || []).map(function (r) {
+                return '<tr><td style="' + cs + '">' + r.invoice + '</td><td style="' + cs + '">' + r.tenant + '</td><td style="' + cs + ';text-align:right">' + inr(r.amount) + '</td><td style="' + cs + '">' + r.gateway + '</td><td style="' + cs + '">' + r.method + '</td><td style="' + cs + '">' + r.txn + '</td><td style="' + cs + '">' + r.status + '</td><td style="' + cs + '">' + (r.paidAt || '—') + '</td></tr>';
+            }).join('');
+            return pghead('Payments', 'Recorded payments across all tenants', '') + billTable(billTh(['Invoice', 'Tenant', 'Amount', 'Gateway', 'Method', 'Txn', 'Status', 'Paid At']), rows3, 8);
+        }
+        var g = d.gateway || { mode: 'test', key_id: '', hasSecret: false, hasWebhookSecret: false, webhookUrl: '', liveWarning: '' };
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var warn = g.liveWarning ? '<div style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:9px;padding:10px 12px;font-size:13px"><b>Live mode not ready:</b> ' + g.liveWarning + '</div>' : '';
+        var whUrl = String(g.webhookUrl || '').replace(/"/g, '&quot;');
+        return pghead('Payment Gateways', 'Razorpay keys for SaaS billing (secrets are encrypted at rest)', '')
+            + '<div class="card" style="max-width:580px;display:grid;gap:14px">'
+            + warn
+            + '<div><label style="' + lbl + '">Mode</label><select id="gw_mode" style="' + inp + '"><option value="test"' + (g.mode === 'test' ? ' selected' : '') + '>Test</option><option value="live"' + (g.mode === 'live' ? ' selected' : '') + '>Live</option></select></div>'
+            + '<div><label style="' + lbl + '">Key ID</label><input id="gw_key" value="' + String(g.key_id || '').replace(/"/g, '&quot;') + '" placeholder="rzp_test_xxxxxxxx" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Secret</label><input id="gw_secret" type="password" placeholder="' + (g.hasSecret ? 'saved — leave blank to keep' : 'Razorpay key secret') + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Webhook Secret</label><input id="gw_whsecret" type="password" placeholder="' + (g.hasWebhookSecret ? 'saved — leave blank to keep' : 'Razorpay webhook secret') + '" style="' + inp + '"></div>'
+            + '<div><button class="btn btn-primary" onclick="billSaveGateway()"><i class="fas fa-check"></i> Save gateway</button></div>'
+            + (whUrl ? '<div style="font-size:12px;color:var(--text3)">Webhook URL (paste into Razorpay Dashboard &rarr; Settings &rarr; Webhooks, event <b>payment.captured</b>): <code style="background:#f1f5f9;padding:2px 6px;border-radius:4px">' + whUrl + '</code></div>' : '')
+            + '<div style="font-size:12px;color:var(--text3)">Test keys: Razorpay Dashboard &rarr; Settings &rarr; API Keys (Test Mode). The webhook secret is set when you create the webhook. Until keys are added, use &quot;Mark paid (test)&quot; on an invoice to simulate collection.</div>'
+            + '</div>';
+    }
+    window.billModalClose = function () { var m = document.getElementById('bill-modal'); if (m) { m.remove(); } };
+    window.billSubEdit = function (tenantId) {
+        var d = window.__BILL.subscriptions || {}; var r = (d.rows || []).find(function (x) { return x.tenantId === tenantId; }); if (!r) { return; }
+        var plans = d.plans || [];
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var planOpts = plans.map(function (p) { return '<option value="' + p.id + '"' + (String(p.id) === String(r.planId) ? ' selected' : '') + '>' + p.name + '</option>'; }).join('');
+        var cycDefs = [['quarterly', 'Quarterly — 3 months advance'], ['halfyear', 'Half-yearly — 6 months (10% off)'], ['annual', 'Annual — 12 months (25% off)']];
+        var cyc = cycDefs.map(function (c) { return '<option value="' + c[0] + '"' + (c[0] === r.cycle ? ' selected' : '') + '>' + c[1] + '</option>'; }).join('');
+        var stat = ['active', 'trialing', 'suspended', 'cancelled'].map(function (c) { return '<option value="' + c + '"' + (c === r.status ? ' selected' : '') + '>' + c + '</option>'; }).join('');
+        var m = document.getElementById('bill-modal') || (function () { var x = document.createElement('div'); x.id = 'bill-modal'; document.body.appendChild(x); return x; })();
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:50px 16px;overflow:auto';
+        m.innerHTML = '<div class="card" style="max-width:460px;width:100%"><h3 style="margin:0 0 14px">Subscription — ' + r.tenant + '</h3><div style="display:grid;gap:12px">'
+            + '<div><label style="' + lbl + '">Plan</label><select id="sb_plan" style="' + inp + '">' + planOpts + '</select></div>'
+            + '<div><label style="' + lbl + '">Employees (total)</label><input id="sb_seats" type="number" value="' + r.seats + '" style="' + inp + '"><div style="font-size:11px;color:var(--text3);margin-top:3px">Plan includes up to its employee limit; extra employees are billed at the plan&#39;s per-employee rate. The limit applies across ALL of the tenant&#39;s companies.</div></div>'
+            + '<div><label style="' + lbl + '">Companies</label><input id="sb_companies" type="number" min="1" value="' + (r.companies || 1) + '" style="' + inp + '"><div style="font-size:11px;color:var(--text3);margin-top:3px">1 included in every plan; each additional company is a flat &#8377;1,000/month.</div></div>'
+            + '<div><label style="' + lbl + '">Cycle</label><select id="sb_cycle" style="' + inp + '">' + cyc + '</select></div>'
+            + '<div><label style="' + lbl + '">Status</label><select id="sb_status" style="' + inp + '">' + stat + '</select></div>'
+            + '</div><div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="billModalClose()">Cancel</button><button class="btn btn-primary" onclick="billSubSave(' + tenantId + ')">Save</button></div></div>';
+        m.onclick = function (e) { if (e.target === m) { billModalClose(); } };
+    };
+    window.billSubSave = function (tenantId) {
+        var body = { tenant_id: tenantId, plan_id: parseInt(document.getElementById('sb_plan').value, 10), seats: parseInt(document.getElementById('sb_seats').value, 10) || 0, companies: Math.max(1, parseInt(document.getElementById('sb_companies').value, 10) || 1), cycle: document.getElementById('sb_cycle').value, status: document.getElementById('sb_status').value };
+        billPost('/subscriptions', body, function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Subscription saved — ' + inr(j.amount)); } billModalClose(); billLoad('subscriptions'); } else if (typeof toast === 'function') { toast((j && j.error) || 'Save failed'); } });
+    };
+    window.billGenInvoice = function () {
+        var d = window.__BILL.invoices; var tenants = d && d.tenants ? d.tenants : null;
+        if (!tenants || !tenants.length) { if (typeof toast === 'function') { toast('No tenants found'); } return; }
+        var names = tenants.map(function (t, i) { return (i + 1) + '. ' + t.name; }).join(String.fromCharCode(10));
+        var pick = prompt('Generate invoice for which tenant? Enter the number:' + String.fromCharCode(10) + names, '1');
+        if (pick === null) { return; }
+        var idx = parseInt(pick, 10) - 1; if (isNaN(idx) || !tenants[idx]) { return; }
+        billPost('/invoices/generate', { tenant_id: tenants[idx].id }, function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Invoice ' + j.number + ' created'); } billLoad('invoices'); } else if (typeof toast === 'function') { toast((j && j.error) || 'Could not generate'); } });
+    };
+    window.billPay = function (invId) {
+        if (!window.confirm('Mark this invoice paid (test)? Records a manual payment and flips it to paid.')) { return; }
+        billPost('/invoices/pay', { invoice_id: invId, method: 'manual' }, function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Marked paid'); } billLoad('invoices'); } else if (typeof toast === 'function') { toast((j && j.error) || 'Failed'); } });
+    };
+    window.billSaveGateway = function () {
+        var wh = document.getElementById('gw_whsecret');
+        var body = { mode: document.getElementById('gw_mode').value, key_id: document.getElementById('gw_key').value, secret: document.getElementById('gw_secret').value, webhook_secret: wh ? wh.value : '', status: 'active' };
+        billPost('/gateways', body, function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Gateway saved'); } billLoad('gateways'); } else if (typeof toast === 'function') { toast((j && j.error) || 'Save failed'); } });
+    };
+    window.billInvoicePdf = function (invId) {
+        window.open(cfg.billingBase + '/invoices/' + invId + '/pdf', '_blank');
+    };
+    window.billEmailInvoice = function (invId) {
+        if (!window.confirm('Email this invoice (PDF) to the tenant billing contact?')) { return; }
+        billPost('/invoices/email', { invoice_id: invId }, function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Invoice emailed'); } } else if (typeof toast === 'function') { toast((j && j.error) || 'Email failed'); } });
+    };
+    window.billRazorpay = function (invId) {
+        billPost('/razorpay/order', { invoice_id: invId }, function (j) {
+            if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Razorpay order failed'); } return; }
+            function openCheckout() {
+                var opts = { key: j.keyId, amount: j.amount, currency: 'INR', name: 'SmartPRS', description: 'Invoice ' + j.number, order_id: j.orderId,
+                    handler: function (resp) {
+                        billPost('/razorpay/verify', { invoice_id: invId, razorpay_order_id: resp.razorpay_order_id, razorpay_payment_id: resp.razorpay_payment_id, razorpay_signature: resp.razorpay_signature }, function (v) {
+                            if (v && v.ok) { if (typeof toast === 'function') { toast('Payment verified'); } billLoad('invoices'); } else if (typeof toast === 'function') { toast((v && v.error) || 'Verify failed'); }
+                        });
+                    } };
+                try { var rzp = new window.Razorpay(opts); rzp.open(); } catch (e) { if (typeof toast === 'function') { toast('Razorpay checkout unavailable'); } }
+            }
+            if (window.Razorpay) { openCheckout(); }
+            else { var s = document.createElement('script'); s.src = 'https://checkout.razorpay.com/v1/checkout.js'; s.onload = openCheckout; s.onerror = function () { if (typeof toast === 'function') { toast('Could not load Razorpay'); } }; document.body.appendChild(s); }
+        });
+    };
+    // ---- Recruitment / ATS (pipeline board + job openings) -------------------
+    var RSTG = { applied: ['Applied', '#64748b'], screening: ['Screening', '#3b82f6'], interview: ['Interview', '#6366f1'], offer: ['Offer', '#f59e0b'], hired: ['Hired', '#16a34a'], rejected: ['Rejected', '#dc2626'] };
+    var RREC = { strong_hire: ['Strong Hire', '#16a34a'], hire: ['Hire', '#22c55e'], hold: ['On Hold', '#f59e0b'], no_hire: ['No Hire', '#ef4444'], strong_no_hire: ['Strong No-Hire', '#dc2626'] };
+    var RMODE = { phone: 'Phone', video: 'Video call', in_person: 'In person', online_test: 'Online test' };
+    var RAPPR = { draft: ['Draft', '#64748b'], pending: ['Pending Approval', '#f59e0b'], approved: ['Approved', '#16a34a'], rejected: ['Rejected', '#dc2626'] };
+    var RPRIO = { low: ['Low', '#64748b'], normal: ['Normal', '#3b82f6'], high: ['High', '#f59e0b'], urgent: ['Urgent', '#dc2626'] };
+    function rqA(s) { return String(s == null ? '' : s).replace(/"/g, '&quot;'); }
+    function rqT(s) { return String(s == null ? '' : s).replace(/</g, '&lt;'); }
+    function rqMoney(n) { var x = parseFloat(n); if (!x) { return '—'; } return '₹' + x.toLocaleString('en-IN'); }
+    function rqOpts(arr, sel, labelMap) { return (arr || []).map(function (v) { var L = labelMap && labelMap[v] ? (Array.isArray(labelMap[v]) ? labelMap[v][0] : labelMap[v]) : v; return '<option value="' + v + '"' + (v === sel ? ' selected' : '') + '>' + L + '</option>'; }).join(''); }
+    function rqIdOpts(arr, sel) { return (arr || []).map(function (o) { return '<option value="' + o.id + '"' + (String(o.id) === String(sel) ? ' selected' : '') + '>' + rqT(o.name) + '</option>'; }).join(''); }
+    window.__RECRUIT = null;
+    window.recruitLoad = function () {
+        fetch(cfg.recruitmentBase + '/board', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) { window.__RECRUIT = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__RECRUIT = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    // ---- Pipeline as a LIST/TABLE (stage = dropdown per row) -----------------
+    window.__RECRUIT_FILTER = window.__RECRUIT_FILTER || '';
+    window.recruitSetStageFilter = function (s) { window.__RECRUIT_FILTER = s; if (typeof render === 'function') { render(); } };
+    window.recruitStageChange = function (id, stage) {
+        if (stage === 'hired') { recruitHire(id); if (typeof render === 'function') { render(); } return; }
+        if (stage === 'rejected') { recruitReject(id); if (typeof render === 'function') { render(); } return; }
+        recruitMove(id, stage);
+    };
+    function recruitPatch(id, body, cb) { recruitPost('/candidate/' + id + '/patch', body, function (j) { if (cb) { cb(j); } }); }
+    window.recruitInterviewOutcome = function (id) {
+        var c = recruitFindCand(id); var inp = recruitInp(), lbl = recruitLbl();
+        recruitModal('<h3 style="margin:0 0 4px">Interview outcome — ' + rqT(c.name) + '</h3><div style="font-size:12px;color:var(--text3);margin-bottom:14px">Capture the candidate’s expectation, what we proposed in the interview, and remarks.</div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+            + '<div><label style="' + lbl + '">Expected CTC (₹/yr)</label><input id="rio_expected_ctc" type="number" min="0" value="' + (c.expected_ctc || '') + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">CTC we proposed (₹/yr)</label><input id="rio_proposed_ctc" type="number" min="0" value="' + (c.proposed_ctc || '') + '" style="' + inp + '"></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Interview remarks</label><textarea id="rio_interview_remarks" rows="4" style="' + inp + ';resize:vertical">' + rqT(c.interview_remarks) + '</textarea></div>'
+            + '</div><div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="recruitClose()">Cancel</button><button class="btn btn-primary" onclick="recruitInterviewOutcomeSave(' + id + ')">Save</button></div>');
+    };
+    window.recruitInterviewOutcomeSave = function (id) {
+        var g = function (k) { var e = document.getElementById('rio_' + k); return e ? e.value : ''; };
+        recruitPatch(id, { expected_ctc: parseFloat(g('expected_ctc')) || null, proposed_ctc: parseFloat(g('proposed_ctc')) || null, interview_remarks: g('interview_remarks') }, function () { recruitClose(); if (typeof toast === 'function') { toast('Interview outcome saved'); } recruitLoad(); });
+    };
+    window.recruitOfferEdit = function (id) {
+        var c = recruitFindCand(id); var inp = recruitInp(), lbl = recruitLbl(); var today = new Date().toISOString().slice(0, 10);
+        recruitModal('<h3 style="margin:0 0 4px">Final offer — ' + rqT(c.name) + '</h3><div style="font-size:12px;color:var(--text3);margin-bottom:14px">These values flow into the offer-letter email (placeholders {{ctc}}, {{incentive}}, {{joining_bonus}}, {{doj}}) and are used when the candidate is hired.</div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+            + '<div><label style="' + lbl + '">Offered CTC (₹/yr)</label><input id="rof_offered_ctc" type="number" min="0" value="' + (c.offered_ctc || '') + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Incentive / variable (₹/yr)</label><input id="rof_offer_incentive" type="number" min="0" value="' + (c.offer_incentive || '') + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Joining bonus (₹)</label><input id="rof_joining_bonus" type="number" min="0" value="' + (c.joining_bonus || '') + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Proposed joining date</label><input id="rof_offer_doj" type="date" value="' + (c.offer_doj || today) + '" style="' + inp + '"></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Offer notes</label><textarea id="rof_offer_notes" rows="3" style="' + inp + ';resize:vertical">' + rqT(c.offer_notes) + '</textarea></div>'
+            + '</div><div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="recruitClose()">Cancel</button><button class="btn btn-primary" onclick="recruitOfferSave(' + id + ')">Save offer</button></div>');
+    };
+    window.recruitOfferSave = function (id) {
+        var g = function (k) { var e = document.getElementById('rof_' + k); return e ? e.value : ''; };
+        recruitPatch(id, { offered_ctc: parseFloat(g('offered_ctc')) || null, offer_incentive: parseFloat(g('offer_incentive')) || null, joining_bonus: parseFloat(g('joining_bonus')) || null, offer_doj: g('offer_doj') || null, offer_notes: g('offer_notes') }, function () { recruitClose(); if (typeof toast === 'function') { toast('Offer saved'); } recruitLoad(); });
+    };
+    window.recruitStartOnboarding = function (id) {
+        if (!window.confirm('Start onboarding for this hire? This creates their onboarding checklist.')) { return; }
+        recruitPost('/candidate/' + id + '/start-onboarding', {}, function (j) { if (j && j.message && typeof toast === 'function') { toast(j.message); } });
+    };
+    function recruitRow(c) {
+        var d = window.__RECRUIT || {};
+        var stColor = (RSTG[c.stage] || ['', 'var(--text2)'])[1];
+        var stg = (d.stages || []).map(function (s) { var L = (RSTG[s] || [s])[0]; return '<option value="' + s + '"' + (s === c.stage ? ' selected' : '') + '>' + L + '</option>'; }).join('');
+        var sel = '<select onchange="recruitStageChange(' + c.id + ', this.value)" style="padding:6px 9px;border:1.5px solid ' + stColor + '66;border-radius:8px;font-size:12px;font-weight:700;color:' + stColor + ';background:' + stColor + '12;cursor:pointer">' + stg + '</select>';
+        var job = (d.jobs || []).filter(function (j) { return j.id === c.job_id; })[0];
+        var reqLabel = job ? ((job.req_code ? job.req_code + ' · ' : '') + rqT(job.title)) : (rqT(c.position) || '<span style="color:var(--text3)">—</span>');
+        var stars = ''; for (var i = 0; i < 5; i++) { stars += (i < (c.rating || 0)) ? '★' : '☆'; }
+        var resume = c.resume_url ? ' <a href="' + rqA(c.resume_url) + '" target="_blank" rel="noopener" title="Open resume" style="color:#3b82f6"><i class="fas fa-file-lines"></i></a>' : '';
+        var contact = (c.email ? rqT(c.email) : '') + (c.mobile ? ((c.email ? ' · ' : '') + rqT(c.mobile)) : '');
+        var iv = '';
+        if (c.iv_count) {
+            var recL = c.iv_rec && RREC[c.iv_rec] ? RREC[c.iv_rec] : null;
+            iv += '<span style="font-size:10px;color:#6366f1;background:#6366f111;border-radius:6px;padding:1px 6px">' + (c.iv_done || 0) + '/' + c.iv_count + (c.iv_avg != null ? ' · ' + c.iv_avg + '/10' : '') + '</span>';
+            if (recL) { iv += ' <span style="font-size:10px;color:' + recL[1] + ';background:' + recL[1] + '14;border-radius:6px;padding:1px 6px">' + recL[0] + '</span>'; }
+        } else { iv = '<span style="color:var(--text3);font-size:11px">—</span>'; }
+        var sub = '';
+        if (c.stage === 'offer') {
+            var bits = [];
+            if (c.offered_ctc) { bits.push(rqMoney(c.offered_ctc) + ' offered'); }
+            if (c.offer_status === 'accepted') { bits.push('<b style="color:#16a34a">✓ Accepted — confirm hire</b>'); }
+            if (bits.length) { sub = '<div style="font-size:10px;color:#16a34a;margin-top:3px">' + bits.join(' · ') + '</div>'; }
+        } else if (c.stage === 'rejected' && c.reject_reason) { sub = '<div style="font-size:10px;color:var(--red);margin-top:3px">✕ ' + rqT(c.reject_reason) + '</div>'; }
+        var act = '<i class="fas fa-pen" title="Edit" onclick="recruitCand(' + c.id + ')" style="cursor:pointer;color:var(--text2);margin-right:12px"></i>'
+            + '<i class="fas fa-comments" title="Interviews &amp; feedback" onclick="recruitIv(' + c.id + ')" style="cursor:pointer;color:#6366f1;margin-right:12px"></i>'
+            + (c.stage === 'interview' ? '<i class="fas fa-clipboard-list" title="Interview outcome (remarks, expected / proposed CTC)" onclick="recruitInterviewOutcome(' + c.id + ')" style="cursor:pointer;color:#8b5cf6;margin-right:12px"></i>' : '')
+            + (c.stage === 'offer' ? '<i class="fas fa-file-invoice-dollar" title="Add / edit final offer (CTC, incentive…)" onclick="recruitOfferEdit(' + c.id + ')" style="cursor:pointer;color:#f59e0b;margin-right:12px"></i>' : '')
+            + (c.stage === 'offer' ? '<i class="fas fa-user-check" title="Hire → create employee" onclick="recruitHire(' + c.id + ')" style="cursor:pointer;color:#16a34a;margin-right:12px"></i>' : '')
+            + (c.stage === 'hired' ? '<i class="fas fa-user-gear" title="Start onboarding" onclick="recruitStartOnboarding(' + c.id + ')" style="cursor:pointer;color:#16a34a;margin-right:12px"></i>' : '')
+            + '<i class="fas fa-trash" title="Delete" onclick="recruitDelCand(' + c.id + ')" style="cursor:pointer;color:var(--red)"></i>';
+        var cs = 'padding:9px 10px;font-size:13px;border-top:1px solid var(--border);vertical-align:top';
+        return '<tr><td style="' + cs + '"><div style="font-weight:600">' + rqT(c.name) + resume + '</div>'
+            + '<div style="font-size:11px;color:var(--text3)">' + contact + '</div>'
+            + '<div style="color:#f59e0b;font-size:11px;letter-spacing:1px">' + stars + '</div></td>'
+            + '<td style="' + cs + '">' + reqLabel + '</td>'
+            + '<td style="' + cs + '">' + (rqT(c.source) || '—') + '</td>'
+            + '<td style="' + cs + '">' + iv + '</td>'
+            + '<td style="' + cs + '">' + sel + sub + '</td>'
+            + '<td style="' + cs + ';text-align:right;white-space:nowrap">' + act + '</td></tr>';
+    }
+    function recruitPipelineSection(d) {
+        var flt = window.__RECRUIT_FILTER || '';
+        var all = []; (d.stages || []).forEach(function (st) { ((d.byStage && d.byStage[st]) || []).forEach(function (c) { all.push(c); }); });
+        var chip = function (val, label, n, color) {
+            var on = (val === flt);
+            return '<span onclick="recruitSetStageFilter(' + "'" + val + "'" + ')" style="cursor:pointer;font-size:12px;font-weight:600;padding:5px 11px;border-radius:20px;margin:0 6px 6px 0;display:inline-block;border:1.5px solid ' + (on ? color : 'var(--border)') + ';color:' + (on ? '#fff' : color) + ';background:' + (on ? color : 'transparent') + '">' + label + ' ' + n + '</span>';
+        };
+        var chips = chip('', 'All', all.length, '#475569');
+        (d.stages || []).forEach(function (st) { var info = RSTG[st] || [st, '#64748b']; chips += chip(st, info[0], ((d.byStage && d.byStage[st]) || []).length, info[1]); });
+        var list = flt ? ((d.byStage && d.byStage[flt]) || []) : all;
+        var rows = list.map(recruitRow).join('');
+        var th = ['Candidate', 'Requisition', 'Source', 'Interviews', 'Status', ''].map(function (h) { return '<th style="padding:10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
+        return '<div style="margin-bottom:10px">' + chips + '</div>'
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (rows || '<tr><td colspan="6" style="padding:24px;text-align:center;color:var(--text3)">No candidates in this view. Add a candidate or assign someone from the Talent Pool.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.__RECRUIT_TAB = window.__RECRUIT_TAB || 'pipeline';
+    window.recruitSetTab = function (t) { window.__RECRUIT_TAB = t; if (typeof render === 'function') { render(); } };
+    function recruitTabBar(tab, d) {
+        var s = d.stats || {};
+        var tabs = [['pipeline', 'Pipeline', s.candidates || 0], ['requisitions', 'Requisitions', (d.jobs || []).length], ['pool', 'Talent Pool', s.poolCount || 0]];
+        var html = tabs.map(function (t) {
+            var on = (t[0] === tab);
+            return '<span onclick="recruitSetTab(' + "'" + t[0] + "'" + ')" style="cursor:pointer;padding:9px 16px;font-size:14px;font-weight:600;border-bottom:2.5px solid ' + (on ? 'var(--accent)' : 'transparent') + ';color:' + (on ? 'var(--text1)' : 'var(--text3)') + '">' + t[1] + ' <span style="font-size:12px;color:var(--text3)">' + t[2] + '</span></span>';
+        }).join('');
+        return '<div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px;flex-wrap:wrap">' + html + '</div>';
+    }
+    function recruitScreen() {
+        var d = window.__RECRUIT;
+        if (!d) { setTimeout(function () { if (!window.__RECRUIT) { recruitLoad(); } }, 10); return pghead('Recruitment', 'Loading pipeline…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('Recruitment', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + String(d.error) + '</b></div></div>'; }
+        var s = d.stats || {};
+        var tab = window.__RECRUIT_TAB || 'pipeline';
+        var addBtns = '<a href="' + cfg.recruitmentBase + '/template" class="btn btn-outline btn-sm" style="text-decoration:none" title="Download CSV template"><i class="fas fa-file-csv"></i> Template</a> '
+            + '<label class="btn btn-outline btn-sm" style="cursor:pointer" title="Import applicants from a job-portal export (Excel .xlsx or CSV) straight into the Talent Pool"><i class="fas fa-file-import"></i> Import from Portal<input type="file" accept=".xlsx,.xls,.csv,text/csv" style="display:none" onchange="recruitImportFile(this)"></label> '
+            + '<button class="btn btn-outline btn-sm" onclick="recruitReq(null)"><i class="fas fa-clipboard-list"></i> Raise Requisition</button> '
+            + '<button class="btn btn-primary btn-sm" onclick="recruitCand(null)"><i class="fas fa-user-plus"></i> Add Candidate</button>';
+        var jcs = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border)';
+        var canAppr = !!d.canApprove;
+        var jobs = (d.jobs || []).map(function (j) {
+            var ap = RAPPR[j.approval_status] || ['—', '#64748b'];
+            var pr = RPRIO[j.priority] || ['—', '#64748b'];
+            var sc = j.status === 'open' ? '#16a34a' : (j.status === 'closed' ? '#dc2626' : '#f59e0b');
+            var fillTxt = j.filled + ' / ' + j.openings + (j.remaining ? '' : ' ✓');
+            var act = '<i class="fas fa-pen" title="Edit" onclick="recruitReq(' + j.id + ')" style="cursor:pointer;color:var(--text2);margin-right:12px"></i>';
+            if (canAppr && j.approval_status === 'pending') {
+                act += '<i class="fas fa-check" title="Approve" onclick="recruitApprove(' + j.id + ')" style="cursor:pointer;color:#16a34a;margin-right:12px"></i>';
+                act += '<i class="fas fa-ban" title="Reject" onclick="recruitRejectReq(' + j.id + ')" style="cursor:pointer;color:#f59e0b;margin-right:12px"></i>';
+            }
+            act += '<i class="fas fa-trash" title="Delete" onclick="recruitDelJob(' + j.id + ')" style="cursor:pointer;color:var(--red)"></i>';
+            var band2 = (j.ctc_min || j.ctc_max) ? (rqMoney(j.ctc_min) + ' – ' + rqMoney(j.ctc_max)) : '—';
+            return '<tr><td style="' + jcs + ';white-space:nowrap"><span style="font-weight:700;font-size:11px;color:var(--text3)">' + (j.req_code || '—') + '</span></td>'
+                + '<td style="' + jcs + ';font-weight:600">' + rqT(j.title) + (j.engagement === 'off_roll' ? ' <span style="font-size:9px;font-weight:700;color:#8b5cf6;background:#8b5cf615;border-radius:5px;padding:1px 5px;vertical-align:middle">OFF-ROLL</span>' : '') + (j.requested_by ? '<div style="font-size:10px;color:var(--text3);font-weight:400">by ' + rqT(j.requested_by) + '</div>' : '') + '</td>'
+                + '<td style="' + jcs + '">' + (rqT(j.department) || '—') + (j.location ? '<div style="font-size:10px;color:var(--text3)">' + rqT(j.location) + '</div>' : '') + '</td>'
+                + '<td style="' + jcs + ';font-size:11px">' + band2 + '</td>'
+                + '<td style="' + jcs + ';text-align:center;font-weight:600">' + fillTxt + '</td>'
+                + '<td style="' + jcs + '"><span style="color:' + pr[1] + ';font-weight:600;font-size:11px">' + pr[0] + '</span></td>'
+                + '<td style="' + jcs + '"><span style="color:' + ap[1] + ';font-weight:600;font-size:11px">' + ap[0] + '</span>' + (j.approval_status === 'rejected' && j.reject_reason ? '<div style="font-size:10px;color:var(--text3)">' + rqT(j.reject_reason) + '</div>' : '') + '</td>'
+                + '<td style="' + jcs + '"><span style="color:' + sc + ';font-weight:600;font-size:12px">' + j.status + '</span></td>'
+                + '<td style="' + jcs + ';text-align:right;white-space:nowrap">' + act + '</td></tr>';
+        }).join('');
+        var jth = ['Req', 'Position', 'Dept / Location', 'CTC Band', 'Filled', 'Priority', 'Approval', 'Status', ''].map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
+        var jobsSection = ((canAppr && s.pendingReqs) ? '<div style="font-size:12px;color:#f59e0b;margin-bottom:10px"><i class="fas fa-clock"></i> ' + s.pendingReqs + ' requisition(s) awaiting your approval.</div>' : '')
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + jth + '</tr></thead><tbody>' + (jobs || '<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text3)">No requisitions yet — click “Raise Requisition”.</td></tr>') + '</tbody></table></div>';
+        var content = tab === 'requisitions' ? jobsSection : (tab === 'pool' ? recruitPoolSection(d) : recruitPipelineSection(d));
+        return pghead('Recruitment', 'Pipeline, requisitions and talent pool', addBtns) + recruitTabBar(tab, d) + content;
+    }
+    function recruitInp() { return 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc'; }
+    function recruitLbl() { return 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px'; }
+    function recruitModal(html, wide) {
+        var m = document.getElementById('recruit-modal') || (function () { var x = document.createElement('div'); x.id = 'recruit-modal'; document.body.appendChild(x); return x; })();
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+        m.innerHTML = '<div class="card" style="max-width:' + (wide ? '760' : '560') + 'px;width:100%;margin:auto;padding:26px 28px;box-sizing:border-box">' + html + '</div>';
+        m.onclick = function (e) { if (e.target === m) { recruitClose(); } };
+    }
+    function recruitReqOpts(d, sel) {
+        var opts = '<option value="">— none —</option>';
+        (d.jobs || []).forEach(function (j) {
+            if (j.recruitable || String(j.id) === String(sel)) {
+                opts += '<option value="' + j.id + '"' + (String(j.id) === String(sel) ? ' selected' : '') + '>' + (j.req_code ? j.req_code + ' · ' : '') + rqT(j.title) + (j.remaining ? ' (' + j.remaining + ' left)' : '') + '</option>';
+            }
+        });
+        return opts;
+    }
+    window.recruitClose = function () { var m = document.getElementById('recruit-modal'); if (m) { m.remove(); } };
+    window.recruitCand = function (id) {
+        var d = window.__RECRUIT || {}; var rec = null;
+        if (id) { (d.stages || []).forEach(function (st) { ((d.byStage && d.byStage[st]) || []).forEach(function (c) { if (c.id === id) { rec = c; } }); }); }
+        if (id && !rec) { ((window.__RECRUIT_POOL && window.__RECRUIT_POOL.list) || []).forEach(function (c) { if (c.id === id) { rec = c; } }); }
+        rec = rec || {};
+        var comps = (d.companies || []).map(function (c) { return '<option' + (c === rec.company ? ' selected' : '') + '>' + c + '</option>'; }).join('');
+        var stg = (d.stages || []).map(function (s) { var L = (RSTG[s] || [s])[0]; return '<option value="' + s + '"' + (s === (rec.stage || 'applied') ? ' selected' : '') + '>' + L + '</option>'; }).join('');
+        var inp = recruitInp(), lbl = recruitLbl();
+        var reqOpts = recruitReqOpts(d, rec.job_id);
+        recruitModal('<h3 style="margin:0 0 14px">' + (id ? 'Edit Candidate' : 'Add Candidate') + '</h3><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Requisition (open position)</label><select id="rc_job" style="' + inp + '">' + reqOpts + '</select></div>'
+            + '<div><label style="' + lbl + '">Name</label><input id="rc_name" value="' + rqA(rec.name) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Position</label><input id="rc_position" value="' + rqA(rec.position) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Company</label><select id="rc_company" style="' + inp + '"><option value="">—</option>' + comps + '</select></div>'
+            + '<div><label style="' + lbl + '">Source</label><input id="rc_source" value="' + rqA(rec.source) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Mobile</label><input id="rc_mobile" value="' + rqA(rec.mobile) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Email</label><input id="rc_email" value="' + rqA(rec.email) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Stage</label><select id="rc_stage" style="' + inp + '">' + stg + '</select></div>'
+            + '<div><label style="' + lbl + '">Rating (0-5)</label><input id="rc_rating" type="number" min="0" max="5" value="' + (rec.rating || 0) + '" style="' + inp + '"></div>'
+            + '<div style="grid-column:1 / -1;border-top:1px solid var(--border);margin-top:4px;padding-top:10px;font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px">Candidate profile (for talent pool &amp; future search)</div>'
+            + '<div><label style="' + lbl + '">Location</label><input id="rc_location" value="' + rqA(rec.location) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Experience (years)</label><input id="rc_experience_years" type="number" min="0" step="0.5" value="' + (rec.experience_years != null ? rec.experience_years : '') + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Current company</label><input id="rc_current_company" value="' + rqA(rec.current_company) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Current designation</label><input id="rc_current_designation" value="' + rqA(rec.current_designation) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Current CTC (₹/yr)</label><input id="rc_current_ctc" type="number" min="0" value="' + (rec.current_ctc || '') + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Expected CTC (₹/yr)</label><input id="rc_expected_ctc" type="number" min="0" value="' + (rec.expected_ctc || '') + '" style="' + inp + '"></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Resume / profile link</label><input id="rc_resume_url" value="' + rqA(rec.resume_url) + '" placeholder="https://…" style="' + inp + '"></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Key skills</label><input id="rc_skills" value="' + rqA(rec.skills) + '" placeholder="e.g. Field collection, negotiation, FOIR" style="' + inp + '"></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Notes</label><textarea id="rc_notes" rows="3" style="' + inp + ';resize:vertical">' + rqT(rec.notes) + '</textarea></div>'
+            + '</div><div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="recruitClose()">Cancel</button><button class="btn btn-primary" onclick="recruitSaveCand(' + (id || 'null') + ')">Save</button></div>');
+    };
+    window.recruitSaveCand = function (id) {
+        var g = function (k) { var el = document.getElementById('rc_' + k); return el ? el.value : ''; };
+        var body = { id: id || null, name: g('name'), position: g('position'), company_name: g('company'), source: g('source'), mobile: g('mobile'), email: g('email'), stage: g('stage'), rating: parseInt(g('rating'), 10) || 0, notes: g('notes'), job_id: parseInt(g('job'), 10) || null,
+            location: g('location'), experience_years: g('experience_years') === '' ? null : parseFloat(g('experience_years')), current_company: g('current_company'), current_designation: g('current_designation'), current_ctc: parseFloat(g('current_ctc')) || null, expected_ctc: parseFloat(g('expected_ctc')) || null, resume_url: g('resume_url'), skills: g('skills') };
+        if (!body.name.trim()) { if (typeof toast === 'function') { toast('Name is required'); } return; }
+        recruitPost('/candidate', body, function () { recruitClose(); recruitLoad(); if (window.__RECRUIT_POOL && window.__RECRUIT_POOL.loaded) { recruitPoolLoad(); } });
+    };
+    window.recruitReq = function (id) {
+        var d = window.__RECRUIT || {}; var rec = (d.jobs || []).find(function (x) { return x.id === id; }) || {};
+        var comps = (d.companies || []).map(function (c) { return '<option' + (c === rec.company ? ' selected' : '') + '>' + c + '</option>'; }).join('');
+        var inp = recruitInp(), lbl = recruitLbl();
+        var stRow = '';
+        if (id) {
+            var stOpts = ['open', 'on_hold', 'closed'].map(function (s) { return '<option value="' + s + '"' + (s === (rec.status || 'open') ? ' selected' : '') + '>' + s + '</option>'; }).join('');
+            stRow = '<div><label style="' + lbl + '">Lifecycle status</label><select id="rj_status" style="' + inp + '">' + stOpts + '</select></div>';
+        }
+        var apprNote = id
+            ? (rec.approval_status === 'approved' ? '<span style="color:#16a34a;font-weight:600">Approved' + (rec.approved_by ? ' by ' + rqT(rec.approved_by) : '') + '</span>' : (rec.approval_status === 'rejected' ? '<span style="color:#dc2626;font-weight:600">Rejected</span>' : '<span style="color:#f59e0b;font-weight:600">Pending approval</span>'))
+            : '<span style="color:#f59e0b">This requirement will be submitted for approval before hiring can begin.</span>';
+        recruitModal('<h3 style="margin:0 0 4px">' + (id ? 'Edit Requisition ' + (rec.req_code ? '· ' + rec.req_code : '') : 'Raise Manpower Requisition') + '</h3>'
+            + '<div style="font-size:12px;color:var(--text3);margin-bottom:14px">' + apprNote + '</div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Position title</label><input id="rj_title" value="' + rqA(rec.title) + '" placeholder="e.g. Field Recovery Officer" style="' + inp + '"></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Engagement type</label><select id="rj_engagement" style="' + inp + '">' + rqOpts(['on_roll', 'off_roll'], rec.engagement || 'on_roll', { on_roll: 'On-roll employee (payroll)', off_roll: 'Off-roll agent (commission only)' }) + '</select></div>'
+            + '<div><label style="' + lbl + '">Department</label><input id="rj_department" value="' + rqA(rec.department) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Location</label><input id="rj_location" value="' + rqA(rec.location) + '" placeholder="e.g. Mumbai" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Company</label><select id="rj_company" style="' + inp + '"><option value="">—</option>' + comps + '</select></div>'
+            + '<div><label style="' + lbl + '">No. of openings</label><input id="rj_openings" type="number" min="1" value="' + (rec.openings || 1) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Priority</label><select id="rj_priority" style="' + inp + '">' + rqOpts(['low', 'normal', 'high', 'urgent'], rec.priority || 'normal', RPRIO) + '</select></div>'
+            + '<div><label style="' + lbl + '">Target join date</label><input id="rj_target_date" type="date" value="' + rqA(rec.target_date) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">CTC band — min (₹/yr)</label><input id="rj_ctc_min" type="number" min="0" value="' + (rec.ctc_min || '') + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">CTC band — max (₹/yr)</label><input id="rj_ctc_max" type="number" min="0" value="' + (rec.ctc_max || '') + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Requested by</label><input id="rj_requested_by" value="' + rqA(rec.requested_by) + '" placeholder="Manager name" style="' + inp + '"></div>'
+            + stRow
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Justification / business case</label><textarea id="rj_justification" rows="2" style="' + inp + ';resize:vertical">' + rqT(rec.justification) + '</textarea></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Job description</label><textarea id="rj_description" rows="3" style="' + inp + ';resize:vertical">' + rqT(rec.description) + '</textarea></div>'
+            + '</div><div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="recruitClose()">Cancel</button><button class="btn btn-primary" onclick="recruitSaveReq(' + (id || 'null') + ')">' + (id ? 'Save' : 'Submit Requisition') + '</button></div>', true);
+    };
+    window.recruitSaveReq = function (id) {
+        var g = function (k) { var el = document.getElementById('rj_' + k); return el ? el.value : ''; };
+        var body = { id: id || null, title: g('title'), department: g('department'), location: g('location'), company_name: g('company'), openings: parseInt(g('openings'), 10) || 1, priority: g('priority'), engagement: g('engagement'), target_date: g('target_date') || null, ctc_min: parseFloat(g('ctc_min')) || null, ctc_max: parseFloat(g('ctc_max')) || null, requested_by: g('requested_by'), justification: g('justification'), description: g('description') };
+        if (id) { body.status = g('status'); }
+        if (!body.title.trim()) { if (typeof toast === 'function') { toast('Position title is required'); } return; }
+        recruitPost('/job', body, function () { recruitClose(); recruitLoad(); if (typeof toast === 'function') { toast(id ? 'Requisition saved' : 'Requisition submitted for approval'); } });
+    };
+    window.recruitApprove = function (id) {
+        if (!window.confirm('Approve this requisition? It becomes open for hiring.')) { return; }
+        recruitPost('/job/' + id + '/approve', {}, function (j) { if (j && j.message && typeof toast === 'function') { toast(j.message); } recruitLoad(); });
+    };
+    window.recruitRejectReq = function (id) {
+        var reason = window.prompt('Reason for rejecting this requisition? (optional)');
+        if (reason === null) { return; }
+        recruitPost('/job/' + id + '/reject', { reason: reason }, function (j) { if (j && j.message && typeof toast === 'function') { toast(j.message); } recruitLoad(); });
+    };
+    window.recruitImport = function (input) {
+        if (!input.files || !input.files[0]) { return; }
+        var fd = new FormData(); fd.append('file', input.files[0]);
+        fetch(cfg.recruitmentBase + '/import', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Imported'); } recruitLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Import failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Import failed'); } });
+        input.value = '';
+    };
+    // ---- Job-portal import (Excel .xlsx / CSV → Talent Pool) -----------------
+    function recruitEnsureXLSX(cb) {
+        if (window.XLSX) { cb(); return; }
+        var s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        s.onload = function () { cb(); };
+        s.onerror = function () { cb('lib'); };
+        document.head.appendChild(s);
+    }
+    function recruitParseFile(file, cb) {
+        recruitEnsureXLSX(function (err) {
+            if (err) { cb(null, 'lib'); return; }
+            var rd = new FileReader();
+            rd.onload = function (e) {
+                try {
+                    var wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                    var ws = wb.Sheets[wb.SheetNames[0]];
+                    cb(XLSX.utils.sheet_to_json(ws, { defval: '', raw: false }), null);
+                } catch (ex) { cb(null, String(ex)); }
+            };
+            rd.onerror = function () { cb(null, 'read'); };
+            rd.readAsArrayBuffer(file);
+        });
+    }
+    window.recruitImportFile = function (input) {
+        if (!input.files || !input.files[0]) { return; }
+        var file = input.files[0]; input.value = '';
+        if (typeof toast === 'function') { toast('Reading ' + file.name + '…'); }
+        recruitParseFile(file, function (rows, err) {
+            if (err === 'lib') { if (typeof toast === 'function') { toast('Could not load the Excel reader (no internet?). Save the file as CSV and import that.'); } return; }
+            if (err || !rows) { if (typeof toast === 'function') { toast('Could not read the file. Make sure it is a valid .xlsx or .csv.'); } return; }
+            if (!rows.length) { if (typeof toast === 'function') { toast('No data rows found (need a header row + at least one candidate).'); } return; }
+            if (rows.length > 20000) { if (typeof toast === 'function') { toast('Too many rows (max 20000). Split the file and import in parts.'); } return; }
+            if (typeof toast === 'function') { toast('Importing ' + rows.length + ' row(s) into the Talent Pool…'); }
+            recruitPost('/import-rows', { rows: rows, pool: true }, function (j) {
+                if (typeof toast === 'function') { toast((j && j.message) || 'Imported'); }
+                recruitLoad(); recruitPoolLoad();
+            });
+        });
+    };
+    // ---- Talent pool (searchable bank for future requisitions) ---------------
+    function recruitPoolSection(d) {
+        var st = window.__RECRUIT_POOL || (window.__RECRUIT_POOL = { list: [], total: 0, loaded: false, f: {} });
+        var f = st.f || {}; var inp = recruitInp(), lbl = recruitLbl();
+        var count = st.loaded ? st.total : ((d.stats || {}).poolCount || 0);
+        var search = '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">'
+            + '<div style="flex:2;min-width:200px"><label style="' + lbl + '">Search (name, skill, company)</label><input id="rpq" value="' + rqA(f.q) + '" onkeydown="if(event.key===' + "'Enter'" + '){recruitPoolLoad();}" style="' + inp + '"></div>'
+            + '<div style="flex:1;min-width:110px"><label style="' + lbl + '">Min experience</label><input id="rpexp" type="number" min="0" step="0.5" value="' + rqA(f.exp) + '" style="' + inp + '"></div>'
+            + '<div style="flex:1;min-width:120px"><label style="' + lbl + '">Max CTC (₹/yr)</label><input id="rpctc" type="number" min="0" value="' + rqA(f.ctc) + '" style="' + inp + '"></div>'
+            + '<div style="flex:1;min-width:120px"><label style="' + lbl + '">Location</label><input id="rploc" value="' + rqA(f.loc) + '" style="' + inp + '"></div>'
+            + '<button class="btn btn-primary btn-sm" onclick="recruitPoolLoad()"><i class="fas fa-magnifying-glass"></i> Search</button>'
+            + (f.q || f.loc || f.exp || f.ctc ? '<button class="btn btn-outline btn-sm" onclick="recruitPoolClear()">Clear</button>' : '')
+            + '</div>';
+        if (!st.loaded) { setTimeout(function () { if (!window.__RECRUIT_POOL.loaded) { recruitPoolLoad(); } }, 30); }
+        return '<div><div class="card" style="padding:16px">'
+            + '<div id="rpool-bar">' + recruitPoolBar() + '</div>'
+            + search + '<div id="rpool-results">' + recruitPoolRender() + '</div></div></div>';
+    }
+    function recruitPoolBar() {
+        var sl = window.__RECRUIT_SHORTLIST || {}; var ids = Object.keys(sl); var n = ids.length;
+        var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
+            + '<div style="font-weight:700;font-size:14px"><i class="fas fa-square-check" style="color:#16a34a"></i> Shortlist <span style="color:var(--text3);font-weight:600">' + n + '</span></div>'
+            + (n ? '<div><button class="btn btn-primary btn-sm" onclick="recruitPoolAssignBulk()"><i class="fas fa-arrow-right-to-bracket"></i> Assign to requisition</button> <button class="btn btn-outline btn-sm" onclick="recruitPoolClearSel()">Clear</button></div>' : '')
+            + '</div>';
+        var body;
+        if (!n) {
+            body = '<div style="border:1.5px dashed var(--border);border-radius:10px;padding:16px;text-align:center;color:var(--text3);font-size:13px">No candidates shortlisted yet — tick the boxes in the table below to add them here, then assign the whole shortlist to a requisition in one click.</div>';
+        } else {
+            var chips = ids.map(function (id) {
+                var nm = sl[id] || ('#' + id);
+                return '<span style="display:inline-flex;align-items:center;gap:6px;background:#16a34a14;color:#15803d;border:1px solid #16a34a33;border-radius:16px;padding:4px 11px;font-size:12px;font-weight:600;margin:0 6px 6px 0">' + rqT(nm) + ' <i class="fas fa-xmark" title="Remove from shortlist" onclick="recruitPoolPick(' + id + ', false)" style="cursor:pointer"></i></span>';
+            }).join('');
+            body = '<div style="border:1px solid #16a34a33;background:#16a34a08;border-radius:10px;padding:11px 12px 5px">' + chips + '</div>';
+        }
+        return '<div style="margin-bottom:14px">' + head + body + '</div>';
+    }
+    function recruitPoolNameOf(id) { var st = window.__RECRUIT_POOL || {}; var nm = ''; (st.list || []).forEach(function (c) { if (c.id === id) { nm = c.name; } }); return nm; }
+    window.recruitPoolPick = function (id, checked) {
+        window.__RECRUIT_SHORTLIST = window.__RECRUIT_SHORTLIST || {};
+        if (checked) { window.__RECRUIT_SHORTLIST[id] = recruitPoolNameOf(id) || ('#' + id); } else { delete window.__RECRUIT_SHORTLIST[id]; }
+        var b = document.getElementById('rpool-bar'); if (b) { b.innerHTML = recruitPoolBar(); }
+        var r = document.getElementById('rpool-results'); if (r) { r.innerHTML = recruitPoolRender(); }
+    };
+    window.recruitPoolSelectAll = function (checked) {
+        var st = window.__RECRUIT_POOL || {}; window.__RECRUIT_SHORTLIST = window.__RECRUIT_SHORTLIST || {};
+        (st.list || []).forEach(function (c) { if (checked) { window.__RECRUIT_SHORTLIST[c.id] = c.name || ('#' + c.id); } else { delete window.__RECRUIT_SHORTLIST[c.id]; } });
+        var r = document.getElementById('rpool-results'); if (r) { r.innerHTML = recruitPoolRender(); }
+        var b = document.getElementById('rpool-bar'); if (b) { b.innerHTML = recruitPoolBar(); }
+    };
+    window.recruitPoolClearSel = function () {
+        window.__RECRUIT_SHORTLIST = {};
+        var r = document.getElementById('rpool-results'); if (r) { r.innerHTML = recruitPoolRender(); }
+        var b = document.getElementById('rpool-bar'); if (b) { b.innerHTML = recruitPoolBar(); }
+    };
+    window.recruitPoolAssignBulk = function () {
+        var ids = Object.keys(window.__RECRUIT_SHORTLIST || {});
+        if (!ids.length) { if (typeof toast === 'function') { toast('Shortlist some candidates first'); } return; }
+        var d = window.__RECRUIT || {}; var opts = recruitReqOpts(d, null);
+        recruitModal('<h3 style="margin:0 0 10px">Assign ' + ids.length + ' shortlisted candidate(s)</h3><div style="font-size:12px;color:var(--text3);margin-bottom:12px">Moves the shortlist from the Talent Pool into the chosen requisition pipeline at the Applied stage.</div>'
+            + '<label style="' + recruitLbl() + '">Open requisition</label><select id="rpa_job" style="' + recruitInp() + '">' + opts + '</select>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="recruitClose()">Cancel</button><button class="btn btn-primary" onclick="recruitPoolAssignBulkGo()">Assign all</button></div>');
+    };
+    window.recruitPoolAssignBulkGo = function () {
+        var el = document.getElementById('rpa_job'); var jid = el ? parseInt(el.value, 10) : 0;
+        if (!jid) { if (typeof toast === 'function') { toast('Pick an open requisition (approve one first if the list is empty).'); } return; }
+        var ids = Object.keys(window.__RECRUIT_SHORTLIST || {}).map(function (x) { return parseInt(x, 10); });
+        recruitPost('/assign-bulk', { ids: ids, job_id: jid }, function (j) { recruitClose(); if (j && j.message && typeof toast === 'function') { toast(j.message); } window.__RECRUIT_SHORTLIST = {}; recruitPoolLoad(); recruitLoad(); });
+    };
+    function recruitPoolRender() {
+        var st = window.__RECRUIT_POOL || {}; var list = st.list || []; var f = st.f || {};
+        var sl = window.__RECRUIT_SHORTLIST || {};
+        var cs = 'padding:8px 10px;font-size:13px;border-top:1px solid var(--border);vertical-align:top;white-space:nowrap';
+        var rows = list.map(function (c) {
+            var resume = c.resume_url ? '<a href="' + rqA(c.resume_url) + '" target="_blank" rel="noopener" title="Open resume" style="color:#3b82f6"><i class="fas fa-file-lines"></i> View</a>' : '<span style="color:var(--text3)">—</span>';
+            var dash = function (x) { return (x === null || x === undefined || x === '') ? '<span style="color:var(--text3)">—</span>' : rqT(x); };
+            var act = '<i class="fas fa-arrow-right-to-bracket" title="Assign to a requisition" onclick="recruitPoolAssign(' + c.id + ')" style="cursor:pointer;color:#16a34a;margin-right:12px"></i>'
+                + '<i class="fas fa-pen" title="Edit" onclick="recruitCand(' + c.id + ')" style="cursor:pointer;color:var(--text2);margin-right:12px"></i>'
+                + '<i class="fas fa-trash" title="Delete" onclick="recruitPoolDel(' + c.id + ')" style="cursor:pointer;color:var(--red)"></i>';
+            return '<tr' + (sl[c.id] ? ' style="background:#16a34a08"' : '') + '><td style="' + cs + ';text-align:center"><input type="checkbox" ' + (sl[c.id] ? 'checked' : '') + ' onclick="recruitPoolPick(' + c.id + ', this.checked)"></td>'
+                + '<td style="' + cs + ';font-weight:600">' + rqT(c.name) + '</td>'
+                + '<td style="' + cs + '">' + dash(c.email) + '</td>'
+                + '<td style="' + cs + '">' + dash(c.mobile) + '</td>'
+                + '<td style="' + cs + '">' + dash(c.location) + '</td>'
+                + '<td style="' + cs + ';text-align:center">' + (c.experience_years != null && c.experience_years !== '' ? c.experience_years : '<span style="color:var(--text3)">—</span>') + '</td>'
+                + '<td style="' + cs + '">' + dash(c.current_company) + '</td>'
+                + '<td style="' + cs + '">' + dash(c.current_designation) + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + (c.current_ctc ? rqMoney(c.current_ctc) : '<span style="color:var(--text3)">—</span>') + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + (c.expected_ctc ? rqMoney(c.expected_ctc) : '<span style="color:var(--text3)">—</span>') + '</td>'
+                + '<td style="' + cs + ';white-space:normal;max-width:220px;font-size:12px;color:var(--text2)">' + dash(c.skills) + '</td>'
+                + '<td style="' + cs + '">' + resume + '</td>'
+                + '<td style="' + cs + '">' + dash(c.source) + '</td>'
+                + '<td style="' + cs + '">' + dash(c.position) + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + act + '</td></tr>';
+        }).join('');
+        var th = '<th style="padding:9px 10px;background:#f8fafc;width:34px;text-align:center"><input type="checkbox" onclick="recruitPoolSelectAll(this.checked)" title="Select all shown"></th>'
+            + ['Name', 'Email', 'Mobile', 'Location', 'Exp (Yrs)', 'Current Company', 'Current Designation', 'Current CTC', 'Expected CTC', 'Skills', 'Resume', 'Source', 'Position', ''].map(function (h) { return '<th style="padding:9px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap;background:#f8fafc">' + h + '</th>'; }).join('');
+        var body = rows;
+        if (!st.loaded) { body = '<tr><td colspan="15" style="padding:22px;text-align:center;color:var(--text3)">Loading talent pool…</td></tr>'; }
+        else if (!list.length) { body = '<tr><td colspan="15" style="padding:22px;text-align:center;color:var(--text3)">' + ((f.q || f.loc || f.exp || f.ctc) ? 'No candidates match your filters.' : 'No candidates in the pool yet — use “Import from Portal” to build your bank.') + '</td></tr>'; }
+        var more = (st.loaded && st.total > list.length) ? '<div style="font-size:11px;color:var(--text3);padding:8px 10px">Showing ' + list.length + ' of ' + st.total + ' — refine the search to narrow down.</div>' : '';
+        return '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table></div>' + more;
+    }
+    window.recruitPoolLoad = function () {
+        var g = function (id) { var e = document.getElementById(id); return e ? e.value.trim() : ''; };
+        var f = { q: g('rpq'), exp: g('rpexp'), ctc: g('rpctc'), loc: g('rploc') };
+        window.__RECRUIT_POOL = window.__RECRUIT_POOL || { list: [], total: 0, loaded: false };
+        window.__RECRUIT_POOL.f = f;
+        var qs = '?q=' + encodeURIComponent(f.q) + '&min_exp=' + encodeURIComponent(f.exp) + '&max_ctc=' + encodeURIComponent(f.ctc) + '&location=' + encodeURIComponent(f.loc);
+        fetch(cfg.recruitmentBase + '/pool' + qs, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                window.__RECRUIT_POOL.list = (j && j.candidates) || [];
+                window.__RECRUIT_POOL.total = (j && j.total) || 0;
+                window.__RECRUIT_POOL.loaded = true;
+                var c = document.getElementById('rpool-results'); if (c) { c.innerHTML = recruitPoolRender(); }
+            }).catch(function () {
+                window.__RECRUIT_POOL.loaded = true;
+                var c = document.getElementById('rpool-results'); if (c) { c.innerHTML = '<div style="color:var(--red);padding:10px">Could not load talent pool.</div>'; }
+            });
+    };
+    window.recruitPoolClear = function () {
+        window.__RECRUIT_POOL = window.__RECRUIT_POOL || {}; window.__RECRUIT_POOL.f = {};
+        ['rpq', 'rpexp', 'rpctc', 'rploc'].forEach(function (id) { var e = document.getElementById(id); if (e) { e.value = ''; } });
+        recruitPoolLoad();
+    };
+    window.recruitPoolDel = function (id) { if (!window.confirm('Delete this candidate from the talent pool?')) { return; } recruitPost('/candidate/' + id + '/delete', {}, function () { recruitPoolLoad(); recruitLoad(); }); };
+    window.recruitPoolAssign = function (id) {
+        var d = window.__RECRUIT || {}; var opts = recruitReqOpts(d, null);
+        recruitModal('<h3 style="margin:0 0 10px">Assign to Requisition</h3><div style="font-size:12px;color:var(--text3);margin-bottom:12px">Moves this candidate from the Talent Pool into the chosen requisition pipeline at the Applied stage.</div>'
+            + '<label style="' + recruitLbl() + '">Open requisition</label><select id="rpa_job" style="' + recruitInp() + '">' + opts + '</select>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="recruitClose()">Cancel</button><button class="btn btn-primary" onclick="recruitPoolAssignGo(' + id + ')">Assign</button></div>');
+    };
+    window.recruitPoolAssignGo = function (id) {
+        var el = document.getElementById('rpa_job'); var jid = el ? parseInt(el.value, 10) : 0;
+        if (!jid) { if (typeof toast === 'function') { toast('Pick an open requisition (approve one first if the list is empty).'); } return; }
+        recruitPost('/candidate/' + id + '/assign', { job_id: jid }, function (j) { recruitClose(); if (j && j.message && typeof toast === 'function') { toast(j.message); } recruitPoolLoad(); recruitLoad(); });
+    };
+    window.recruitMove = function (id, stage) { recruitPost('/candidate/' + id + '/stage', { stage: stage }, function () { recruitLoad(); }); };
+    window.recruitAdvance = function (id, stage) { var order = ['applied', 'screening', 'interview', 'offer']; var i = order.indexOf(stage); if (i >= 0 && i < order.length - 1) { recruitMove(id, order[i + 1]); } else if (typeof toast === 'function') { toast('At Offer stage — use Hire to finalise'); } };
+    function recruitFindCand(id) { var d = window.__RECRUIT || {}; var rec = null; (d.stages || []).forEach(function (st) { ((d.byStage && d.byStage[st]) || []).forEach(function (c) { if (c.id === id) { rec = c; } }); }); return rec || {}; }
+    window.recruitReject = function (id) {
+        var reason = window.prompt('Reason for rejecting this candidate? (optional)');
+        if (reason === null) { return; }
+        recruitPost('/candidate/' + id + '/stage', { stage: 'rejected', reject_reason: reason }, function () { recruitLoad(); });
+    };
+    window.recruitHire = function (id) {
+        var d = window.__RECRUIT || {}; var c = recruitFindCand(id);
+        var inp = recruitInp(), lbl = recruitLbl();
+        var today = new Date().toISOString().slice(0, 10);
+        var compOpts = '<option value="">—</option>' + rqIdOpts(d.companiesFull, c.company_id);
+        var desigOpts = '<option value="">— from position —</option>' + rqIdOpts(d.designations, '');
+        var deptOpts = '<option value="">—</option>' + rqIdOpts(d.departments, '');
+        var brOpts = '<option value="">—</option>' + rqIdOpts(d.branches, '');
+        var mgrOpts = '<option value="">—</option>' + rqIdOpts(d.managers, '');
+        var hasBranch = (d.branches || []).length ? ('<div><label style="' + lbl + '">Branch</label><select id="rh_branch_id" style="' + inp + '">' + brOpts + '</select></div>') : '';
+        var hasDept = (d.departments || []).length ? ('<div><label style="' + lbl + '">Department</label><select id="rh_department_id" style="' + inp + '">' + deptOpts + '</select></div>') : '';
+        var job = (d.jobs || []).filter(function (j) { return j.id === c.job_id; })[0];
+        var eng = (job && job.engagement === 'off_roll') ? 'off_roll' : 'on_roll';
+        var onroll = '<div id="rh-onroll" style="grid-column:1 / -1;' + (eng === 'off_roll' ? 'display:none' : '') + '"><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+            + '<div><label style="' + lbl + '">Offered CTC (₹/yr)</label><input id="rh_offered_ctc" type="number" min="0" value="' + (c.offered_ctc || '') + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Date of joining</label><input id="rh_doj" type="date" value="' + (c.offer_doj || today) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Designation</label><select id="rh_designation_id" style="' + inp + '">' + desigOpts + '</select></div>'
+            + hasDept + hasBranch
+            + '<div><label style="' + lbl + '">Company</label><select id="rh_company_id" style="' + inp + '">' + compOpts + '</select></div>'
+            + '<div><label style="' + lbl + '">Reporting manager</label><select id="rh_reporting_manager_id" style="' + inp + '">' + mgrOpts + '</select></div>'
+            + '<div><label style="' + lbl + '">Employment type</label><select id="rh_type" style="' + inp + '"><option value="office">Office</option><option value="field">Field</option></select></div>'
+            + '<div><label style="' + lbl + '">Salary type</label><select id="rh_salary_type" style="' + inp + '"><option value="only_salary">Only salary</option><option value="salary_incentive">Salary + incentive</option></select></div>'
+            + '</div></div>';
+        var offroll = '<div id="rh-offroll" style="grid-column:1 / -1;' + (eng === 'off_roll' ? '' : 'display:none') + '"><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+            + '<div><label style="' + lbl + '">Vendor / agency</label><input id="rh_vendor" value="' + rqA(c.current_company) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Payout type</label><select id="rh_payout_type" style="' + inp + '">' + rqOpts(['per_visit', 'fixed', 'percent'], 'per_visit', { per_visit: 'Per visit', fixed: 'Fixed monthly', percent: 'Percent of collection' }) + '</select></div>'
+            + '<div><label style="' + lbl + '">Rate (₹ / % )</label><input id="rh_rate" type="number" min="0" step="0.01" value="" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Company</label><select id="rh_off_company_id" style="' + inp + '">' + compOpts + '</select></div>'
+            + '<div><label style="' + lbl + '">DRA certificate</label><input id="rh_dra" placeholder="DRA cert no. / status" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">PCC (police clearance)</label><input id="rh_pcc" placeholder="PCC no. / status" style="' + inp + '"></div>'
+            + '</div></div>';
+        recruitModal('<h3 style="margin:0 0 4px">Hire / engage ' + rqT(c.name) + '</h3>'
+            + '<div style="font-size:12px;color:var(--text3);margin-bottom:14px">On-roll creates a payroll <b>employee</b>; off-roll creates a commission-only <b>field agent</b> (no payroll). The linked requisition is filled either way.</div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Engagement</label><select id="rh_engagement" onchange="recruitHireToggle()" style="' + inp + '">' + rqOpts(['on_roll', 'off_roll'], eng, { on_roll: 'On-roll employee (payroll)', off_roll: 'Off-roll agent (commission only)' }) + '</select></div>'
+            + onroll + offroll
+            + '</div><div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="recruitClose()">Cancel</button><button class="btn btn-primary" onclick="recruitHireGo(' + id + ')"><i class="fas fa-user-check"></i> Confirm</button></div>', true);
+    };
+    window.recruitHireToggle = function () {
+        var e = document.getElementById('rh_engagement'); var off = e && e.value === 'off_roll';
+        var on1 = document.getElementById('rh-onroll'); var of1 = document.getElementById('rh-offroll');
+        if (on1) { on1.style.display = off ? 'none' : ''; }
+        if (of1) { of1.style.display = off ? '' : 'none'; }
+    };
+    window.recruitHireGo = function (id) {
+        var g = function (k) { var el = document.getElementById(k); return el ? el.value : ''; };
+        var eng = g('rh_engagement') || 'on_roll';
+        var body;
+        if (eng === 'off_roll') {
+            body = { engagement: 'off_roll', vendor: g('rh_vendor'), payout_type: g('rh_payout_type'), rate: parseFloat(g('rh_rate')) || null, dra: g('rh_dra'), pcc: g('rh_pcc'), company_id: parseInt(g('rh_off_company_id'), 10) || null };
+        } else {
+            body = { engagement: 'on_roll', offered_ctc: parseFloat(g('rh_offered_ctc')) || null, doj: g('rh_doj') || null, designation_id: parseInt(g('rh_designation_id'), 10) || null, department_id: parseInt(g('rh_department_id'), 10) || null, branch_id: parseInt(g('rh_branch_id'), 10) || null, company_id: parseInt(g('rh_company_id'), 10) || null, reporting_manager_id: parseInt(g('rh_reporting_manager_id'), 10) || null, type: g('rh_type'), salary_type: g('rh_salary_type') };
+        }
+        recruitPost('/candidate/' + id + '/hire', body, function (j) { recruitClose(); if (j && j.message && typeof toast === 'function') { toast(j.message); } if (typeof reloadEmployees === 'function') { reloadEmployees(cfg); } recruitLoad(); });
+    };
+    // ---- Interviews & feedback ----------------------------------------------
+    window.recruitIv = function (candId) {
+        window.__RECRUIT_IV = { candId: candId, list: null };
+        recruitModal('<h3 style="margin:0 0 12px">Interviews &amp; Feedback</h3><div id="riv_body" style="color:var(--text3)">Loading…</div>', true);
+        fetch(cfg.recruitmentBase + '/candidate/' + candId + '/interviews', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) { window.__RECRUIT_IV.list = (j && j.interviews) || []; recruitIvRender(); })
+            .catch(function () { var b = document.getElementById('riv_body'); if (b) { b.innerHTML = 'Could not load interviews.'; } });
+    };
+    function recruitIvRender() {
+        var st = window.__RECRUIT_IV || {}; var list = st.list || []; var b = document.getElementById('riv_body'); if (!b) { return; }
+        var rows = list.map(function (iv) {
+            var rec = iv.recommendation && RREC[iv.recommendation] ? RREC[iv.recommendation] : null;
+            var when = iv.scheduled_at ? String(iv.scheduled_at).replace('T', ' ').slice(0, 16) : '—';
+            return '<div class="card" style="padding:10px 12px;margin-bottom:8px">'
+                + '<div style="display:flex;justify-content:space-between;align-items:flex-start"><div><b>Round ' + iv.round + (iv.round_label ? ' · ' + rqT(iv.round_label) : '') + '</b>'
+                + '<span style="font-size:11px;color:var(--text3);margin-left:8px">' + (RMODE[iv.mode] || iv.mode || '') + '</span></div>'
+                + '<div style="white-space:nowrap"><i class="fas fa-pen" onclick="recruitIvForm(' + iv.id + ')" style="cursor:pointer;color:var(--text2);margin-right:11px"></i><i class="fas fa-trash" onclick="recruitIvDel(' + iv.id + ')" style="cursor:pointer;color:var(--red)"></i></div></div>'
+                + '<div style="font-size:12px;color:var(--text3);margin-top:3px">' + when + (iv.panel ? ' · Panel: ' + rqT(iv.panel) : '') + '</div>'
+                + '<div style="margin-top:5px;font-size:12px">Status: <b>' + (iv.status || 'scheduled') + '</b>' + (iv.score != null && iv.score !== '' ? ' · Score: <b>' + iv.score + '/10</b>' : '') + (rec ? ' · <span style="color:' + rec[1] + ';font-weight:600">' + rec[0] + '</span>' : '') + '</div>'
+                + (iv.feedback ? '<div style="font-size:12px;color:var(--text2);margin-top:5px;white-space:pre-wrap">' + rqT(iv.feedback) + '</div>' : '') + '</div>';
+        }).join('');
+        b.innerHTML = (rows || '<div style="color:var(--text3);padding:6px 0 12px">No interviews yet.</div>')
+            + '<div id="riv_form"></div>'
+            + '<button class="btn btn-primary btn-sm" onclick="recruitIvForm(null)" style="margin-top:6px"><i class="fas fa-plus"></i> Schedule / add interview</button>'
+            + '<button class="btn btn-outline btn-sm" onclick="recruitClose()" style="margin-top:6px;margin-left:8px">Close</button>';
+    }
+    window.recruitIvForm = function (ivId) {
+        var st = window.__RECRUIT_IV || {}; var d = window.__RECRUIT || {}; var iv = (st.list || []).find(function (x) { return x.id === ivId; }) || {};
+        var inp = recruitInp(), lbl = recruitLbl();
+        var sched = iv.scheduled_at ? String(iv.scheduled_at).replace(' ', 'T').slice(0, 16) : '';
+        var html = '<div class="card" style="padding:12px;margin:10px 0;background:#f8fafc"><div style="font-weight:600;margin-bottom:10px">' + (ivId ? 'Edit interview' : 'New interview') + '</div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+            + '<div><label style="' + lbl + '">Round</label><input id="riv_round" type="number" min="1" max="20" value="' + (iv.round || 1) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Round label</label><input id="riv_round_label" value="' + rqA(iv.round_label) + '" placeholder="e.g. Technical, HR" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">When</label><input id="riv_scheduled_at" type="datetime-local" value="' + sched + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Mode</label><select id="riv_mode" style="' + inp + '"><option value="">—</option>' + rqOpts(d.modes, iv.mode, RMODE) + '</select></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Panel / interviewers</label><input id="riv_panel" value="' + rqA(iv.panel) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Status</label><select id="riv_status" style="' + inp + '">' + rqOpts(d.intStatus, iv.status || 'scheduled', { scheduled: 'Scheduled', completed: 'Completed', cancelled: 'Cancelled', no_show: 'No show' }) + '</select></div>'
+            + '<div><label style="' + lbl + '">Score (0-10)</label><input id="riv_score" type="number" min="0" max="10" step="0.5" value="' + (iv.score != null ? iv.score : '') + '" style="' + inp + '"></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Recommendation</label><select id="riv_recommendation" style="' + inp + '"><option value="">—</option>' + rqOpts(d.recommend, iv.recommendation, RREC) + '</select></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Feedback</label><textarea id="riv_feedback" rows="3" style="' + inp + ';resize:vertical">' + rqT(iv.feedback) + '</textarea></div>'
+            + '</div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn btn-outline btn-sm" onclick="recruitIvRender()">Cancel</button><button class="btn btn-primary btn-sm" onclick="recruitIvSave(' + (ivId || 'null') + ')">Save</button></div></div>';
+        var f = document.getElementById('riv_form'); if (f) { f.innerHTML = html; f.scrollIntoView({ block: 'nearest' }); }
+    };
+    window.recruitIvSave = function (ivId) {
+        var st = window.__RECRUIT_IV || {}; var g = function (k) { var el = document.getElementById('riv_' + k); return el ? el.value : ''; };
+        var body = { id: ivId || null, candidate_id: st.candId, round: parseInt(g('round'), 10) || 1, round_label: g('round_label'), scheduled_at: g('scheduled_at'), mode: g('mode'), panel: g('panel'), status: g('status'), score: g('score') === '' ? null : parseFloat(g('score')), recommendation: g('recommendation'), feedback: g('feedback') };
+        recruitPost('/interview', body, function () { recruitIv(st.candId); recruitLoad(); });
+    };
+    window.recruitIvDel = function (ivId) {
+        if (!window.confirm('Delete this interview?')) { return; }
+        var st = window.__RECRUIT_IV || {};
+        recruitPost('/interview/' + ivId + '/delete', {}, function () { recruitIv(st.candId); });
+    };
+    window.recruitDelCand = function (id) { if (!window.confirm('Delete this candidate?')) { return; } recruitPost('/candidate/' + id + '/delete', {}, function () { recruitLoad(); }); };
+    window.recruitDelJob = function (id) { if (!window.confirm('Delete this job opening?')) { return; } recruitPost('/job/' + id + '/delete', {}, function () { recruitLoad(); }); };
+    function recruitPost(path, body, cb) {
+        fetch(cfg.recruitmentBase + path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body || {}) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (cb) { cb(j); } } else if (typeof toast === 'function') { toast((j && j.error) || 'Failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Request failed'); } });
+    }
+    // ---- Off-roll agent KYC (photo, documents, contact verification) ---------
+    var OFFROLL_DOCS = [['id_proof', 'ID proof (Aadhaar / Govt ID)'], ['pan', 'PAN card'], ['address', 'Address proof'], ['dra', 'DRA certificate'], ['pcc', 'PCC (police clearance)'], ['agreement', 'Signed agreement']];
+    function offrollModal(html) {
+        var m = document.getElementById('offroll-modal') || (function () { var x = document.createElement('div'); x.id = 'offroll-modal'; document.body.appendChild(x); return x; })();
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+        m.innerHTML = '<div class="card" style="max-width:680px;width:100%;margin:auto;padding:26px 28px;box-sizing:border-box">' + html + '</div>';
+        m.onclick = function (e) { if (e.target === m) { offrollClose(); } };
+    }
+    window.offrollClose = function () { var m = document.getElementById('offroll-modal'); if (m) { m.remove(); } };
+    window.offrollKyc = function (id) {
+        fetch(cfg.offrollAgentBase + '/' + id + '/profile', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not load agent'); } return; }
+                offrollKycRender(j);
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not load agent'); } });
+    };
+    function offrollKycRender(p) {
+        var inp = recruitInp(), lbl = recruitLbl();
+        var photo = p.photo_url
+            ? '<img src="' + p.photo_url + '?t=' + Date.now() + '" style="width:88px;height:88px;border-radius:10px;object-fit:cover;border:1px solid var(--border)">'
+            : '<div style="width:88px;height:88px;border-radius:10px;border:1.5px dashed var(--border);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:26px"><i class="fas fa-user"></i></div>';
+        var emailBadge = p.email_verified ? '<span style="color:#16a34a;font-weight:700;font-size:11px">✓ Verified</span>' : '<span style="color:#f59e0b;font-weight:700;font-size:11px">Not verified</span>';
+        var docRows = OFFROLL_DOCS.map(function (dd) {
+            var slot = dd[0], lab = dd[1]; var has = p.docs && p.docs[slot];
+            return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">'
+                + '<div style="flex:1;font-size:13px">' + lab + ' ' + (has ? '<span style="color:#16a34a;font-size:11px;font-weight:700">✓ Uploaded</span>' : '<span style="color:var(--text3);font-size:11px">— not uploaded</span>') + '</div>'
+                + (has ? '<a href="' + cfg.offrollAgentBase + '/' + p.id + '/file/' + slot + '" target="_blank" rel="noopener" style="color:#3b82f6;font-size:12px">View</a>' : '')
+                + '<label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0">' + (has ? 'Replace' : 'Upload') + '<input type="file" accept="image/*,application/pdf" style="display:none" onchange="offrollUploadFile(' + p.id + ', ' + "'" + slot + "'" + ', this)"></label>'
+                + '</div>';
+        }).join('');
+        offrollModal('<div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0 0 4px">KYC — ' + rqT(p.name) + '</h3>'
+            + '<button class="btn btn-sm btn-primary" onclick="offrollEarnings(' + p.id + ')"><i class="fas fa-bolt"></i> Live earnings</button></div>'
+            + '<div style="font-size:12px;color:var(--text3);margin-bottom:16px">' + (rqT(p.vendor) || '—') + (p.company ? ' · ' + rqT(p.company) : '') + '</div>'
+            + '<div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:16px">'
+            + '<div style="text-align:center">' + photo + '<div style="margin-top:6px"><label class="btn btn-outline btn-sm" style="cursor:pointer">Photo<input type="file" accept="image/*" style="display:none" onchange="offrollUploadFile(' + p.id + ', ' + "'photo'" + ', this)"></label></div></div>'
+            + '<div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Email ' + emailBadge + '</label><div style="display:flex;gap:8px"><input id="of_email" value="' + rqA(p.email) + '" style="' + inp + '"><button class="btn btn-outline btn-sm" onclick="offrollSendVerify(' + p.id + ')" title="Email a verification link">Verify</button></div></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Mobile <label style="font-weight:600;text-transform:none;letter-spacing:0;color:var(--text2);font-size:12px"><input type="checkbox" ' + (p.mobile_verified ? 'checked' : '') + ' onchange="offrollToggleMobile(' + p.id + ', this.checked)"> verified</label> <span style="font-size:10px;color:var(--text3)">(SMS OTP coming when SMS is enabled)</span></label><input id="of_mobile" value="' + rqA(p.mobile) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Bank account</label><input id="of_bank" value="' + rqA(p.bank_details) + '" placeholder="A/C · IFSC" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">UPI</label><input id="of_upi" value="' + rqA(p.upi) + '" placeholder="name@bank" style="' + inp + '"></div>'
+            + '</div></div>'
+            + '<div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;margin:4px 0 2px">Documents</div>'
+            + docRows
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px"><button class="btn btn-outline" onclick="offrollClose()">Close</button><button class="btn btn-primary" onclick="offrollSaveContact(' + p.id + ')">Save details</button></div>');
+    }
+    window.offrollUploadFile = function (id, slot, input) {
+        if (!input.files || !input.files[0]) { return; }
+        var fd = new FormData(); fd.append('file', input.files[0]); input.value = '';
+        fetch(cfg.offrollAgentBase + '/' + id + '/upload/' + slot, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('Uploaded'); } offrollKyc(id); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Upload failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Upload failed'); } });
+    };
+    function offrollPost(id, path, body, cb) {
+        fetch(cfg.offrollAgentBase + '/' + id + path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body || {}) })
+            .then(function (r) { return r.json(); }).then(function (j) { if (j && j.ok) { if (cb) { cb(j); } } else if (typeof toast === 'function') { toast((j && j.error) || 'Failed'); } })
+            .catch(function () { if (typeof toast === 'function') { toast('Request failed'); } });
+    }
+    window.offrollSaveContact = function (id) {
+        var g = function (k) { var el = document.getElementById('of_' + k); return el ? el.value : ''; };
+        offrollPost(id, '/contact', { email: g('email'), mobile: g('mobile'), bank_details: g('bank'), upi: g('upi') }, function () { if (typeof toast === 'function') { toast('Saved'); } offrollKyc(id); });
+    };
+    // ---- rev 80: off-roll agent LIVE EARNINGS (HR records, auto-calculated;
+    // admin approves; agent sees a public token link — no login needed) -------
+    window.offrollEarnings = function (id) {
+        fetch(cfg.offrollAgentBase + '/' + id + '/earnings', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not load earnings'); } return; }
+                offrollEarningsRender(j, id);
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not load earnings'); } });
+    };
+    function offrollEarningsRender(p, id) {
+        var inp = recruitInp(), lbl = recruitLbl();
+        var a = p.agent || {};
+        var cfgTxt = a.payout_type === 'per_visit' ? (inr(a.rate) + ' per visit')
+            : (a.payout_type === 'percent' ? (a.rate + '% of amount collected')
+                : (a.payout_type === 'fixed' ? (inr(a.rate) + ' fixed') : 'no payout rate set'));
+        var rows = (p.entries || []).map(function (en) {
+            var pend = en.status === 'pending';
+            var rej = en.status === 'rejected';
+            var col = en.sign === '+' ? '#15803d' : '#b91c1c';
+            var act = pend
+                ? '<button class="btn btn-sm btn-primary" onclick="offrollEarnDecide(' + id + ',' + en.id + ',&#39;approve&#39;)">Approve</button> <button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="offrollEarnDecide(' + id + ',' + en.id + ',&#39;reject&#39;)">Reject</button>'
+                : (rej ? '<span style="color:var(--red);font-size:11px;font-weight:700">REJECTED</span>' : '<span style="color:#15803d;font-size:11px;font-weight:700">APPROVED</span>');
+            var c2 = 'padding:8px 10px;font-size:12.5px;border-top:1px solid var(--border)';
+            return '<tr' + (rej ? ' style="opacity:.45"' : '') + '><td style="' + c2 + ';white-space:nowrap;color:var(--text3)">' + en.date + '</td>'
+                + '<td style="' + c2 + '"><b>' + en.head + '</b><span style="display:block;font-size:11px;color:var(--text3)">' + (en.detail || '') + '</span></td>'
+                + '<td style="' + c2 + ';text-align:right;white-space:nowrap"><b style="color:' + col + '">' + en.sign + ' ' + inr(en.amount) + '</b></td>'
+                + '<td style="' + c2 + ';white-space:nowrap;text-align:right">' + act + '</td></tr>';
+        }).join('');
+        if (!rows) { rows = '<tr><td colspan="4" style="padding:18px;text-align:center;color:var(--text3);font-size:12.5px">No entries this month yet</td></tr>'; }
+        offrollModal('<div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0 0 4px">Live earnings — ' + rqT(a.name) + '</h3>'
+            + '<button class="btn btn-sm btn-outline" onclick="offrollKyc(' + id + ')"><i class="fas fa-id-card"></i> KYC</button></div>'
+            + '<div style="font-size:12px;color:var(--text3);margin-bottom:12px">' + p.monthLabel + ' · payout: ' + cfgTxt + '</div>'
+            + '<div style="background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff;border-radius:12px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">'
+            + '<div><div style="font-size:10.5px;letter-spacing:1px;text-transform:uppercase;opacity:.7">Approved this month</div><div style="font-size:26px;font-weight:800">' + inr(p.net) + '</div></div>'
+            + (p.pending > 0 ? '<div style="text-align:right"><div style="font-size:10.5px;letter-spacing:1px;text-transform:uppercase;opacity:.7">Awaiting approval</div><div style="font-size:18px;font-weight:700;color:#fde68a">' + inr(p.pending) + '</div></div>' : '')
+            + '</div>'
+            + '<div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px">'
+            + '<div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">Record an entry (auto-calculated from the payout rate)</div>'
+            + '<div style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:10px">'
+            + '<div><label style="' + lbl + '">Type</label><select id="oe_kind" style="' + inp + '"><option value="visit">Field visits</option><option value="collection">Collection (amount)</option><option value="fixed">Fixed payout</option><option value="adjustment">Adjustment / bonus</option><option value="deduction">Deduction</option></select></div>'
+            + '<div><label style="' + lbl + '">Visits (count)</label><input id="oe_qty" type="number" min="0" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Collected (&#8377;)</label><input id="oe_base" type="number" min="0" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Amount override (&#8377;)</label><input id="oe_amount" type="number" min="0" placeholder="auto" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Date</label><input id="oe_date" type="date" style="' + inp + '"></div>'
+            + '<div style="grid-column:2 / -1"><label style="' + lbl + '">Note</label><input id="oe_note" placeholder="e.g. 5 visits, Kukatpally route" style="' + inp + '"></div>'
+            + '</div>'
+            + '<div style="margin-top:10px;display:flex;justify-content:flex-end"><button class="btn btn-primary btn-sm" onclick="offrollEarnAdd(' + id + ')"><i class="fas fa-plus"></i> Add entry</button></div>'
+            + '</div>'
+            + '<div style="border:1px solid var(--border);border-radius:12px;overflow:auto;max-height:300px"><table style="width:100%;border-collapse:collapse">' + rows + '</table></div>'
+            + '<div style="display:flex;gap:10px;justify-content:space-between;margin-top:16px">'
+            + '<button class="btn btn-outline" onclick="offrollEarnLink(' + id + ')"' + (a.hasEmail ? '' : ' title="No email saved — the link will still be shown for WhatsApp"') + '><i class="fas fa-link"></i> Send live link to agent</button>'
+            + '<button class="btn btn-outline" onclick="offrollClose()">Close</button></div>');
+    }
+    window.offrollEarnAdd = function (id) {
+        var g = function (k) { var el = document.getElementById('oe_' + k); return el ? el.value : ''; };
+        var body = { kind: g('kind'), note: g('note') };
+        if (g('qty') !== '') { body.qty = Number(g('qty')); }
+        if (g('base') !== '') { body.base_amount = Number(g('base')); }
+        if (g('amount') !== '') { body.amount = Number(g('amount')); }
+        if (g('date') !== '') { body.entry_date = g('date'); }
+        offrollPost(id, '/earnings', body, function (j) { if (typeof toast === 'function') { toast('Entry added — ' + inr(j.amount) + ' (pending approval)'); } offrollEarnings(id); });
+    };
+    window.offrollEarnDecide = function (id, eid, action) {
+        fetch(cfg.offrollAgentBase + '/earnings/' + eid + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('Entry ' + action + 'd'); } offrollEarnings(id); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Failed'); } });
+    };
+    window.offrollEarnLink = function (id) {
+        offrollPost(id, '/earnings-link', {}, function (j) {
+            if (typeof toast === 'function') { toast(j.emailed ? 'Link emailed to the agent' : 'Link ready — share it on WhatsApp'); }
+            window.prompt('Private live-earnings link for this agent (share on WhatsApp):', j.link || '');
+        });
+    };
+    window.offrollSendVerify = function (id) {
+        offrollPost(id, '/verify-email', {}, function (j) { if (typeof toast === 'function') { toast((j && j.message) || 'Verification link sent'); } });
+    };
+    window.offrollToggleMobile = function (id, checked) {
+        offrollPost(id, '/verify-mobile', { verified: checked ? 1 : 0 }, function () { if (typeof toast === 'function') { toast(checked ? 'Mobile marked verified' : 'Mobile verification cleared'); } });
+    };
+    // ---- Employee ID cards (list → per-employee PDF) -------------------------
+    function idcardScreen() {
+        var emps = (typeof DB !== 'undefined' && DB.employees) || [];
+        var canDel = cfg.role === 'Admin' || cfg.role === 'Super Admin';
+        var cs = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border)';
+        var thBase = 'padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)';
+        var thChk = canDel ? '<th style="' + thBase + ';width:40px;text-align:center;padding:10px 6px"><input type="checkbox" onchange="idSelAll(this.checked)" style="width:15px;height:15px;cursor:pointer;vertical-align:middle" title="Select all"></th>' : '';
+        var th = thChk + ['Name', 'Code', 'Designation', ''].map(function (h) { return '<th style="' + thBase + '">' + h + '</th>'; }).join('');
+        var body = emps.map(function (e) {
+            var code = e.id || e.code || '';
+            var av = e.photo ? '<img src="' + e.photo + '" style="width:30px;height:30px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:8px">' : '<span style="display:inline-flex;width:30px;height:30px;border-radius:50%;background:#e2e8f0;color:#94a3b8;align-items:center;justify-content:center;vertical-align:middle;margin-right:8px;font-size:11px"><i class="fas fa-user"></i></span>';
+            var chk = canDel ? '<td style="' + cs + ';width:40px;text-align:center;vertical-align:middle;padding:8px 6px"><input type="checkbox" class="idsel" value="' + String(code).replace(/"/g, '&quot;') + '" onchange="idSelCount()" style="width:15px;height:15px;cursor:pointer;vertical-align:middle"></td>' : '';
+            return '<tr>' + chk + '<td style="' + cs + ';font-weight:600;vertical-align:middle">' + av + (e.name || '') + '</td><td style="' + cs + ';vertical-align:middle">' + code + '</td><td style="' + cs + ';vertical-align:middle">' + (e.designation || '') + '</td><td style="' + cs + ';text-align:right;white-space:nowrap;vertical-align:middle">'
+                + '<a onclick="openPhotoModal(' + "'" + code + "'" + ')" style="cursor:pointer;color:#0891b2;font-size:12px;margin-right:16px"><i class="fas fa-camera"></i> Set Photo</a>'
+                + '<a href="' + cfg.idcardBase + '/' + encodeURIComponent(code) + '/pdf" target="_blank" rel="noopener" style="color:#4f46e5;font-size:12px;text-decoration:none"><i class="fas fa-id-card"></i> ID Card PDF</a></td></tr>';
+        }).join('');
+        var delBtn = canDel ? '<button id="idDelBtn" class="btn btn-outline btn-sm" style="color:var(--red);display:none" onclick="idDelSel()"><i class="fas fa-trash"></i> Delete selected (<span id="idDelN">0</span>)</button>' : '';
+        return pghead('ID Cards', emps.length + ' employee(s) · upload a photo, then generate a printable ID card', delBtn)
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (emps.length ? body : '<tr><td colspan="' + heads.length + '" style="padding:30px;text-align:center;color:var(--text3)">No employees.</td></tr>') + '</tbody></table></div>';
+    }
+    // rev 82c (Ejaz): bulk select + SOFT delete from the ID Cards list. Admin
+    // only; typed confirmation; history stays in the DB (deleted_at), seats
+    // free up. Real leavers should use Exit & FnF — this is for wrong/dupe rows.
+    window.idSelAll = function (on) { document.querySelectorAll('.idsel').forEach(function (c) { c.checked = on; }); idSelCount(); };
+    window.idSelCount = function () {
+        var n = document.querySelectorAll('.idsel:checked').length;
+        var b = document.getElementById('idDelBtn'); var s = document.getElementById('idDelN');
+        if (s) { s.textContent = n; }
+        if (b) { b.style.display = n > 0 ? '' : 'none'; }
+    };
+    window.idDelSel = function () {
+        var codes = [];
+        document.querySelectorAll('.idsel:checked').forEach(function (c) { codes.push(c.value); });
+        if (!codes.length) { return; }
+        var word = window.prompt('You are about to REMOVE ' + codes.length + ' employee(s) from the system (their history is kept; seats are freed). Real exits should use Exit and FnF instead.' + String.fromCharCode(10) + String.fromCharCode(10) + 'Type DELETE to confirm:', '');
+        if (word === null) { return; }
+        if (String(word).trim().toUpperCase() !== 'DELETE') { if (typeof toast === 'function') { toast('Not confirmed - nothing was deleted'); } return; }
+        fetch(cfg.empBulkDeleteUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ codes: codes }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Delete failed'); } return; }
+                if (typeof toast === 'function') { toast(j.message || 'Deleted'); }
+                fetch(cfg.dataUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+                    .then(function (r2) { return r2.json(); })
+                    .then(function (live) { if (live && Array.isArray(live.employees)) { DB.employees = live.employees; } if (typeof render === 'function') { render(); } });
+            }).catch(function () { if (typeof toast === 'function') { toast('Delete failed'); } });
+    };
+    // Reusable photo capture (upload OR webcam selfie). target = an emp code (HR)
+    // or 'me' (self-service). Selfie needs HTTPS; upload works everywhere.
+    window.__photoBlob = null; window.__photoTarget = null;
+    window.openPhotoModal = function (target) {
+        window.__photoTarget = target; window.__photoBlob = null;
+        var m = document.getElementById('photo-modal') || (function () { var x = document.createElement('div'); x.id = 'photo-modal'; document.body.appendChild(x); return x; })();
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1100;display:flex;align-items:flex-start;justify-content:center;padding:50px 16px;overflow:auto';
+        m.innerHTML = '<div class="card" style="max-width:420px;width:100%"><h3 style="margin:0 0 14px">Set Photo</h3>'
+            + '<div id="ph_preview" style="text-align:center;margin-bottom:12px"><div style="width:120px;height:120px;border-radius:50%;background:#f1f5f9;display:inline-flex;align-items:center;justify-content:center;color:#94a3b8;font-size:30px"><i class="fas fa-user"></i></div></div>'
+            + '<video id="ph_video" autoplay playsinline style="display:none;width:100%;border-radius:10px;margin-bottom:10px"></video>'
+            + '<div style="display:flex;gap:10px;flex-wrap:wrap">'
+            + '<label class="btn btn-outline btn-sm" style="cursor:pointer"><i class="fas fa-upload"></i> Upload<input type="file" accept="image/*" style="display:none" onchange="photoPicked(this)"></label>'
+            + '<button class="btn btn-outline btn-sm" onclick="photoSelfie()"><i class="fas fa-camera"></i> Take selfie</button>'
+            + '<button id="ph_capture" class="btn btn-primary btn-sm" style="display:none" onclick="photoCapture()"><i class="fas fa-circle"></i> Capture</button>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="photoClose()">Cancel</button><button class="btn btn-primary" onclick="photoSave()"><i class="fas fa-check"></i> Save photo</button></div>'
+            + '<div style="font-size:11px;color:var(--text3);margin-top:8px">Selfie needs HTTPS (the camera is blocked on http). Upload works everywhere.</div>'
+            + '</div>';
+        m.style.display = 'flex';
+        m.onclick = function (e) { if (e.target === m) { photoClose(); } };
+    };
+    window.photoStopCam = function () { try { var v = document.getElementById('ph_video'); if (v && v.srcObject) { v.srcObject.getTracks().forEach(function (t) { t.stop(); }); v.srcObject = null; } } catch (e) {} };
+    window.photoClose = function () { photoStopCam(); var m = document.getElementById('photo-modal'); if (m) { m.remove(); } };
+    window.photoPicked = function (input) {
+        var f = input.files && input.files[0]; if (!f) { return; }
+        window.__photoBlob = f;
+        var p = document.getElementById('ph_preview'); if (p) { p.innerHTML = '<img src="' + URL.createObjectURL(f) + '" style="width:120px;height:120px;border-radius:50%;object-fit:cover">'; }
+        photoStopCam(); var v = document.getElementById('ph_video'); if (v) { v.style.display = 'none'; } var cap = document.getElementById('ph_capture'); if (cap) { cap.style.display = 'none'; }
+    };
+    window.photoSelfie = function () {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { if (typeof toast === 'function') { toast('Camera needs HTTPS (or localhost). Please use Upload.'); } return; }
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } }).then(function (stream) {
+            var v = document.getElementById('ph_video'); if (v) { v.srcObject = stream; v.style.display = 'block'; } var cap = document.getElementById('ph_capture'); if (cap) { cap.style.display = 'inline-block'; }
+        }).catch(function () { if (typeof toast === 'function') { toast('Could not access the camera. Use Upload instead.'); } });
+    };
+    window.photoCapture = function () {
+        var v = document.getElementById('ph_video'); if (!v || !v.videoWidth) { return; }
+        var cv = document.createElement('canvas'); cv.width = v.videoWidth; cv.height = v.videoHeight; cv.getContext('2d').drawImage(v, 0, 0);
+        var p = document.getElementById('ph_preview'); if (p) { p.innerHTML = '<img src="' + cv.toDataURL('image/jpeg') + '" style="width:120px;height:120px;border-radius:50%;object-fit:cover">'; }
+        cv.toBlob(function (blob) { window.__photoBlob = blob; }, 'image/jpeg', 0.9);
+        photoStopCam(); v.style.display = 'none'; var cap = document.getElementById('ph_capture'); if (cap) { cap.style.display = 'none'; }
+    };
+    window.photoSave = function () {
+        if (!window.__photoBlob) { if (typeof toast === 'function') { toast('Pick a file or take a selfie first'); } return; }
+        var fd = new FormData(); fd.append('photo', window.__photoBlob, 'photo.jpg');
+        var url = (window.__photoTarget === 'me') ? cfg.myPhotoUrl : (cfg.idcardBase + '/' + encodeURIComponent(window.__photoTarget) + '/photo');
+        fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('Photo saved'); } photoClose(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Save failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Save failed'); } });
+    };
+    // ---- Send Message (broadcast email to employees) -------------------------
+    function sendMessageScreen() {
+        var comps = (typeof DB !== 'undefined' && DB.companies) || [];
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var compOpts = comps.map(function (c) { return '<option value="' + c.id + '">' + c.name + '</option>'; }).join('');
+        return pghead('Send Message', 'Broadcast to employees by Email, SMS, or WhatsApp', '')
+            + '<div class="two-col">'
+            + '<div class="card form-card">'
+            + '<div><label style="' + lbl + '">Send to</label><select id="sm_target" onchange="smTargetChange()" style="' + inp + '"><option value="all">All active employees</option><option value="company">By company</option><option value="department">By department</option><option value="team">By team</option><option value="designation">By designation</option><option value="branch">By branch</option><option value="type">By employment type</option><option value="employee">A specific employee</option></select></div>'
+            + '<div id="sm_value_wrap" style="display:none"><label id="sm_value_lbl" style="' + lbl + '">Select</label><select id="sm_value" style="' + inp + '"></select></div>'
+            + '<div><label style="' + lbl + '">Channels</label><div style="display:flex;gap:18px;font-size:14px;padding-top:2px"><label style="cursor:pointer"><input type="checkbox" id="sm_ch_email" checked> Email</label><label style="cursor:pointer"><input type="checkbox" id="sm_ch_sms"> SMS</label><label style="cursor:pointer"><input type="checkbox" id="sm_ch_wa"> WhatsApp</label></div></div>'
+            + '<div><label style="' + lbl + '">Subject</label><input id="sm_subject" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Message</label><textarea id="sm_body" rows="8" style="' + inp + ';resize:vertical;line-height:1.5"></textarea></div>'
+            + '<div><button class="btn btn-primary" onclick="sendMessageDo()"><i class="fas fa-paper-plane"></i> Send</button></div>'
+            + '</div>'
+            + '<div class="card guide-card">'
+            + '<h4><i class="fas fa-circle-info" style="color:var(--accent);margin-right:6px"></i>How broadcasts work</h4>'
+            + '<div>Choose who receives the message, tick one or more channels, then write the subject and message.</div>'
+            + '<div class="gh">Email</div><div>Queued via your mail engine (Administration &rarr; Email Senders). Needs a queue worker running, or QUEUE_CONNECTION=sync.</div>'
+            + '<div class="gh">SMS / WhatsApp</div><div>Sent through the provider set under Administration &rarr; SMS Gateway / WhatsApp API. A channel with no active provider is skipped automatically.</div>'
+            + '<div class="gh">Tip</div><div>Keep the subject short and clear. Try &quot;One company&quot; first before broadcasting to all active employees.</div>'
+            + '</div>'
+            + '</div>';
+    }
+    window.smTargetChange = function () {
+        var t = (document.getElementById('sm_target') || {}).value || 'all';
+        var wrap = document.getElementById('sm_value_wrap');
+        var sel = document.getElementById('sm_value');
+        var lblEl = document.getElementById('sm_value_lbl');
+        if (!wrap || !sel) { return; }
+        if (t === 'all') { wrap.style.display = 'none'; sel.innerHTML = ''; return; }
+        var emps = (typeof DB !== 'undefined' && DB.employees) || [];
+        var esc = function (s) { return String(s).replace(/"/g, '&quot;'); };
+        var distinct = function (f) { var m = {}; emps.forEach(function (e) { var v = ((e[f] || '') + '').trim(); if (v) { m[v] = 1; } }); return Object.keys(m).sort(); };
+        var opt = function (val, label) { return '<option value="' + esc(val) + '">' + label + '</option>'; };
+        var label = 'Select', html = '';
+        if (t === 'company') { label = 'Company'; var cs = (typeof DB !== 'undefined' && DB.companies) || []; html = cs.map(function (c) { return opt(c.id, c.name); }).join(''); }
+        else if (t === 'department') { label = 'Department'; html = distinct('dept').map(function (v) { return opt(v, v); }).join(''); }
+        else if (t === 'team') { label = 'Team'; html = distinct('team').map(function (v) { return opt(v, v); }).join(''); }
+        else if (t === 'designation') { label = 'Designation'; html = distinct('designation').map(function (v) { return opt(v, v); }).join(''); }
+        else if (t === 'branch') { label = 'Branch'; html = distinct('branch').map(function (v) { return opt(v, v); }).join(''); }
+        else if (t === 'type') { label = 'Employment type'; html = distinct('type').map(function (v) { return opt(v, v); }).join(''); }
+        else if (t === 'employee') { label = 'Employee'; html = emps.slice().sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); }).map(function (e) { return opt(e.id, (e.name || '') + ' (' + (e.id || '') + ')'); }).join(''); }
+        lblEl.textContent = label;
+        sel.innerHTML = html || '<option value="">— none found —</option>';
+        wrap.style.display = '';
+    };
+    window.sendMessageDo = function () {
+        var subject = (document.getElementById('sm_subject') || {}).value || '';
+        var body = (document.getElementById('sm_body') || {}).value || '';
+        var target = (document.getElementById('sm_target') || {}).value || 'all';
+        var value = target === 'all' ? '' : ((document.getElementById('sm_value') || {}).value || '');
+        var valLabel = 'all active employees';
+        if (target !== 'all') { var sv = document.getElementById('sm_value'); valLabel = (sv && sv.selectedIndex >= 0) ? sv.options[sv.selectedIndex].text : value; }
+        var channels = [];
+        if ((document.getElementById('sm_ch_email') || {}).checked) { channels.push('email'); }
+        if ((document.getElementById('sm_ch_sms') || {}).checked) { channels.push('sms'); }
+        if ((document.getElementById('sm_ch_wa') || {}).checked) { channels.push('whatsapp'); }
+        if (!subject.trim() || !body.trim()) { if (typeof toast === 'function') { toast('Subject and message are required'); } return; }
+        if (!channels.length) { if (typeof toast === 'function') { toast('Pick at least one channel'); } return; }
+        if (target !== 'all' && !value) { if (typeof toast === 'function') { toast('Pick a recipient group above'); } return; }
+        if (!window.confirm('Send this message via ' + channels.join(', ') + ' to ' + valLabel + '?')) { return; }
+        fetch(cfg.sendMessageUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ subject: subject, body: body, target: target, value: value, channels: channels }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Sent'); } var b = document.getElementById('sm_body'); if (b) { b.value = ''; } var s = document.getElementById('sm_subject'); if (s) { s.value = ''; } }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not send'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not send'); } });
+    };
+    // Professional ready-made letter bodies — auto-loaded into the Body field
+    // when a template's letter type is chosen (only if Body is empty).
+    window.__COC = null;
+    window.cocLoad = function () {
+        fetch(cfg.cocUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__COC = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__COC = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    function codeOfConductScreen() {
+        var d = window.__COC;
+        if (!d) { setTimeout(function () { if (!window.__COC) { cocLoad(); } }, 10); return pghead('Code of Conduct', 'Loading…', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('Code of Conduct', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)">' + String(d.error) + '</div></div>'; }
+        var esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+        var articles = (d.content || []).map(function (a) {
+            var paras = (a.paras || []).map(function (p) { return '<p style="margin:0 0 10px;line-height:1.6;color:var(--text2)">' + esc(p) + '</p>'; }).join('');
+            return '<div style="margin-bottom:18px"><h3 style="margin:0 0 8px;font-size:15px;color:var(--text1)">' + esc(a.title) + '</h3>' + paras + '</div>';
+        }).join('');
+        if (!articles) { articles = '<div style="color:var(--text3)">No Code of Conduct content yet. Run the content seeder, or add articles in Knowledge Base under the &quot;Code of Conduct&quot; category.</div>'; }
+        var ackBar;
+        if (d.acknowledged) {
+            ackBar = '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:10px;color:#166534"><i class="fas fa-circle-check"></i> You acknowledged this Code of Conduct on ' + esc(d.ackDate || '') + '.</div>';
+        } else {
+            ackBar = '<div style="display:grid;gap:10px"><div style="color:var(--text2);font-size:13px">By clicking accept, you confirm you have read and will comply with this Code of Conduct.</div><button class="btn btn-primary" onclick="cocAck()"><i class="fas fa-check"></i> I have read &amp; accept</button></div>';
+        }
+        var html = pghead('Code of Conduct', 'Read the policy and record your acknowledgement', '')
+            + '<div class="two-col">'
+            + '<div class="card" style="padding:20px 22px">' + articles + '</div>'
+            + '<div style="display:grid;gap:16px;align-items:start">'
+            + '<div class="card" style="padding:16px 18px">' + ackBar + '</div>';
+        if (d.canManage) {
+            var rows = (d.acks || []).map(function (a) { return '<tr><td style="padding:7px 12px;border-top:1px solid var(--border);font-size:13px">' + esc(a.employee) + '</td><td style="padding:7px 12px;border-top:1px solid var(--border);font-size:13px;text-align:right;color:var(--text3)">' + esc(a.date) + '</td></tr>'; }).join('');
+            html += '<div class="card" style="padding:0;overflow:hidden"><div style="padding:12px 16px;font-weight:700;font-size:13px;border-bottom:1px solid var(--border)">Acknowledgements (' + ((d.acks || []).length) + ')</div><table style="width:100%;border-collapse:collapse"><tbody>' + (rows || '<tr><td colspan="2" style="padding:18px;text-align:center;color:var(--text3)">No acknowledgements yet.</td></tr>') + '</tbody></table></div>';
+        }
+        html += '</div></div>';
+        return html;
+    }
+    window.cocAck = function () {
+        fetch(cfg.cocUrl + '/ack', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: '{}' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Acknowledged'); } window.__COC = null; cocLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not record'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not record'); } });
+    };
+    // ---- Late Policy: step-by-step guided wizard (replaces the master form) ----
+    var LP_FIELDS = ['company_name', 'scope', 'scope_target', 'mode', 'shift_start', 'shift_end', 'grace_min', 'full_day_hours', 'half_day_hours', 'lates_before_cut', 'cut_mode', 'cut_n', 'l1_min', 'l1_cut', 'l2_min', 'l2_cut', 'l3_min', 'l3_cut', 'break_budget', 'break_cut', 'addl_late', 'weekoff_action', 'no_cut_on_weekoff'];
+    var LP_STEPS = ['Scope & Shift', 'Calculation mode', 'Mode settings', 'Break budget', 'Week-off & notes', 'Review & save'];
+    window.__LPW = null;
+    function lpData() { return (window.__LPW && window.__LPW.data) || {}; }
+    window.lpNew = function () { window.__LPW = { active: true, step: 0, editId: null, data: { scope: 'company', mode: 'simple', shift_start: '09:30', shift_end: '18:30', grace_min: 10, lates_before_cut: 0, cut_mode: 'half_day_per_late', cut_n: 3, break_budget: 0, break_cut: 'none', no_cut_on_weekoff: '1' } }; if (typeof render === 'function') { render(); } };
+    window.lpEdit = function (id) { var d = window.__MASTER['late-policy'] || {}; var r = (d.rows || []).find(function (x) { return x.id === id; }); window.__LPW = { active: true, step: 0, editId: id, data: r ? JSON.parse(JSON.stringify(r)) : { scope: 'company', mode: 'simple' } }; if (typeof render === 'function') { render(); } };
+    window.lpCancel = function () { if (window.__LPW) { window.__LPW.active = false; } if (typeof render === 'function') { render(); } };
+    function lpCollect() { var d = lpData(); document.querySelectorAll('[data-lp]').forEach(function (el) { d[el.getAttribute('data-lp')] = el.value; }); }
+    window.lpSetMode = function (m) { lpCollect(); lpData().mode = m; if (typeof render === 'function') { render(); } };
+    window.lpNext = function () { lpCollect(); window.__LPW.step++; if (typeof render === 'function') { render(); } window.scrollTo(0, 0); };
+    window.lpBack = function () { lpCollect(); window.__LPW.step--; if (typeof render === 'function') { render(); } window.scrollTo(0, 0); };
+    window.lpSave = function () {
+        lpCollect(); var d = lpData(); var item = {};
+        LP_FIELDS.forEach(function (k) { if (d[k] !== undefined && d[k] !== null) { item[k] = d[k]; } });
+        if (window.__LPW.editId) { item.id = window.__LPW.editId; }
+        fetch(cfg.masterBase + '/late-policy', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ item: item }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('Late policy saved'); } window.__LPW.active = false; masterLoad('late-policy'); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not save'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not save'); } });
+    };
+    function lpAddMin(t, m) { var p = String(t || '09:30').split(':'); var mm = ((+p[0]) || 0) * 60 + ((+p[1]) || 0) + ((+m) || 0); mm = ((mm % 1440) + 1440) % 1440; var h = Math.floor(mm / 60), n = mm % 60; return (h < 10 ? '0' : '') + h + ':' + (n < 10 ? '0' : '') + n; }
+    function latePolicyScreen() {
+        if (!window.__MASTER['late-policy']) { setTimeout(function () { if (!window.__MASTER['late-policy']) { masterLoad('late-policy'); } }, 10); }
+        if (window.__LPW && window.__LPW.active) { return lpWizard(); }
+        return lpList();
+    }
+    function lpList() {
+        var d = window.__MASTER['late-policy'];
+        var addBtn = '<button class="btn btn-primary" onclick="lpNew()"><i class="fas fa-wand-magic-sparkles"></i> New Late Policy (guided)</button>';
+        if (!d) { return pghead('Late & Comp-Off Policy', 'Loading…', addBtn) + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        var rows = (d.rows || []).map(function (r) {
+            var c = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+            var applies = r.scope === 'employee' ? ('Employee: ' + (r.scope_target || '')) : (r.scope === 'team' ? ('Team: ' + (r.scope_target || '')) : 'Whole company');
+            var modeL = { simple: 'Simple', tiered: 'Tiered L1/L2/L3', net_hours: 'Net hours' }[r.mode] || (r.mode || '—');
+            return '<tr><td style="' + c + ';font-weight:600">' + (r.company_name || 'All companies') + '</td><td style="' + c + '">' + applies + '</td><td style="' + c + '">' + modeL + '</td><td style="' + c + '">' + (r.shift_start || '—') + ' / grace ' + (r.grace_min || 0) + 'm</td><td style="' + c + ';text-align:right;white-space:nowrap"><i class="fas fa-pen" title="Edit" style="cursor:pointer;color:var(--text2);margin-right:14px" onclick="lpEdit(' + r.id + ')"></i><i class="fas fa-trash" title="Delete" style="cursor:pointer;color:var(--red)" onclick="masterDelete(\'late-policy\',' + r.id + ')"></i></td></tr>';
+        }).join('');
+        var th = ['Company', 'Applies to', 'Mode', 'Shift / grace', ''].map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
+        return pghead('Late & Comp-Off Policy', 'How lateness and breaks reduce paid days in payroll. Set one policy per company, team or employee.', addBtn)
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>' + (rows || '<tr><td colspan="5" style="padding:30px;text-align:center;color:var(--text3)">No policies yet. Click &quot;New Late Policy (guided)&quot; to set one up step by step.</td></tr>') + '</tbody></table></div>';
+    }
+    function lpWizard() {
+        var d = lpData(); var step = window.__LPW.step;
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var esc = function (s) { return String(s == null ? '' : s).replace(/"/g, '&quot;'); };
+        var txt = function (k, label, type, hint) { return '<div><label style="' + lbl + '">' + label + '</label><input data-lp="' + k + '" type="' + (type || 'text') + '" value="' + esc(d[k]) + '" style="' + inp + '">' + (hint ? '<div style="font-size:11px;color:var(--text3);margin-top:3px">' + hint + '</div>' : '') + '</div>'; };
+        var sel = function (k, label, opts, labels) { var o = opts.map(function (v, i) { return '<option value="' + v + '"' + (String(d[k]) === String(v) ? ' selected' : '') + '>' + labels[i] + '</option>'; }).join(''); return '<div><label style="' + lbl + '">' + label + '</label><select data-lp="' + k + '" style="' + inp + '">' + o + '</select></div>'; };
+        var body = '';
+        if (step === 0) {
+            var comps = ((typeof DB !== 'undefined' && DB.companies) || []).map(function (c) { return c.name; });
+            var copts = '<option value="">All companies</option>' + comps.map(function (n) { return '<option' + (n === d.company_name ? ' selected' : '') + '>' + n + '</option>'; }).join('');
+            body = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+                + '<div><label style="' + lbl + '">Company</label><select data-lp="company_name" style="' + inp + '">' + copts + '</select></div>'
+                + sel('scope', 'Applies to', ['company', 'team', 'employee'], ['Whole company', 'A team', 'One employee'])
+                + txt('scope_target', 'Team name / Employee code', 'text', 'Leave blank for whole company')
+                + txt('grace_min', 'Grace period (minutes)', 'number', 'A punch within grace is still on-time')
+                + txt('shift_start', 'Shift start (HH:MM)', 'text')
+                + txt('shift_end', 'Shift end (HH:MM)', 'text')
+                + '</div>';
+        } else if (step === 1) {
+            var card = function (m, title, desc) { var on = d.mode === m; return '<div onclick="lpSetMode(\'' + m + '\')" style="cursor:pointer;border:2px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';background:' + (on ? 'var(--accent-soft,#fff7ed)' : '#fff') + ';border-radius:12px;padding:14px 16px"><div style="font-weight:700;color:var(--text1);margin-bottom:4px">' + (on ? '<i class="fas fa-circle-check" style="color:var(--accent);margin-right:6px"></i>' : '') + title + '</div><div style="font-size:13px;color:var(--text2);line-height:1.5">' + desc + '</div></div>'; };
+            body = '<div style="display:grid;gap:12px">'
+                + card('simple', 'Simple', 'A few free late days each month, then a flat cut (half-day, full-day, or one day per N) for each extra late.')
+                + card('tiered', 'Tiered (L1 / L2 / L3)', 'The cut grows with how late they are - small for a few minutes, larger for very late. You set the minute thresholds.')
+                + card('net_hours', 'Net working hours', 'No late cut at all if total hours worked meet the full-day target - good for flexible or make-up-time teams.')
+                + '</div>';
+        } else if (step === 2) {
+            if (d.mode === 'simple') {
+                body = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+                    + txt('lates_before_cut', 'Free lates per month', 'number', 'Lates forgiven before any cut')
+                    + sel('cut_mode', 'Cut for each extra late', ['none', 'half_day_per_late', 'one_day_per_n', 'full_day_per_late'], ['No cut (flag only)', 'Half-day per late', 'One day per N lates', 'Full day per late'])
+                    + txt('cut_n', 'N (only for one-day-per-N)', 'number')
+                    + '</div>';
+            } else if (d.mode === 'tiered') {
+                body = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+                    + txt('lates_before_cut', 'Free lates per month', 'number') + '<div></div>'
+                    + txt('l1_min', 'L1 after (minutes late)', 'number') + txt('l1_cut', 'L1 cut (days)', 'number')
+                    + txt('l2_min', 'L2 after (minutes late)', 'number') + txt('l2_cut', 'L2 cut (days)', 'number')
+                    + txt('l3_min', 'L3 after (minutes late)', 'number') + txt('l3_cut', 'L3 cut (days)', 'number')
+                    + '</div>';
+            } else {
+                body = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+                    + txt('full_day_hours', 'Full-day hours', 'number', 'Work this many hours = no cut even if late')
+                    + txt('half_day_hours', 'Half-day hours', 'number', 'Below this = full-day absent')
+                    + '</div>';
+            }
+        } else if (step === 3) {
+            body = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+                + txt('break_budget', 'Break budget (minutes/day)', 'number', 'Total break allowed before a cut. 0 = ignore breaks')
+                + sel('break_cut', 'If break budget exceeded', ['none', 'half_day', 'per_30min'], ['No cut', 'Half-day', '0.25 day per 30 min over'])
+                + '</div>';
+        } else if (step === 4) {
+            body = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+                + sel('no_cut_on_weekoff', 'No cut on a week-off?', ['1', '0'], ['Yes', 'No'])
+                + txt('weekoff_action', 'Week-off handling (optional note)', 'text')
+                + '<div style="grid-column:1 / -1">' + txt('addl_late', 'Notes (optional)', 'text') + '</div>'
+                + '</div>';
+        } else {
+            body = lpReview(d);
+        }
+        var dots = LP_STEPS.map(function (s, i) { return '<div style="flex:1;height:4px;border-radius:3px;background:' + (i <= step ? 'var(--accent)' : 'var(--border)') + '"></div>'; }).join('');
+        var back = step > 0 ? '<button class="btn btn-outline" onclick="lpBack()"><i class="fas fa-arrow-left"></i> Back</button>' : '<span></span>';
+        var fwd = step < LP_STEPS.length - 1 ? '<button class="btn btn-primary" onclick="lpNext()">Next <i class="fas fa-arrow-right"></i></button>' : '<button class="btn btn-primary" onclick="lpSave()"><i class="fas fa-check"></i> Save policy</button>';
+        return pghead('Late Policy Setup', 'Step ' + (step + 1) + ' of ' + LP_STEPS.length + ' — ' + LP_STEPS[step], '<button class="btn btn-outline" onclick="lpCancel()">Cancel</button>')
+            + '<div class="card" style="max-width:760px;padding:0">'
+            + '<div style="display:flex;gap:6px;padding:16px 22px 0">' + dots + '</div>'
+            + '<div style="padding:20px 22px">' + body + '</div>'
+            + '<div style="display:flex;justify-content:space-between;gap:10px;padding:0 22px 20px">' + back + fwd + '</div>'
+            + '</div>';
+    }
+    function lpReview(d) {
+        var who = d.scope === 'employee' ? ('employee ' + (d.scope_target || '?')) : (d.scope === 'team' ? ('team ' + (d.scope_target || '?')) : ('all employees of ' + (d.company_name || 'every company')));
+        var lateAt = lpAddMin(d.shift_start, d.grace_min);
+        var lines = [];
+        lines.push('This policy applies to <b>' + who + '</b>.');
+        lines.push('Shift starts at <b>' + (d.shift_start || '09:30') + '</b> with <b>' + (d.grace_min || 0) + ' min</b> grace, so a day is marked <b>late</b> when the first punch is after <b>' + lateAt + '</b>.');
+        var ex = '';
+        if (d.mode === 'simple') {
+            var cm = { none: 'no cut (flag only)', half_day_per_late: 'a half-day cut', one_day_per_n: 'one day cut per ' + (d.cut_n || 'N') + ' lates', full_day_per_late: 'a full-day cut' }[d.cut_mode] || 'a cut';
+            lines.push('Mode <b>Simple</b>: the first <b>' + (d.lates_before_cut || 0) + '</b> late days each month are free; every extra late day gets <b>' + cm + '</b>.');
+            var extra = Math.max(0, 4 - (+d.lates_before_cut || 0));
+            ex = 'An employee late on 4 days this month, with ' + (d.lates_before_cut || 0) + ' free, is charged for ' + extra + ' day(s)' + (d.cut_mode === 'half_day_per_late' ? ' = ' + (extra * 0.5) + ' day(s) deducted.' : (d.cut_mode === 'full_day_per_late' ? ' = ' + extra + ' day(s) deducted.' : '.'));
+        } else if (d.mode === 'tiered') {
+            lines.push('Mode <b>Tiered</b>: first <b>' + (d.lates_before_cut || 0) + '</b> lates free, then each late day is graded by minutes late - <b>L1</b> after ' + (d.l1_min || 0) + 'm = ' + (d.l1_cut || 0) + ' day, <b>L2</b> after ' + (d.l2_min || 0) + 'm = ' + (d.l2_cut || 0) + ' day, <b>L3</b> after ' + (d.l3_min || 0) + 'm = ' + (d.l3_cut || 0) + ' day.');
+            ex = 'A punch at ' + lpAddMin(d.shift_start, (+d.grace_min || 0) + (+d.l2_min || 0) + 1) + ' falls in the L2 band = ' + (d.l2_cut || 0) + ' day deducted for that day.';
+        } else {
+            lines.push('Mode <b>Net hours</b>: no late cut if total hours worked reach <b>' + (d.full_day_hours || 0) + 'h</b>. Between <b>' + (d.half_day_hours || 0) + 'h</b> and ' + (d.full_day_hours || 0) + 'h = half day; below ' + (d.half_day_hours || 0) + 'h = full-day absent.');
+            ex = 'Someone late who still works ' + (d.full_day_hours || 0) + 'h+ that day has no cut; working only 3h (below ' + (d.half_day_hours || 0) + 'h) is a full-day absent.';
+        }
+        if ((+d.break_budget || 0) > 0) {
+            var bc = { half_day: 'a half-day cut', per_30min: '0.25 day per extra 30 min' }[d.break_cut] || 'a cut';
+            lines.push('Breaks: if total break exceeds <b>' + d.break_budget + ' min</b> in a day, apply <b>' + bc + '</b>.');
+        }
+        lines.push('Week-offs: ' + (String(d.no_cut_on_weekoff) === '0' ? 'cuts <b>can</b> apply on week-offs.' : 'no cut on a week-off.'));
+        var list = lines.map(function (l) { return '<li style="margin-bottom:8px;line-height:1.55">' + l + '</li>'; }).join('');
+        return '<div style="display:grid;gap:16px">'
+            + '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:16px 18px"><div style="font-weight:700;margin-bottom:10px"><i class="fas fa-circle-info" style="color:var(--accent);margin-right:6px"></i>What this policy will do</div><ul style="margin:0;padding-left:18px;color:var(--text2);font-size:13.5px">' + list + '</ul></div>'
+            + '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px 18px;font-size:13.5px;color:#1e3a8a"><b>Worked example:</b> ' + ex + '</div>'
+            + '<div style="font-size:12.5px;color:var(--text3)">These deductions reduce paid days in payroll for that month, for the selected scope. You can edit or delete this policy anytime.</div>';
+    }
+    // ---- Commission / Incentive bulk calculator -----------------------------
+    window.__CC = { cfg: { type: 'commission', month: '', basis: 'collected', formula: 'flat', flat_rate: 2.5, threshold: 100, status: 'pending', scope: 'all', scopeval: '', slabs: [], portfolio_rates: [] }, rows: [], preview: null };
+    function ccG(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+    function ccReadCfg() {
+        var c = window.__CC.cfg;
+        ['type', 'month', 'basis', 'formula', 'flat_rate', 'threshold', 'status', 'scope', 'scopeval'].forEach(function (k) { if (document.getElementById('cc_' + k)) { c[k] = ccG('cc_' + k); } });
+        var slabs = []; for (var i = 1; i <= 4; i++) { var r = ccG('cc_sr' + i); if (r !== '') { slabs.push({ upto: ccG('cc_su' + i), rate: r }); } } if (document.getElementById('cc_sr1')) { c.slabs = slabs; }
+        var prs = []; for (var j = 1; j <= 6; j++) { var n = ccG('cc_pn' + j); if (n !== '') { prs.push({ name: n, rate: ccG('cc_pr' + j) }); } } if (document.getElementById('cc_pn1')) { c.portfolio_rates = prs; }
+    }
+    window.ccSet = function () { ccReadCfg(); if (typeof render === 'function') { render(); } };
+    window.ccImport = function (input) {
+        var f = input.files && input.files[0]; if (!f) { return; } ccReadCfg();
+        var rd = new FileReader();
+        rd.onload = function () {
+            try {
+                var NL = String.fromCharCode(10), CR = String.fromCharCode(13);
+                var lines = String(rd.result).split(NL).map(function (l) { return l.split(CR).join(''); }).filter(function (l) { return l.trim() !== ''; });
+                if (!lines.length) { return; }
+                var hd = lines[0].split(',').map(function (h) { return h.trim().toLowerCase(); });
+                window.__CC.rows = lines.slice(1).map(function (l) { var cells = l.split(','); var o = {}; hd.forEach(function (h, i) { o[h] = (cells[i] || '').trim(); }); return o; });
+                window.__CC.preview = null;
+                if (typeof toast === 'function') { toast(window.__CC.rows.length + ' row(s) loaded'); }
+                if (typeof render === 'function') { render(); }
+            } catch (e) { if (typeof toast === 'function') { toast('Could not read CSV'); } }
+        };
+        rd.readAsText(f);
+    };
+    window.ccClear = function () { window.__CC.rows = []; window.__CC.preview = null; if (typeof render === 'function') { render(); } };
+    function ccCollectGrid() { document.querySelectorAll('[data-ccr]').forEach(function (el) { var i = +el.getAttribute('data-ccr'); var f = el.getAttribute('data-ccf'); if (window.__CC.rows[i]) { window.__CC.rows[i][f] = el.value; } }); }
+    window.ccLoadEmps = function () {
+        ccReadCfg();
+        var scope = window.__CC.cfg.scope, val = window.__CC.cfg.scopeval;
+        var emps = (typeof DB !== 'undefined' && DB.employees) || [];
+        var sel = emps.filter(function (e) { if (scope === 'team') { return (e.team || '') === val && val !== ''; } if (scope === 'employee') { return (e.id || '') === val && val !== ''; } return true; });
+        window.__CC.rows = sel.map(function (e) { return { emp_code: e.id || '', employee: e.name || '', portfolio: '', collected: '', target: '', amount: '' }; });
+        window.__CC.preview = null;
+        if (typeof toast === 'function') { toast(sel.length + ' employee(s) loaded'); }
+        if (typeof render === 'function') { render(); }
+    };
+    function ccPayload() {
+        ccReadCfg(); ccCollectGrid(); var c = window.__CC.cfg;
+        return { type: c.type, month: c.month, basis: c.basis, formula: c.formula, flat_rate: Number(c.flat_rate || 0), threshold: Number(c.threshold || 100), slabs: (c.slabs || []).map(function (s) { return { upto: Number(s.upto || 0), rate: Number(s.rate || 0) }; }), portfolio_rates: (c.portfolio_rates || []).map(function (p) { return { name: p.name, rate: Number(p.rate || 0) }; }), rows: window.__CC.rows, status: c.status };
+    }
+    window.ccCalc = function () { if (!window.__CC.rows.length) { if (typeof toast === 'function') { toast('Import a CSV first'); } return; } fetch(cfg.incentiveBase + '/calculate', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(ccPayload()) }).then(function (r) { return r.json(); }).then(function (j) { if (j && j.ok) { window.__CC.preview = j; if (typeof render === 'function') { render(); } } else if (typeof toast === 'function') { toast((j && j.error) || 'Calculation failed'); } }).catch(function () { if (typeof toast === 'function') { toast('Calculation failed'); } }); };
+    window.ccCommit = function () { var p = ccPayload(); if (!p.month) { if (typeof toast === 'function') { toast('Enter the month (e.g. May 2026)'); } return; } if (!window.confirm('Create commission entries for ' + window.__CC.rows.length + ' row(s) for ' + p.month + '?')) { return; } fetch(cfg.incentiveBase + '/commit', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(p) }).then(function (r) { return r.json(); }).then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Created'); } window.__CC.rows = []; window.__CC.preview = null; if (typeof render === 'function') { render(); } } else if (typeof toast === 'function') { toast((j && j.error) || 'Could not create'); } }).catch(function () { if (typeof toast === 'function') { toast('Could not create'); } }); };
+    function commissionCalcScreen() {
+        var c = window.__CC.cfg;
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var ev = function (v) { return String(v == null ? '' : v).replace(/"/g, '&quot;'); };
+        var opt = function (v, cur, l) { return '<option value="' + v + '"' + (String(cur) === String(v) ? ' selected' : '') + '>' + l + '</option>'; };
+        var fld = function (id, label, val, type) { return '<div><label style="' + lbl + '">' + label + '</label><input id="' + id + '" type="' + (type || 'text') + '" value="' + ev(val) + '" style="' + inp + '"></div>'; };
+        var top = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">'
+            + '<div><label style="' + lbl + '">Type</label><select id="cc_type" style="' + inp + '">' + opt('commission', c.type, 'Commission (field / off-roll)') + opt('incentive', c.type, 'Incentive (salaried staff)') + '</select></div>'
+            + fld('cc_month', 'Month (e.g. May 2026)', c.month)
+            + '<div><label style="' + lbl + '">Create as</label><select id="cc_status" style="' + inp + '">' + opt('pending', c.status, 'Pending (needs approval)') + opt('approved', c.status, 'Approved (counts in payroll)') + '</select></div>'
+            + '</div>';
+        var basisFormula = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">'
+            + '<div><label style="' + lbl + '">Calculate from (basis)</label><select id="cc_basis" onchange="ccSet()" style="' + inp + '">' + opt('collected', c.basis, 'Amount collected') + opt('target', c.basis, 'Target achievement (gate)') + opt('manual', c.basis, 'Manual amount (no formula)') + '</select></div>'
+            + (c.basis === 'manual' ? '<div style="font-size:12px;color:var(--text3);align-self:end;padding-bottom:9px">The amount column in your CSV is used as the payout directly.</div>'
+                : '<div><label style="' + lbl + '">Formula</label><select id="cc_formula" onchange="ccSet()" style="' + inp + '">' + opt('flat', c.formula, 'Flat percentage') + opt('slab', c.formula, 'Slab / tiered rate') + opt('portfolio', c.formula, 'Rate per portfolio') + '</select></div>')
+            + '</div>';
+        var rateBox = '';
+        if (c.basis !== 'manual') {
+            if (c.formula === 'flat') { rateBox = '<div style="margin-top:14px;max-width:280px">' + fld('cc_flat', 'Flat rate (% of figure)', c.flat_rate, 'number') + '</div>'; }
+            else if (c.formula === 'slab') {
+                var sl = c.slabs || [];
+                var srows = '';
+                for (var i = 1; i <= 4; i++) { var s = sl[i - 1] || {}; srows += '<div style="display:flex;gap:10px;margin-bottom:8px"><input id="cc_su' + i + '" type="number" placeholder="up to (₹), blank = top band" value="' + ev(s.upto) + '" style="' + inp + '"><input id="cc_sr' + i + '" type="number" placeholder="rate %" value="' + ev(s.rate) + '" style="' + inp + ';max-width:120px"></div>'; }
+                rateBox = '<div style="margin-top:14px"><label style="' + lbl + '">Slab bands (whole-amount rate of the band the figure falls into)</label>' + srows + '</div>';
+            } else {
+                var pr = c.portfolio_rates || [];
+                var prows = '';
+                for (var j = 1; j <= 6; j++) { var p = pr[j - 1] || {}; prows += '<div style="display:flex;gap:10px;margin-bottom:8px"><input id="cc_pn' + j + '" placeholder="portfolio / bank name" value="' + ev(p.name) + '" style="' + inp + '"><input id="cc_pr' + j + '" type="number" placeholder="rate %" value="' + ev(p.rate) + '" style="' + inp + ';max-width:120px"></div>'; }
+                rateBox = '<div style="margin-top:14px"><label style="' + lbl + '">Rate per portfolio (must match the CSV portfolio value)</label>' + prows + '</div>';
+            }
+            if (c.basis === 'target') { rateBox += '<div style="margin-top:10px;max-width:280px">' + fld('cc_threshold', 'Pay only if achievement % is at least', c.threshold, 'number') + '</div>'; }
+        }
+        var configCard = '<div class="card" style="padding:18px 20px">' + top + basisFormula + rateBox + '</div>';
+
+        var loaded = window.__CC.rows.length;
+        var emps = (typeof DB !== 'undefined' && DB.employees) || [];
+        var teamMap = {}; emps.forEach(function (e) { var t = (e.team || '').trim(); if (t) { teamMap[t] = 1; } });
+        var teams = Object.keys(teamMap).sort();
+        var scope = c.scope || 'all';
+        var pickerCtrl;
+        if (scope === 'team') { pickerCtrl = '<div><label style="' + lbl + '">Team</label><select id="cc_scopeval" style="' + inp + '"><option value="">Select team…</option>' + teams.map(function (t) { return '<option' + (t === c.scopeval ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></div>'; }
+        else if (scope === 'employee') { pickerCtrl = '<div><label style="' + lbl + '">Employee</label><select id="cc_scopeval" style="' + inp + '"><option value="">Select employee…</option>' + emps.slice().sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); }).map(function (e) { return '<option value="' + ev(e.id) + '"' + (e.id === c.scopeval ? ' selected' : '') + '>' + (e.name || '') + ' (' + (e.id || '') + ')</option>'; }).join('') + '</select></div>'; }
+        else { pickerCtrl = '<div style="font-size:12px;color:var(--text3);align-self:end;padding-bottom:9px">Loads every active employee.</div>'; }
+        var dataCard = '<div class="card" style="padding:18px 20px;display:grid;gap:12px">'
+            + '<div style="font-weight:700;font-size:14px"><i class="fas fa-users" style="color:var(--accent);margin-right:6px"></i>Choose employees</div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="' + lbl + '">Scope</label><select id="cc_scope" onchange="ccSet()" style="' + inp + '">' + opt('all', scope, 'Whole company') + opt('team', scope, 'By team') + opt('employee', scope, 'Individual employee') + '</select></div>' + pickerCtrl + '</div>'
+            + '<div><button class="btn btn-outline" onclick="ccLoadEmps()"><i class="fas fa-user-plus"></i> Load employees</button></div>'
+            + '<div style="border-top:1px solid var(--border);padding-top:12px;font-size:13px;color:var(--text2)">…or upload a CSV (emp_code, employee, portfolio, collected, target, amount):</div>'
+            + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><input type="file" accept=".csv" onchange="ccImport(this)" style="font-size:13px"><a class="btn btn-outline btn-sm" href="' + cfg.incentiveBase + '/template"><i class="fas fa-download"></i> Template</a>' + (loaded ? '<button class="btn btn-outline btn-sm" onclick="ccClear()">Clear</button>' : '') + '</div>'
+            + '</div>';
+
+        var gridCard = '';
+        if (loaded) {
+            var ginp = 'width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:7px;font-size:13px;background:#fff';
+            var grows = window.__CC.rows.map(function (r, i) {
+                var ci = 'padding:6px 8px;border-top:1px solid var(--border)';
+                var gf = function (field) { return '<td style="' + ci + '"><input data-ccr="' + i + '" data-ccf="' + field + '" value="' + ev(r[field]) + '" style="' + ginp + '"></td>'; };
+                return '<tr><td style="' + ci + ';font-size:13px;white-space:nowrap">' + (r.employee || '') + (r.emp_code ? ' <span style="color:var(--text3)">(' + r.emp_code + ')</span>' : '') + '</td>' + gf('portfolio') + gf('collected') + gf('target') + gf('amount') + '</tr>';
+            }).join('');
+            gridCard = '<div class="card" style="padding:0;overflow:auto;margin-top:16px"><div style="padding:12px 18px;font-weight:700;border-bottom:1px solid var(--border)">Figures — ' + loaded + ' employee(s) <span style="font-weight:400;color:var(--text3);font-size:12px">(edit inline, then Calculate)</span></div>'
+                + '<table style="width:100%;border-collapse:collapse"><thead><tr>' + ['Employee', 'Portfolio', 'Collected', 'Target', 'Manual amount'].map(function (h) { return '<th style="padding:9px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">' + h + '</th>'; }).join('') + '</tr></thead><tbody>' + grows + '</tbody></table>'
+                + '<div style="padding:14px 18px"><button class="btn btn-primary" onclick="ccCalc()"><i class="fas fa-calculator"></i> Calculate</button></div></div>';
+        }
+
+        var previewCard = '';
+        var pv = window.__CC.preview;
+        if (pv && pv.rows) {
+            var body = pv.rows.map(function (r) { var cc = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border)'; return '<tr><td style="' + cc + '">' + (r.employee || '') + (r.emp_code ? ' <span style="color:var(--text3)">(' + r.emp_code + ')</span>' : '') + '</td><td style="' + cc + ';text-align:right">' + inr(r.collected || 0) + '</td><td style="' + cc + ';text-align:right">' + (r.achievement != null ? r.achievement + '%' : '—') + '</td><td style="' + cc + ';text-align:right;font-weight:600">' + inr(r.payout || 0) + '</td></tr>'; }).join('');
+            previewCard = '<div class="card" style="padding:0;overflow:auto;margin-top:16px"><div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)"><div style="font-weight:700">Preview — ' + pv.count + ' employee(s), total ' + inr(pv.total) + '</div><button class="btn btn-primary btn-sm" onclick="ccCommit()"><i class="fas fa-check"></i> Create entries</button></div>'
+                + '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">Employee</th><th style="padding:10px 12px;text-align:right;font-size:11px;text-transform:uppercase;color:var(--text3)">Collected</th><th style="padding:10px 12px;text-align:right;font-size:11px;text-transform:uppercase;color:var(--text3)">Achieved</th><th style="padding:10px 12px;text-align:right;font-size:11px;text-transform:uppercase;color:var(--text3)">Payout</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+        }
+        return pghead('Commission / Incentive Calculator', 'Pick employees (or import a CSV), choose a formula, preview and create entries that feed payroll', '<button class="btn btn-outline" onclick="go(\'commissions\')"><i class="fas fa-arrow-left"></i> Back to entries</button>')
+            + '<div class="two-col">' + configCard + dataCard + '</div>' + gridCard + previewCard;
+    }
+    // ---- Financial Year -----------------------------------------------------
+    window.__FY = null;
+    window.finLoad = function () {
+        fetch(cfg.finYearBase, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__FY = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__FY = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    window.finSetActive = function () {
+        var sel = document.getElementById('fy_sel'); var fy = sel ? sel.value : '';
+        if (!fy) { return; }
+        fetch(cfg.finYearBase + '/set', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ fy: fy }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Saved'); } window.__FY = null; finLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not save'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not save'); } });
+    };
+    function finYearScreen() {
+        var d = window.__FY;
+        if (!d) { setTimeout(function () { if (!window.__FY) { finLoad(); } }, 10); return pghead('Financial Year', 'Loading…', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('Financial Year', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)">' + String(d.error) + '</div></div>'; }
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var opts = (d.options || []).map(function (fy) { return '<option value="' + fy + '"' + (fy === d.active ? ' selected' : '') + '>FY ' + fy + (fy === d.current ? ' (current)' : '') + '</option>'; }).join('');
+        var setCard = '<div class="card form-card">'
+            + '<div style="font-size:13px;color:var(--text2)">The active financial year is the default period for new records and the default view below. India FY runs 1 Apr to 31 Mar.</div>'
+            + '<div><label style="' + lbl + '">Active financial year</label><select id="fy_sel" style="' + inp + '">' + opts + '</select></div>'
+            + (d.canManage ? '<div><button class="btn btn-primary" onclick="finSetActive()"><i class="fas fa-check"></i> Set active year</button></div>' : '<div style="font-size:12px;color:var(--text3)">Only Admin / HR can change the active year.</div>')
+            + '</div>';
+        var srows = (d.summary || []).map(function (s) {
+            var c = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+            return '<tr' + (s.active ? ' style="background:var(--accent-soft,#fff7ed)"' : '') + '><td style="' + c + ';font-weight:600">FY ' + s.fy + (s.active ? ' <span style="color:var(--accent);font-size:11px">• active</span>' : '') + '</td><td style="' + c + ';text-align:right">' + s.records + '</td><td style="' + c + ';text-align:right">' + inr(s.amount || 0) + '</td></tr>';
+        }).join('');
+        var sumCard = '<div class="card" style="padding:0;overflow:hidden">'
+            + '<div style="padding:14px 18px;font-weight:700;border-bottom:1px solid var(--border)">Records by financial year</div>'
+            + '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">Year</th><th style="padding:10px 12px;text-align:right;font-size:11px;text-transform:uppercase;color:var(--text3)">Records</th><th style="padding:10px 12px;text-align:right;font-size:11px;text-transform:uppercase;color:var(--text3)">Amount</th></tr></thead><tbody>' + srows + '</tbody></table>'
+            + '<div style="padding:12px 18px;font-size:12px;color:var(--text3)">Counts cover commissions, payslips, expenses, advances, loans, clawbacks and bonus / encashment, grouped by their date.</div>'
+            + '</div>';
+        return pghead('Financial Year', 'Set the active year and review records maintained year-wise', '')
+            + '<div class="two-col">' + setCard + sumCard + '</div>';
+    }
+    // ---- My Subscription (tenant admin: plan, expiry, invoices, self-renew) --
+    window.__MYSUB = null;
+    window.msLoad = function () {
+        fetch(cfg.mySubBase, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__MYSUB = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__MYSUB = { error: 'Could not load your subscription' }; if (typeof render === 'function') { render(); } });
+    };
+    function msPost(path, body) {
+        return fetch(cfg.mySubBase + path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body) }).then(function (r) { return r.json(); });
+    }
+    window.msClose = function () { var m = document.getElementById('ms-modal'); if (m) { m.remove(); } };
+    function msModal(html, wide) {
+        msClose();
+        var ov = document.createElement('div');
+        ov.id = 'ms-modal';
+        ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:9000;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:30px 14px';
+        ov.innerHTML = '<div class="card" style="max-width:' + (wide ? 760 : 600) + 'px;width:100%;margin:auto;padding:26px 28px;position:relative">'
+            + '<i class="fas fa-xmark" onclick="msClose()" style="position:absolute;top:14px;right:16px;cursor:pointer;color:var(--text3);font-size:16px"></i>' + html + '</div>';
+        ov.onclick = function (e) { if (e.target === ov) { msClose(); } };
+        document.body.appendChild(ov);
+    }
+    function msEnsureRzp(cb) {
+        if (window.Razorpay) { cb(); return; }
+        var s = document.createElement('script');
+        s.src = 'https://checkout.razorpay.com/v1/checkout.js';
+        s.onload = cb;
+        s.onerror = function () { if (typeof toast === 'function') { toast('Could not load the payment window - please check the internet connection.'); } };
+        document.head.appendChild(s);
+    }
+    var MS_CYCLES = [['quarterly', 'Quarterly - 3 months (standard)'], ['halfyear', 'Half-yearly - 6 months (10% off)'], ['annual', 'Annual - 12 months (25% off)']];
+    function msCycleLabel(c) { for (var i = 0; i < MS_CYCLES.length; i++) { if (MS_CYCLES[i][0] === c) { return MS_CYCLES[i][1]; } } return c || ''; }
+    window.__MSR = null;
+    window.msPick = function (pid) { if (window.__MSR) { window.__MSR.plan_id = pid; msRenderDialog(); msQuote(); } };
+    window.msSetCycle = function (v) { if (window.__MSR) { window.__MSR.cycle = v; msQuote(); } };
+    window.msSetSeats = function (v) { if (window.__MSR) { window.__MSR.seats = parseInt(v, 10) || 1; msQuote(); } };
+    window.msSetCompanies = function (v) { if (window.__MSR) { window.__MSR.companies = Math.max(window.__MSR.minCompanies || 1, parseInt(v, 10) || 1); msQuote(); } };
+    window.msSetMode = function (m) { if (window.__MSR) { window.__MSR.mode = m; msRenderDialog(); msQuote(); } };
+    window.msRenewOpen = function () {
+        var d = window.__MYSUB || {};
+        var sub = d.sub || {}; var plan = d.plan || {};
+        var minCo = Math.max(1, d.companiesUsed || 1);
+        window.__MSR = {
+            mode: 'renew',
+            hasSub: !!d.sub,
+            plan_id: plan.id || ((d.plans && d.plans.length) ? d.plans[0].id : null),
+            seats: sub.seats || d.employees || 1,
+            companies: Math.max(sub.companies || 1, minCo),
+            minCompanies: minCo,
+            curSeats: sub.seats || 1,
+            curCompanies: sub.companies || 1,
+            cycle: (sub.cycle === 'halfyear' || sub.cycle === 'annual') ? sub.cycle : 'quarterly'
+        };
+        msRenderDialog();
+        msQuote();
+    };
+    function msRenderDialog() {
+        var d = window.__MYSUB || {}; var st = window.__MSR || {};
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var planBtns = (d.plans || []).map(function (p) {
+            var on = (p.id === st.plan_id);
+            return '<div onclick="msPick(' + p.id + ')" style="flex:1;min-width:140px;border:2px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';border-radius:12px;padding:10px 12px;cursor:pointer;background:' + (on ? 'rgba(249,115,22,.06)' : '#fff') + '">'
+                + '<b style="font-size:14px">' + p.name + '</b>'
+                + '<div style="font-size:14px;font-weight:700;margin-top:2px">' + inr(p.base_price) + '<span style="font-size:11px;color:var(--text3);font-weight:500">/mo</span></div>'
+                + '<div style="font-size:11px;color:var(--text3);margin-top:2px">Up to ' + (p.seat_max || 0) + ' employees<br>+' + inr(p.per_user_price) + '/extra</div></div>';
+        }).join('');
+        var cycOpts = MS_CYCLES.map(function (c) { return '<option value="' + c[0] + '"' + (st.cycle === c[0] ? ' selected' : '') + '>' + c[1] + '</option>'; }).join('');
+        var up = st.mode === 'upgrade';
+        var modeBtn = function (m, label, sub2) {
+            var on = st.mode === m;
+            return '<div onclick="msSetMode(&#39;' + m + '&#39;)" style="flex:1;border:2px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';border-radius:12px;padding:9px 12px;cursor:pointer;background:' + (on ? 'rgba(249,115,22,.06)' : '#fff') + '"><b style="font-size:13.5px">' + label + '</b><div style="font-size:11px;color:var(--text3)">' + sub2 + '</div></div>';
+        };
+        var modeBar = st.hasSub
+            ? '<div style="display:flex;gap:10px;margin-bottom:14px">'
+                + modeBtn('renew', 'Renew / extend period', 'pay a full period; it starts when the current one ends')
+                + modeBtn('upgrade', 'Upgrade now (pay only the difference)', 'add employees/companies today; period end unchanged')
+                + '</div>'
+            : '';
+        msModal('<h3 style="margin:0 0 4px;font-size:18px">Renew / upgrade subscription</h3>'
+            + '<div style="font-size:12.5px;color:var(--text3);margin-bottom:14px">' + (up ? 'Pay only the pro-rata difference for the days remaining in your current period - your limits increase immediately and the expiry date does not change.' : 'Renewing early never loses days - the new period starts when the current one ends.') + ' Payment is processed securely by Razorpay and the GST tax invoice is emailed automatically.</div>'
+            + modeBar
+            + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">' + planBtns + '</div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">'
+            + '<div><label style="' + lbl + '">Employees (total)</label><input type="number" min="1" value="' + (st.seats || 1) + '" style="' + inp + '" onchange="msSetSeats(this.value)" onkeyup="msSetSeats(this.value)"><div style="font-size:11px;color:var(--text3);margin-top:3px">Across ALL companies</div></div>'
+            + '<div><label style="' + lbl + '">Companies</label><input type="number" min="' + (st.minCompanies || 1) + '" max="100" value="' + (st.companies || 1) + '" style="' + inp + '" onchange="msSetCompanies(this.value)" onkeyup="msSetCompanies(this.value)"><div style="font-size:11px;color:var(--text3);margin-top:3px">1 included; extra ₹1,000/mo each</div></div>'
+            + '<div><label style="' + lbl + '">Advance period</label>' + (up ? '<div style="' + inp + ';background:#eef2f7;color:var(--text3)">' + msCycleLabel(st.cycle) + ' (current)</div>' : '<select style="' + inp + '" onchange="msSetCycle(this.value)">' + cycOpts + '</select>') + '</div>'
+            + '</div>'
+            + '<div id="ms-quote" style="border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin-bottom:14px;font-size:13.5px;color:var(--text2)">Calculating…</div>'
+            + '<button class="btn btn-primary" id="ms-paybtn" onclick="msPay()" style="width:100%"><i class="fas fa-lock"></i> Pay securely</button>', true);
+    }
+    window.msQuote = function () {
+        var st = window.__MSR; if (!st) { return; }
+        var q = document.getElementById('ms-quote'); if (q) { q.innerHTML = 'Calculating…'; }
+        msPost('/quote', { plan_id: st.plan_id, seats: st.seats, companies: st.companies || 1, cycle: st.cycle, mode: st.mode || 'renew' }).then(function (j) {
+            var q2 = document.getElementById('ms-quote'); if (!q2) { return; }
+            if (!j.ok) { q2.innerHTML = '<span style="color:var(--red)">' + (j.error || 'Could not price this combination') + '</span>'; return; }
+            var s = j.summary || {};
+            var row = function (a, b, strong) { return '<div style="display:flex;justify-content:space-between;padding:3px 0' + (strong ? ';font-weight:700;border-top:1px solid var(--border);margin-top:6px;padding-top:8px;font-size:15px' : '') + '"><span>' + a + '</span><span>' + b + '</span></div>'; };
+            if (j.mode === 'upgrade') {
+                var h2 = row('New plan rate - per month', inr(s.per_month));
+                h2 += row('Difference vs current plan', inr(s.diff_per_month) + '/mo');
+                h2 += row('Remaining in current period', s.remaining_days + ' day(s), until ' + s.end);
+                if (s.discount > 0) { h2 += row('Advance discount (your cycle)', '-' + Math.round(s.discount * 100) + '%'); }
+                h2 += row('Pro-rata subtotal', inr(s.amount));
+                h2 += row('GST (18%)', inr(s.tax));
+                h2 += row('Payable now', inr(s.total), true);
+                h2 += '<div style="font-size:11.5px;color:var(--text3);margin-top:6px">Limits increase immediately. Your expiry date stays ' + s.end + '. Future renewals bill at the new rate.</div>';
+                q2.innerHTML = h2;
+                return;
+            }
+            var h = row(j.plan + ' plan - per month', inr(s.per_month));
+            if (s.company_fee > 0) { h += row('Includes additional companies: ' + (s.companies - 1) + ' x 1,000', inr(s.company_fee) + '/mo'); }
+            h += row('Billing period', s.months + ' months');
+            if (s.discount > 0) { h += row('Advance discount', '-' + Math.round(s.discount * 100) + '%'); }
+            h += row('Subtotal', inr(s.amount));
+            h += row('GST (18%)', inr(s.tax));
+            h += row('Payable now', inr(s.total), true);
+            q2.innerHTML = h;
+        }).catch(function () { var q3 = document.getElementById('ms-quote'); if (q3) { q3.innerHTML = 'Could not load the quote.'; } });
+    };
+    window.msPay = function () {
+        var st = window.__MSR; if (!st) { return; }
+        var b = document.getElementById('ms-paybtn'); if (b) { b.disabled = true; }
+        msPost('/renew/order', { plan_id: st.plan_id, seats: st.seats, companies: st.companies || 1, cycle: st.cycle, mode: st.mode || 'renew' }).then(function (j) {
+            if (!j.ok) { if (typeof toast === 'function') { toast(j.error || 'Could not start the payment'); } if (b) { b.disabled = false; } return; }
+            msEnsureRzp(function () {
+                var rz = new Razorpay({
+                    key: j.keyId, order_id: j.orderId, amount: j.amountPaise, currency: 'INR',
+                    name: 'SmartPRS by Ametecs', description: 'Subscription renewal',
+                    prefill: { name: cfg.user || '', email: cfg.userEmail || '' },
+                    theme: { color: '#f97316' },
+                    handler: function (resp) {
+                        msPost('/renew/complete', {
+                            uuid: j.uuid,
+                            razorpay_order_id: resp.razorpay_order_id,
+                            razorpay_payment_id: resp.razorpay_payment_id,
+                            razorpay_signature: resp.razorpay_signature
+                        }).then(function (c) {
+                            if (c.ok) {
+                                msClose();
+                                if (typeof toast === 'function') { toast(c.message || 'Subscription renewed'); }
+                                window.__MYSUB = null; msLoad();
+                            } else {
+                                if (typeof toast === 'function') { toast(c.error || 'Payment verification failed - contact support with your payment id.'); }
+                                if (b) { b.disabled = false; }
+                            }
+                        });
+                    },
+                    modal: { ondismiss: function () { var b2 = document.getElementById('ms-paybtn'); if (b2) { b2.disabled = false; } } }
+                });
+                rz.open();
+            });
+        }).catch(function () { if (typeof toast === 'function') { toast('Network error - please retry.'); } if (b) { b.disabled = false; } });
+    };
+    function mySubScreen() {
+        var d = window.__MYSUB;
+        if (!d) { setTimeout(function () { if (!window.__MYSUB) { msLoad(); } }, 10); return pghead('My Subscription', 'Loading…', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('My Subscription', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)">' + String(d.error) + '</div></div>'; }
+        var sub = d.sub; var plan = d.plan || {};
+        var renewBtn = '<button class="btn btn-primary" onclick="msRenewOpen()"><i class="fas fa-rotate"></i> ' + (sub ? 'Renew / Upgrade' : 'Start subscription') + '</button>';
+        if (!d.canPay) { renewBtn = '<div style="font-size:12.5px;color:var(--text3)">Online renewal is not configured - please write to sales@ametecsindia.com.</div>'; }
+        if (!sub) {
+            return pghead('My Subscription', 'Your plan, billing and renewals', '')
+                + '<div class="card"><div style="padding:28px;text-align:center"><div style="font-size:15px;font-weight:600;margin-bottom:6px">No subscription on record</div>'
+                + '<div style="font-size:13px;color:var(--text3);margin-bottom:14px">Start a subscription to keep your workspace active.</div>' + renewBtn + '</div></div>';
+        }
+        var days = sub.daysLeft;
+        var expired = (days !== null && days < 0) || sub.status === 'cancelled' || sub.status === 'suspended';
+        var expSoon = ! expired && days !== null && days <= 15;
+        var badge = expired
+            ? '<span style="background:#fee2e2;color:#b91c1c;font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;text-transform:uppercase">Expired</span>'
+            : '<span style="background:#dcfce7;color:#15803d;font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;text-transform:uppercase">' + (sub.status || 'active') + '</span>';
+        var alertBar = '';
+        if (expired) {
+            alertBar = '<div class="card" style="border-left:4px solid var(--red);margin-bottom:14px"><b style="color:var(--red)">Your subscription has expired' + (sub.end ? ' on ' + sub.end : '') + '.</b> <span style="color:var(--text2)">Renew now to keep your workspace active.</span></div>';
+        } else if (expSoon) {
+            alertBar = '<div class="card" style="border-left:4px solid var(--accent);margin-bottom:14px"><b>Your subscription expires in ' + days + ' day' + (days === 1 ? '' : 's') + (sub.end ? ' (on ' + sub.end + ')' : '') + '.</b> <span style="color:var(--text2)">Renew now to avoid any interruption.</span></div>';
+        }
+        var row = function (a, b) { return '<div style="display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13.5px"><span style="color:var(--text3)">' + a + '</span><b style="text-align:right">' + b + '</b></div>'; };
+        var coSub = sub.companies || 1;
+        var coUsed = d.companiesUsed || 0;
+        var coOver = coUsed > coSub;
+        var planCard = '<div class="card">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div style="font-size:18px;font-weight:800">' + (plan.name || 'Plan') + ' plan</div>' + badge + '</div>'
+            + row('Employees subscribed', sub.seats + ' <span style="color:var(--text3);font-weight:500">(across all companies)</span>')
+            + row('Included in plan', 'Up to ' + (plan.seat_max || 0) + ' employees + 1 company')
+            + row('Employees in your workspace', String(d.employees || 0))
+            + row('Companies subscribed', coSub + ' <span style="color:var(--text3);font-weight:500">(' + coUsed + ' in use' + (coSub > 1 ? '; extra ' + (coSub - 1) + ' x 1,000/mo' : '') + ')</span>'
+                + (coOver ? ' <span style="color:#b91c1c;font-weight:700">OVER LIMIT - upgrade on renewal</span>' : ''))
+            + row('Billing period', msCycleLabel(sub.cycle))
+            + row('Period amount (excl. GST)', inr(sub.amount))
+            + row('Active until', (sub.end || '—') + (days !== null && !expired ? ' <span style="color:var(--text3);font-weight:500">(' + days + ' days left)</span>' : ''))
+            + '<div style="margin-top:14px">' + renewBtn + '</div>'
+            + '</div>';
+        var invRows = (d.invoices || []).map(function (i) {
+            var c = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+            var stc = i.status === 'paid' ? '#15803d' : 'var(--accent)';
+            return '<tr><td style="' + c + ';font-weight:600">' + i.number + '</td><td style="' + c + '">' + (i.issued || '') + '</td><td style="' + c + ';text-align:right">' + inr(i.total) + '</td><td style="' + c + '"><span style="color:' + stc + ';font-weight:700;text-transform:uppercase;font-size:11px">' + i.status + '</span></td><td style="' + c + ';text-align:center"><a href="' + i.pdf + '" target="_blank" title="Download tax invoice (PDF)"><i class="fas fa-file-pdf" style="color:var(--red);cursor:pointer"></i></a></td></tr>';
+        }).join('');
+        if (!invRows) { invRows = '<tr><td colspan="5" style="padding:18px;text-align:center;color:var(--text3);font-size:13px">No invoices yet</td></tr>'; }
+        var th = 'padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)';
+        var invCard = '<div class="card" style="padding:0;overflow:hidden">'
+            + '<div style="padding:14px 18px;font-weight:700;border-bottom:1px solid var(--border)">Invoices &amp; receipts</div>'
+            + '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + th + '">Invoice</th><th style="' + th + '">Date</th><th style="' + th + ';text-align:right">Total (incl. GST)</th><th style="' + th + '">Status</th><th style="' + th + ';text-align:center">PDF</th></tr></thead><tbody>' + invRows + '</tbody></table>'
+            + '</div>';
+        return pghead('My Subscription', 'Your plan, billing and renewals - renew or upgrade any time', '')
+            + alertBar + '<div class="two-col">' + planCard + invCard + '</div>';
+    }
+    // ---- LIVE SALARY (rev 79): earned-till-today panel, strict hierarchy -----
+    window.__LS = null;
+    window.lsLoad = function (empId) {
+        var url = cfg.liveSalaryUrl + (empId ? ('?employee_id=' + empId) : '');
+        fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__LS = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__LS = { ok: false, error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    window.lsPick = function (v) { window.__LS = null; lsLoad(v); };
+    function liveSalaryScreen() {
+        var d = window.__LS;
+        if (!d) { setTimeout(function () { if (!window.__LS) { lsLoad(); } }, 10); return pghead('Live Salary', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Calculating…</div></div>'; }
+        if (!d.ok) { return pghead('Live Salary', 'Live earnings this month', '') + '<div class="card"><div style="padding:26px;color:var(--red)"><b>' + (d.error || 'Could not load') + '</b></div></div>'; }
+        var e = d.employee || {}; var m = d.meta || {};
+        var picker = '';
+        if (d.canPick) {
+            var opts = (d.employees || []).map(function (x) { return '<option value="' + x.id + '"' + (x.id === e.id ? ' selected' : '') + '>' + x.name + ' (' + x.code + ')</option>'; }).join('');
+            picker = '<select onchange="lsPick(this.value)" style="padding:9px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#fff;min-width:240px">' + opts + '</select>';
+        }
+        var row = function (sign, label, amt) {
+            var col = sign === '+' ? '#15803d' : '#b91c1c';
+            return '<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border)">'
+                + '<span style="font-size:13.5px;color:var(--text2)"><b style="color:' + col + ';font-size:15px;margin-right:8px">' + sign + '</b>' + label + '</span>'
+                + '<b style="color:' + col + ';font-size:14.5px">' + inr(amt) + '</b></div>';
+        };
+        var eRows = (d.earnings || []).map(function (x) { return row('+', x.label, x.amount); }).join('') || '<div style="padding:12px;color:var(--text3);font-size:13px">No earnings yet this month</div>';
+        var dRows = (d.deductions || []).map(function (x) { return row('&minus;', x.label, x.amount); }).join('') || '<div style="padding:12px;color:var(--text3);font-size:13px">No deductions yet</div>';
+        var att = m.attendanceTracked
+            ? (m.presentDays + ' present + ' + (m.paidLeaveDays || 0) + ' paid leave of ' + m.workingSoFar + ' working days so far' + (m.lateDays ? ' &middot; ' + m.lateDays + ' late' : ''))
+            : ('no punches yet &mdash; estimated by ' + m.workingSoFar + ' of ' + m.workingDays + ' working days elapsed');
+        var head = '<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px">'
+            + '<div><div style="font-size:19px;font-weight:800">' + e.name + ' <span style="color:var(--text3);font-weight:500;font-size:13px">(' + e.code + ') &middot; ' + (e.company || '') + '</span></div>'
+            + '<div style="font-size:12.5px;color:var(--text3);margin-top:3px">' + m.monthLabel + ' &middot; as of ' + m.today + ' &middot; ' + att + '</div></div>' + picker + '</div>';
+        // rev 84 (Ejaz): TWO figures — certain (approved) vs projected (incl.
+        // commissions still awaiting approval), clearly separated.
+        var pendC = Number(d.pendingCommission || 0);
+        var projLine = pendC > 0
+            ? '<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.25)"><span style="font-size:11px;letter-spacing:1px;text-transform:uppercase;opacity:.75">Projected incl. pending commissions</span>'
+              + '<div style="font-size:24px;font-weight:800">' + inr(d.projectedNet || d.net) + ' <span style="font-size:12px;font-weight:600;background:#fef3c7;color:#92400e;padding:2px 10px;border-radius:99px;vertical-align:middle">+ ' + inr(pendC) + ' awaiting approval</span></div></div>'
+            : '';
+        var big = '<div class="card" style="text-align:center;margin-bottom:14px;background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff">'
+            + '<div style="font-size:12px;letter-spacing:1px;text-transform:uppercase;opacity:.75">Net salary earned till today (approved only)</div>'
+            + '<div style="font-size:40px;font-weight:800;margin:6px 0">' + inr(d.net) + '</div>'
+            + '<div style="font-size:12.5px;opacity:.8">' + m.factorPct + '% of the month &middot; full-month projection: ' + inr(m.fullMonthNet) + ' net (' + inr(m.fullMonthGross) + ' gross)</div>'
+            + projLine
+            + '</div>';
+        var eCard = '<div class="card"><div style="font-weight:800;margin-bottom:6px;color:#15803d"><i class="fas fa-plus-circle"></i> Earnings till today</div>' + eRows
+            + '<div style="display:flex;justify-content:space-between;padding:11px 0 2px;font-weight:800;font-size:15px"><span>Total earnings</span><span style="color:#15803d">' + inr(d.gross) + '</span></div></div>';
+        var dCard = '<div class="card"><div style="font-weight:800;margin-bottom:6px;color:#b91c1c"><i class="fas fa-minus-circle"></i> Deductions</div>' + dRows
+            + '<div style="display:flex;justify-content:space-between;padding:11px 0 2px;font-weight:800;font-size:15px"><span>Total deductions</span><span style="color:#b91c1c">' + inr(d.totalDeductions) + '</span></div></div>';
+        var logRows = (d.entries || []).map(function (en) {
+            var pending = en.status === 'pending';
+            var info = en.status === 'info';
+            var col = en.sign === '+' ? '#15803d' : '#b91c1c';
+            var c2 = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+            var amt = '<b style="color:' + (pending || info ? 'var(--text3)' : col) + '">' + en.sign + ' ' + inr(en.amount) + '</b>';
+            var st = pending ? '<span style="background:#fef3c7;color:#92400e;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:99px;text-transform:uppercase">Awaiting approval</span>'
+                : (info ? '<span style="background:#f1f5f9;color:var(--text3);font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:99px;text-transform:uppercase">Not counted</span>'
+                    : '<span style="background:#dcfce7;color:#15803d;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:99px;text-transform:uppercase">Counted</span>');
+            return '<tr' + (pending ? ' style="opacity:.65"' : '') + '><td style="' + c2 + ';white-space:nowrap;color:var(--text3)">' + en.date + '</td>'
+                + '<td style="' + c2 + ';font-weight:700">' + en.head + '</td>'
+                + '<td style="' + c2 + ';white-space:normal;max-width:380px;line-height:1.45;color:var(--text2)">' + (en.detail || '') + '</td>'
+                + '<td style="' + c2 + '">' + st + '</td>'
+                + '<td style="' + c2 + ';text-align:right;white-space:nowrap">' + amt + '</td></tr>';
+        }).join('');
+        var th2 = 'padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)';
+        var logCard = '<div class="card" style="padding:0;overflow:auto;margin-top:14px">'
+            + '<div style="padding:14px 18px;font-weight:800;border-bottom:1px solid var(--border)">How you earned it <span style="font-weight:500;color:var(--text3);font-size:12px">&mdash; this month&#39;s entries; commission entries appear here the moment they are approved</span></div>'
+            + '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + th2 + '">Date</th><th style="' + th2 + '">Entry</th><th style="' + th2 + '">Details</th><th style="' + th2 + '">Status</th><th style="' + th2 + ';text-align:right">Amount</th></tr></thead><tbody>'
+            + (logRows || '<tr><td colspan="5" style="padding:22px;text-align:center;color:var(--text3);font-size:13px">No entries yet this month</td></tr>')
+            + '</tbody></table></div>';
+        // rev 84 (Ejaz): second TAB — every commission/incentive earned, with
+        // payout dates, status, lock state and the per-entry History trail.
+        var tab = window.__LSTAB || 'salary';
+        var tabBtn = function (key, label) {
+            var on = tab === key;
+            return '<button class="btn ' + (on ? 'btn-primary' : 'btn-outline') + ' btn-sm" onclick="lsTab(&#39;' + key + '&#39;)">' + label + '</button>';
+        };
+        var tabs = '<div style="display:flex;gap:8px;margin-bottom:14px">' + tabBtn('salary', 'Live Salary') + tabBtn('earn', 'Commissions &amp; Incentives (' + ((d.commList || []).length) + ')') + '</div>';
+        var bodyHtml;
+        if (tab === 'earn') {
+            var cth = 'padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap';
+            var cc2 = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+            var stBadge = function (x) {
+                if (x.status === 'approved') { return '<span style="background:#dcfce7;color:#15803d;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:99px;text-transform:uppercase">Approved</span>'; }
+                if (x.status === 'rejected') { return '<span style="background:#fee2e2;color:#b91c1c;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:99px;text-transform:uppercase">Rejected</span>'; }
+                return '<span style="background:#fef3c7;color:#92400e;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:99px;text-transform:uppercase">Pending</span>';
+            };
+            var earnRows = (d.commList || []).map(function (x) {
+                var lockTag = x.locked ? ' <span title="' + (x.lockSource || 'locked') + '" style="background:#e2e8f0;color:#334155;font-size:10px;font-weight:800;padding:2px 7px;border-radius:99px"><i class="fas fa-lock"></i> LOCKED</span>' : '';
+                var methodTag = x.payoutMethod === 'separate' ? ' <span style="background:#e0f2fe;color:#0369a1;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px">SEPARATE</span>' : '';
+                var balCol = (x.status === 'approved' && x.balance > 0.005) ? '#b91c1c' : 'var(--text3)';
+                return '<tr><td style="' + cc2 + ';white-space:nowrap;color:var(--text3)">' + x.date + '</td>'
+                    + '<td style="' + cc2 + ';font-weight:700">' + (x.purpose || 'Commission') + (x.portfolio ? ' <span style="color:var(--text3);font-weight:400">(' + x.portfolio + ')</span>' : '') + methodTag + lockTag + '</td>'
+                    + '<td style="' + cc2 + ';white-space:nowrap">' + (x.earnedMonth || '&mdash;') + '</td>'
+                    + '<td style="' + cc2 + ';white-space:nowrap;font-weight:700;color:#0369a1">' + (x.payoutDate || '&mdash;') + '</td>'
+                    + '<td style="' + cc2 + ';white-space:nowrap;text-align:right">' + inr(x.gross || x.net) + '</td>'
+                    + '<td style="' + cc2 + ';white-space:nowrap;text-align:right;color:#b91c1c">' + (x.tds ? '&minus; ' + inr(x.tds) : '&mdash;') + '</td>'
+                    + '<td style="' + cc2 + ';white-space:nowrap;text-align:right;font-weight:800;color:#15803d">' + inr(x.net) + '</td>'
+                    + '<td style="' + cc2 + ';white-space:nowrap;text-align:right;color:#0369a1;font-weight:700">' + (x.paid ? inr(x.paid) : '&mdash;') + '</td>'
+                    + '<td style="' + cc2 + ';white-space:nowrap;text-align:right;font-weight:700;color:' + balCol + '">' + (x.status === 'approved' ? inr(x.balance) : '&mdash;') + '</td>'
+                    + '<td style="' + cc2 + '">' + stBadge(x) + '</td>'
+                    + '<td style="' + cc2 + ';white-space:nowrap"><a onclick="commHist(' + x.id + ')" style="cursor:pointer;color:#4f46e5;font-size:12px;font-weight:700"><i class="fas fa-clock-rotate-left"></i> History</a></td></tr>';
+            }).join('');
+            bodyHtml = '<div class="card" style="padding:0;overflow:auto">'
+                + '<div style="padding:14px 18px;font-weight:800;border-bottom:1px solid var(--border)">Commissions &amp; incentives earned <span style="font-weight:500;color:var(--text3);font-size:12px">&mdash; payout date decides when it is paid; Paid / Balance come from the disbursement ledger</span> <a onclick="commLedgerOpen()" style="float:right;cursor:pointer;color:#4f46e5;font-size:12.5px;font-weight:700"><i class="fas fa-book"></i> My ledger</a></div>'
+                + '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + cth + '">Entered</th><th style="' + cth + '">Purpose</th><th style="' + cth + '">Earned Month</th><th style="' + cth + '">Payout Date</th><th style="' + cth + ';text-align:right">Gross</th><th style="' + cth + ';text-align:right">TDS</th><th style="' + cth + ';text-align:right">Net</th><th style="' + cth + ';text-align:right">Paid</th><th style="' + cth + ';text-align:right">Balance</th><th style="' + cth + '">Status</th><th style="' + cth + '"></th></tr></thead><tbody>'
+                + (earnRows || '<tr><td colspan="11" style="padding:26px;text-align:center;color:var(--text3);font-size:13px">No commission or incentive entries yet.</td></tr>')
+                + '</tbody></table></div>';
+        } else {
+            bodyHtml = big + '<div class="two-col">' + eCard + dCard + '</div>' + logCard;
+        }
+        return pghead('Live Salary', 'Running-month salary, component by component, computed with the same engine as payroll', '')
+            + head + tabs + bodyHtml
+            + '<div style="font-size:11.5px;color:var(--text3);margin-top:10px">Live estimate &mdash; the final payslip is generated at month end with full attendance and approvals.</div>';
+    }
+    window.lsTab = function (t) { window.__LSTAB = t; if (typeof render === 'function') { render(); } };
+    // ---- rev 82: Manual & BULK attendance (Excel upload + approval gate) -----
+    window.__AB = null;
+    window.abLoad = function () {
+        fetch(cfg.attBulkBase, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__AB = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__AB = { ok: false, error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    function abEnsureXLSX(cb) {
+        if (window.XLSX) { cb(); return; }
+        var s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        s.onload = cb;
+        s.onerror = function () { if (typeof toast === 'function') { toast('Could not load the Excel reader - check internet, or save the file as CSV.'); } };
+        document.head.appendChild(s);
+    }
+    function abHeaderMap(headers) {
+        var norm = function (i) { return String(headers[i] || '').toLowerCase().replace(/[^a-z]/g, ''); };
+        var find = function (cands) {
+            for (var i = 0; i < headers.length; i++) {
+                var h = norm(i);
+                for (var c = 0; c < cands.length; c++) { if (h === cands[c] || h.indexOf(cands[c]) >= 0) { return i; } }
+            }
+            return -1;
+        };
+        var findExact = function (cands) {
+            for (var i = 0; i < headers.length; i++) {
+                var h = norm(i);
+                for (var c = 0; c < cands.length; c++) { if (h === cands[c]) { return i; } }
+            }
+            return -1;
+        };
+        return {
+            code: find(['empcode', 'employeecode', 'code', 'empid', 'userid', 'enrollno']),
+            name: find(['employeename', 'empname', 'name', 'employee']),
+            date: find(['date', 'logdate', 'attendancedate']),
+            tin: find(['intime', 'firstin', 'timein', 'punchin']),
+            tout: find(['outtime', 'lastout', 'timeout', 'punchout']),
+            // device punch-log format: ONE punch per row (rev 82b)
+            ptime: findExact(['punchtime', 'time', 'logtime', 'punchat', 'clock']),
+            dir: findExact(['direction', 'dir', 'inout', 'state', 'status', 'type', 'mode'])
+        };
+    }
+    window.abUpload = function (input) {
+        if (!input.files || !input.files[0]) { return; }
+        var f = input.files[0]; input.value = '';
+        abEnsureXLSX(function () {
+            var reader = new FileReader();
+            reader.onload = function (ev) {
+                try {
+                    var wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+                    var ws = wb.Sheets[wb.SheetNames[0]];
+                    var arr = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+                    if (!arr.length) { if (typeof toast === 'function') { toast('The file is empty'); } return; }
+                    var hm = abHeaderMap(arr[0]);
+                    if (hm.date < 0 || (hm.code < 0 && hm.name < 0)) { if (typeof toast === 'function') { toast('Could not find the columns - use one of the two templates (day in/out, or device punch log).'); } return; }
+                    // Punch-log mode (device export): a direction column + a single time column.
+                    var punchMode = hm.dir >= 0 && hm.ptime >= 0;
+                    var rows = [];
+                    for (var i = 1; i < arr.length; i++) {
+                        var rr = arr[i];
+                        if (!rr || !rr.length) { continue; }
+                        if (punchMode) {
+                            rows.push({
+                                code: hm.code >= 0 ? rr[hm.code] : '',
+                                name: hm.name >= 0 ? rr[hm.name] : '',
+                                date: rr[hm.date],
+                                time: rr[hm.ptime],
+                                dir: rr[hm.dir]
+                            });
+                        } else {
+                            rows.push({
+                                code: hm.code >= 0 ? rr[hm.code] : '',
+                                name: hm.name >= 0 ? rr[hm.name] : '',
+                                date: rr[hm.date],
+                                'in': hm.tin >= 0 ? rr[hm.tin] : '',
+                                out: hm.tout >= 0 ? rr[hm.tout] : ''
+                            });
+                        }
+                    }
+                    if (!rows.length) { if (typeof toast === 'function') { toast('No data rows found below the header'); } return; }
+                    fetch(cfg.attBulkBase + '/upload', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ rows: rows }) })
+                        .then(function (r) { return r.json(); }).then(function (j) {
+                            if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Uploaded'); } window.__AB = null; abLoad(); }
+                            else if (typeof toast === 'function') { toast((j && j.error) || 'Upload failed'); }
+                        }).catch(function () { if (typeof toast === 'function') { toast('Upload failed'); } });
+                } catch (e2) { if (typeof toast === 'function') { toast('Could not read the file - save it as .xlsx or .csv and retry'); } }
+            };
+            reader.readAsArrayBuffer(f);
+        });
+    };
+    window.abDecide = function (batch, action) {
+        fetch(cfg.attBulkBase + '/' + batch + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Done'); } window.__AB = null; abLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Failed'); } });
+    };
+    window.abRowDel = function (id) {
+        fetch(cfg.attBulkBase + '/row/' + id + '/delete', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); }).then(function () { window.__AB = null; abLoad(); });
+    };
+    window.abSingle = function () {
+        var g = function (k) { var el = document.getElementById('ab_' + k); return el ? el.value : ''; };
+        if (!g('emp') || !g('date') || !g('time')) { if (typeof toast === 'function') { toast('Pick the employee, date and time'); } return; }
+        fetch(cfg.masterBase + '/att-manual', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ item: { emp_name: g('emp'), log_date: g('date'), punch_at: g('date') + ' ' + g('time') + ':00', direction: g('dir') } }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('Punch recorded'); } var t = document.getElementById('ab_time'); if (t) { t.value = ''; } }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not save'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not save'); } });
+    };
+    function attManualScreen() {
+        var d = window.__AB;
+        if (!d) { setTimeout(function () { if (!window.__AB) { abLoad(); } }, 10); return pghead('Manual & Bulk Attendance', 'Loading…', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var emps = ((typeof DB !== 'undefined' && DB.employees) || []);
+        var dl = '<datalist id="ab_dl">' + emps.map(function (e) { return '<option value="' + String(e.name || '').replace(/"/g, '&quot;') + '">' + (e.id || '') + '</option>'; }).join('') + '</datalist>';
+        var today = new Date().toISOString().slice(0, 10);
+        var single = '<div class="card" style="margin-bottom:16px">'
+            + '<div style="font-weight:800;margin-bottom:10px"><i class="fas fa-user-pen" style="color:var(--accent)"></i> Single punch <span style="font-weight:500;color:var(--text3);font-size:12px">applies immediately</span></div>'
+            + '<div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:10px;align-items:end">'
+            + '<div><label style="' + lbl + '">Employee (type to search)</label><input id="ab_emp" list="ab_dl" placeholder="Type a name…" autocomplete="off" style="' + inp + '">' + dl + '</div>'
+            + '<div><label style="' + lbl + '">Date</label><input id="ab_date" type="date" value="' + today + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Time</label><input id="ab_time" type="time" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Direction</label><select id="ab_dir" style="' + inp + '"><option value="in">In</option><option value="out">Out</option></select></div>'
+            + '<div><button class="btn btn-primary" onclick="abSingle()"><i class="fas fa-plus"></i> Add</button></div>'
+            + '</div></div>';
+        var bulkHead = '<div class="card" style="margin-bottom:16px">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'
+            + '<div><div style="font-weight:800"><i class="fas fa-file-excel" style="color:#15803d"></i> Bulk upload (Excel / CSV) <span style="font-weight:500;color:var(--text3);font-size:12px">needs Admin approval before punches count</span></div>'
+            + '<div style="font-size:12px;color:var(--text3);margin-top:3px">Two formats, auto-detected: <b>Day</b> (one row per employee per day: in + out time) or <b>Device punch log</b> (one row per punch: time + direction - matches biometric exports). Up to 3,000 rows.</div></div>'
+            + '<div style="display:flex;gap:10px;flex-wrap:wrap"><a class="btn btn-outline btn-sm" href="' + cfg.attBulkBase + '/template"><i class="fas fa-download"></i> Template: Day</a>'
+            + '<a class="btn btn-outline btn-sm" href="' + cfg.attBulkBase + '/template?type=punch"><i class="fas fa-download"></i> Template: Punch log</a>'
+            + '<label class="btn btn-primary btn-sm" style="cursor:pointer;margin:0"><i class="fas fa-upload"></i> Upload file<input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="abUpload(this)"></label></div>'
+            + '</div></div>';
+        var st = function (s) {
+            var map = { pending: ['#fef3c7', '#92400e', 'Pending approval'], approved: ['#dcfce7', '#15803d', 'Approved'], rejected: ['#fee2e2', '#b91c1c', 'Rejected'], error: ['#fee2e2', '#b91c1c', 'Error'] };
+            var m = map[s] || ['#f1f5f9', 'var(--text3)', s];
+            return '<span style="background:' + m[0] + ';color:' + m[1] + ';font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:99px;text-transform:uppercase">' + m[2] + '</span>';
+        };
+        var c2 = 'padding:8px 10px;font-size:12.5px;border-top:1px solid var(--border)';
+        var batches = (d.batches || []).map(function (b) {
+            var act = (d.canApprove && b.pending > 0)
+                ? '<button class="btn btn-sm btn-primary" onclick="abDecide(&#39;' + b.batch + '&#39;,&#39;approve&#39;)"><i class="fas fa-check"></i> Approve ' + b.pending + ' row(s)</button> <button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="abDecide(&#39;' + b.batch + '&#39;,&#39;reject&#39;)">Reject</button>'
+                : (b.pending > 0 ? '<span style="font-size:12px;color:var(--text3)">awaiting Admin approval</span>' : '');
+            var rows = (b.rows || []).map(function (r) {
+                var del = (r.status === 'pending' || r.status === 'error') ? '<i class="fas fa-trash" style="color:var(--red);cursor:pointer" onclick="abRowDel(' + r.id + ')"></i>' : '';
+                return '<tr' + (r.status === 'error' ? ' style="background:#fff7f7"' : '') + '><td style="' + c2 + ';font-weight:600">' + (r.code || '') + '</td><td style="' + c2 + '">' + (r.name || '') + '</td><td style="' + c2 + '">' + (r.date || '—') + '</td><td style="' + c2 + '">' + (r['in'] || '—') + '</td><td style="' + c2 + '">' + (r.out || '—') + '</td><td style="' + c2 + '">' + st(r.status) + (r.error ? ' <span style="color:var(--red);font-size:11px">' + r.error + '</span>' : '') + '</td><td style="' + c2 + ';text-align:center">' + del + '</td></tr>';
+            }).join('');
+            var th = 'padding:9px 10px;text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)';
+            return '<div class="card" style="padding:0;overflow:hidden;margin-bottom:14px">'
+                + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:13px 16px;border-bottom:1px solid var(--border)">'
+                + '<div style="font-size:13px"><b>Batch ' + b.at + '</b> <span style="color:var(--text3)">by ' + (b.uploadedBy || '—') + ' · ' + b.total + ' row(s) · ' + b.pending + ' pending · ' + b.errors + ' error(s) · ' + b.approved + ' approved</span></div>'
+                + '<div>' + act + '</div></div>'
+                + '<div style="max-height:300px;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + th + '">Code</th><th style="' + th + '">Name</th><th style="' + th + '">Date</th><th style="' + th + '">In</th><th style="' + th + '">Out</th><th style="' + th + '">Status</th><th style="' + th + '"></th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+        }).join('');
+        if (!batches) { batches = '<div class="card" style="text-align:center;color:var(--text3);font-size:13px;padding:26px">No uploads yet — download the template, fill it, and upload.</div>'; }
+        return pghead('Manual & Bulk Attendance', 'Single punches apply instantly; bulk uploads enter attendance only after Admin approval', '<button class="btn btn-outline btn-sm" onclick="window.__AB=null;abLoad()"><i class="fas fa-rotate"></i> Refresh</button>')
+            + single + bulkHead + batches;
+    }
+    window.LETTER_SAMPLES = (function () {
+        var NL = String.fromCharCode(10);
+        return {
+            offer: 'Dear {{employee_name}},' + NL + NL + 'We are pleased to offer you the position of {{designation}} in the {{department}} department at {{company}}, with effect from {{date}}.' + NL + NL + 'Your annual CTC will be {{ctc}}. This offer is governed by the company policies and the terms communicated to you separately.' + NL + NL + 'We look forward to welcoming you to the team.' + NL + NL + 'Warm regards,' + NL + 'HR Department, {{company}}',
+            increment: 'Dear {{employee_name}},' + NL + NL + 'In recognition of your performance and contribution, we are pleased to revise your annual CTC to {{ctc}}, with effect from {{date}}.' + NL + NL + 'Your role as {{designation}} in {{department}} remains unchanged. We appreciate your efforts and look forward to your continued success.' + NL + NL + 'Warm regards,' + NL + 'HR Department, {{company}}',
+            warning: 'Dear {{employee_name}} ({{emp_code}}),' + NL + NL + 'This letter is to formally bring to your attention concerns regarding your conduct and performance as {{designation}} in {{department}}.' + NL + NL + 'You are advised to demonstrate immediate and sustained improvement. Failure to do so may result in further disciplinary action in accordance with company policy.' + NL + NL + 'Issued on {{date}}.' + NL + NL + 'For {{company}},' + NL + 'HR Department',
+            relieving: 'To Whomsoever It May Concern,' + NL + NL + 'This is to certify that {{employee_name}} ({{emp_code}}) was employed with {{company}} as {{designation}} in {{department}}, and has been relieved from their duties with effect from {{date}}.' + NL + NL + 'We thank them for their service and wish them success in their future endeavours.' + NL + NL + 'For {{company}},' + NL + 'HR Department',
+            experience: 'To Whomsoever It May Concern,' + NL + NL + 'This is to certify that {{employee_name}} ({{emp_code}}) served {{company}} as {{designation}} in {{department}} (date of joining {{doj}}). Their conduct and performance during the tenure were found satisfactory.' + NL + NL + 'We wish them all the best for the future.' + NL + NL + 'For {{company}},' + NL + 'HR Department',
+            custom: ''
+        };
+    })();
+    window.masterFillSample = function (targetId, mapName, val) {
+        var t = document.getElementById(targetId);
+        var map = window[mapName] || {};
+        if (!t || !map[val]) { return; }
+        var cur = String(t.value);
+        // Load the chosen type sample when the Body is empty OR still holds an
+        // unedited sample (so switching type swaps the sample) — but never clobber
+        // text the user has actually written.
+        var swap = !cur.trim();
+        if (!swap) { for (var k in map) { if (map[k] && cur === map[k]) { swap = true; break; } } }
+        if (swap) { t.value = map[val]; }
+    };
+    // ---- Master data (real DB): Departments / Branches / Banks / Designations -
+    // Each field: key → {l: label, company: pick from companies, dept: pick from
+    // departments, emp: pick from employees}. Plain text otherwise.
+    // rev 83 (Ejaz): full real-world device registry shared by the Biometric
+    // Devices and ZKTeco screens. noList:1 = form-only (keeps the table tidy).
+    var DEVICE_FIELDS = [
+        { k: 'name', l: 'Device Name' },
+        { k: 'brand', l: 'Make / Brand', type: 'select', opts: ['ZKTeco', 'eSSL', 'Realtime', 'Matrix', 'Mantra', 'Hikvision', 'Suprema', 'Secureye', 'Other'] },
+        { k: 'model', l: 'Model (e.g. K40, X990, F22)', noList: 1 },
+        { k: 'device_type', l: 'Verification Type', type: 'select', opts: ['fingerprint', 'face', 'finger_face', 'card', 'finger_card', 'palm'], optLabels: ['Fingerprint', 'Face', 'Fingerprint + Face', 'Card / RFID', 'Fingerprint + Card', 'Palm / Iris'], noList: 1 },
+        { k: 'unique_id', l: 'Serial / Device ID' },
+        { k: 'company_name', l: 'Company', src: 'company' },
+        { k: 'location', l: 'Location / Branch' },
+        { k: 'connect_mode', l: 'Connection Method', type: 'select', opts: ['cloud_push', 'lan_pull', 'usb_offline'], optLabels: ['Cloud Push (ADMS) - device pushes to server', 'Direct LAN - pull from IP : Port', 'Offline - USB download + bulk Excel upload'] },
+        { k: 'ip_address', l: 'IP Address (LAN mode)' },
+        { k: 'port', l: 'Port (ZKTeco default 4370)', type: 'number', noList: 1 },
+        { k: 'comm_key', l: 'Comm Key / Device Password', noList: 1 },
+        { k: 'direction', l: 'Punch Direction', type: 'select', opts: ['auto', 'in', 'out'], optLabels: ['Auto - device records both In and Out', 'In only (entry device)', 'Out only (exit device)'] },
+        { k: 'status', l: 'Status', type: 'select', opts: ['active', 'offline', 'error', 'retired'], optLabels: ['Active', 'Offline', 'Error', 'Retired'] },
+        { k: 'notes', l: 'Notes (AMC, installer contact...)', type: 'textarea', noList: 1 }
+    ];
+    var MASTER_MAP = {
+        'departments': { type: 'departments', title: 'Departments', sub: 'Company › Branch › Department › Head', fields: [
+            { k: 'name', l: 'Department Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'branch', l: 'Branch', src: 'branch' }, { k: 'head', l: 'Department Head', src: 'emp' }] },
+        'designations': { type: 'designations', title: 'Designations', sub: 'Job titles, optionally tied to a department', fields: [
+            { k: 'name', l: 'Designation' }, { k: 'department', l: 'Department', src: 'dept' }, { k: 'grade', l: 'Grade / Band' }] },
+        'branches': { type: 'branches', title: 'Branches', sub: 'Each branch with its manager, address and contacts', fields: [
+            { k: 'name', l: 'Branch Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'manager', l: 'Branch Manager', src: 'emp' }, { k: 'address', l: 'Address' }, { k: 'city', l: 'City' }, { k: 'pincode', l: 'Pincode' }, { k: 'phone', l: 'Phone' }, { k: 'email', l: 'Email' }] },
+        'banks': { type: 'banks', title: 'Banks', sub: 'Bank accounts with account no, IFSC and purpose', fields: [
+            { k: 'name', l: 'Bank Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'acc_name', l: 'Account Holder' }, { k: 'acc_no', l: 'Account Number' }, { k: 'ifsc', l: 'IFSC' }, { k: 'bank_branch', l: 'Bank Branch' }, { k: 'purpose', l: 'Purpose (Salary / Vendor / Disbursement)' }] },
+        'holidays': { type: 'holidays', title: 'Holidays', sub: 'Company holiday calendar — excluded from payroll LOP working days', fields: [
+            { k: 'name', l: 'Holiday Name' }, { k: 'date', l: 'Date', type: 'date' }, { k: 'applies_to', l: 'Applies To (optional)' }] },
+        'leave-types': { type: 'leave-types', title: 'Leave Types', sub: 'Leave categories with annual entitlement; paid leave counts as present in payroll', fields: [
+            { k: 'name', l: 'Leave Type' }, { k: 'days_per_year', l: 'Days / Year', type: 'number' }, { k: 'paid', l: 'Paid?', type: 'select', opts: ['1', '0'], optLabels: ['Paid', 'Unpaid (LOP)'] }, { k: 'carry_forward', l: 'Carry Forward?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }] },
+        'biometric-devices': { type: 'biometric-devices', title: 'Biometric Devices', sub: 'Register attendance devices of any make. Offline devices: download punches by USB, then bulk-upload in Manual Entry.', fields: DEVICE_FIELDS },
+        'assets': { type: 'assets', title: 'Assets', sub: 'Asset register — what is issued to whom', fields: [
+            { k: 'asset_id', l: 'Asset Tag / ID' }, { k: 'asset_type', l: 'Type (Laptop / Phone / SIM…)' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'employee', l: 'Issued To', src: 'emp' }, { k: 'issue_date', l: 'Issue Date', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['issued', 'returned', 'damaged', 'lost'], optLabels: ['Issued', 'Returned', 'Damaged', 'Lost'] }] },
+        'complaints': { type: 'complaints', title: 'Complaints', sub: 'Complaints register with severity + status', fields: [
+            { k: 'employee', l: 'Employee (optional)', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'severity', l: 'Severity', type: 'select', opts: ['low', 'medium', 'high'], optLabels: ['Low', 'Medium', 'High'] }, { k: 'channel', l: 'Channel (Email / Call / Walk-in)' }, { k: 'description', l: 'Description' }, { k: 'status', l: 'Status', type: 'select', opts: ['open', 'in_progress', 'resolved', 'closed'], optLabels: ['Open', 'In progress', 'Resolved', 'Closed'] }, { k: 'date', l: 'Date', type: 'date' }] },
+        'helpdesk': { type: 'helpdesk', title: 'HR Helpdesk', sub: 'Employee helpdesk tickets with priority + status', fields: [
+            { k: 'subject', l: 'Subject' }, { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'category', l: 'Category (Payroll / Leave / IT…)' }, { k: 'priority', l: 'Priority', type: 'select', opts: ['low', 'medium', 'high', 'urgent'], optLabels: ['Low', 'Medium', 'High', 'Urgent'] }, { k: 'status', l: 'Status', type: 'select', opts: ['open', 'in_progress', 'resolved', 'closed'], optLabels: ['Open', 'In progress', 'Resolved', 'Closed'] }] },
+        'deductions': { type: 'deductions', title: 'Deductions Ledger', sub: 'Ad-hoc deductions applied in payroll', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'type', l: 'Type', type: 'select', opts: ['late', 'pcc', 'advance_emi', 'escalation', 'lop', 'other'], optLabels: ['Late', 'PCC', 'Advance EMI', 'Escalation', 'Loss of Pay', 'Other'] }, { k: 'amount', l: 'Amount (₹)', type: 'number' }, { k: 'month', l: 'Month (YYYY-MM)' }, { k: 'source_ref', l: 'Reference' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'applied', 'waived'], optLabels: ['Pending', 'Applied', 'Waived'] }] },
+        'payout-recon': { type: 'payout-recon', title: 'Payout Reconciliation', sub: 'Bank payout vs expected, per portfolio/month', fields: [
+            { k: 'company_name', l: 'Company', src: 'company' }, { k: 'bank', l: 'Bank' }, { k: 'portfolio', l: 'Portfolio' }, { k: 'month', l: 'Month (YYYY-MM)' }, { k: 'expected', l: 'Expected (₹)', type: 'number' }, { k: 'received', l: 'Received (₹)', type: 'number' }, { k: 'variance', l: 'Variance (₹)', type: 'number' }, { k: 'status', l: 'Status', type: 'select', opts: ['open', 'matched', 'closed'], optLabels: ['Open', 'Matched', 'Closed'] }] },
+        'salary-schedules': { type: 'salary-schedules', title: 'Salary Schedules', sub: 'Pay cycles & disbursement schedules', fields: [
+            { k: 'name', l: 'Schedule Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'pay_cycle', l: 'Pay Cycle', type: 'select', opts: ['monthly', 'fortnightly', 'weekly'], optLabels: ['Monthly', 'Fortnightly', 'Weekly'] }, { k: 'applicable_to', l: 'Applicable To' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'tds-returns': { type: 'tds-returns', title: 'TDS Returns', sub: 'Quarterly TDS return filing tracker', fields: [
+            { k: 'company_name', l: 'Company', src: 'company' }, { k: 'quarter', l: 'Quarter', type: 'select', opts: ['Q1', 'Q2', 'Q3', 'Q4'], optLabels: ['Q1 (Apr–Jun)', 'Q2 (Jul–Sep)', 'Q3 (Oct–Dec)', 'Q4 (Jan–Mar)'] }, { k: 'deductees', l: 'Deductees', type: 'number' }, { k: 'tax_deducted', l: 'Tax Deducted (₹)', type: 'number' }, { k: 'deposited', l: 'Deposited (₹)', type: 'number' }, { k: 'due_date', l: 'Due Date', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'filed', 'revised'], optLabels: ['Pending', 'Filed', 'Revised'] }] },
+        'teams': { type: 'teams', title: 'Teams', sub: 'Teams with their manager & leader', fields: [
+            { k: 'name', l: 'Team Name' }, { k: 'function', l: 'Function' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'manager', l: 'Manager', src: 'emp' }, { k: 'leader', l: 'Team Leader', src: 'emp' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'bgv': { type: 'bgv', title: 'Background Verification', sub: 'BGV cases per employee', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'agency', l: 'Agency' }, { k: 'checks', l: 'Checks (Address/PCC/…)' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'in_progress', 'clear', 'discrepancy'], optLabels: ['Pending', 'In progress', 'Clear', 'Discrepancy'] }, { k: 'completed_on', l: 'Completed On', type: 'date' }] },
+        'documents': { type: 'documents', title: 'Documents', sub: 'Employee documents + expiry tracking', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'kind', l: 'Document Kind' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'approved', 'rejected'], optLabels: ['Pending', 'Approved', 'Rejected'] }, { k: 'expiry', l: 'Expiry', type: 'date' }] },
+        'offroll-agents': { type: 'offroll-agents', title: 'Off-roll Agents', sub: 'Vendor / off-roll field agents', rowFn: 'offrollKyc', rowFnLabel: 'KYC / Docs', rowFnIcon: 'fa-id-card', fields: [
+            { k: 'name', l: 'Agent Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'vendor', l: 'Vendor' }, { k: 'mobile', l: 'Mobile' }, { k: 'payout_type', l: 'Payout Type', type: 'select', opts: ['per_visit', 'fixed', 'percent'], optLabels: ['Per visit', 'Fixed', 'Percent'] }, { k: 'rate', l: 'Rate (₹)', type: 'number' }, { k: 'dra', l: 'DRA' }, { k: 'pcc', l: 'PCC' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'geofence': { type: 'geofence', title: 'Geofence Rules', sub: 'Per-employee geofence / start point', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'start', l: 'Start From', type: 'select', opts: ['home', 'office'], optLabels: ['Home', 'Office'] }, { k: 'lat', l: 'Latitude', type: 'number' }, { k: 'lng', l: 'Longitude', type: 'number' }, { k: 'radius_km', l: 'Radius (km)', type: 'number' }, { k: 'outside', l: 'Outside Rule', type: 'select', opts: ['strict', '1km', '2km'], optLabels: ['Strict', 'Allow 1km', 'Allow 2km'] }] },
+        'geofence-list': { type: 'geofence', title: 'Geofence Rules', sub: 'Per-employee geofence / start point', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'start', l: 'Start From', type: 'select', opts: ['home', 'office'], optLabels: ['Home', 'Office'] }, { k: 'lat', l: 'Latitude', type: 'number' }, { k: 'lng', l: 'Longitude', type: 'number' }, { k: 'radius_km', l: 'Radius (km)', type: 'number' }, { k: 'outside', l: 'Outside Rule', type: 'select', opts: ['strict', '1km', '2km'], optLabels: ['Strict', 'Allow 1km', 'Allow 2km'] }] },
+        'late-policy': { type: 'late-policy', title: 'Late Policy', sub: 'Per-company grace + late-cut rule (applied in payroll). A "late" = first punch-in after shift start (09:30) + grace.', help: '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.5;color:var(--text2)"><div style="font-weight:700;color:var(--text);margin-bottom:8px"><i class="fas fa-circle-info" style="color:#f97316;margin-right:6px"></i>How attendance affects pay</div><div style="margin-bottom:10px">A day is <b>late</b> when the first punch-in is after <b>Shift Start + Grace</b>. Pick a <b>Calculation Mode</b> below. Set values per company &mdash; or override for a <b>team</b> or <b>one employee</b> via <b>Applies To</b>.</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:10px 0"><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px 10px"><div style="font-weight:700;color:var(--text);font-size:12px">Simple</div><div style="font-size:11.5px">Free lates, then a flat cut (half / full / 1-per-N) per extra late.</div></div><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px 10px"><div style="font-weight:700;color:var(--text);font-size:12px">Tiered L1/L2/L3</div><div style="font-size:11.5px">Bigger cut the later they are, by your minute thresholds.</div></div><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px 10px"><div style="font-weight:700;color:var(--text);font-size:12px">Net hours</div><div style="font-size:11.5px">No cut if total hours worked meets the full-day target.</div></div></div><div style="font-weight:700;color:var(--text);margin:12px 0 4px">Tiered example (grace 10 min)</div><div style="display:flex;gap:3px;margin:6px 0 2px;font-size:10px;text-align:center;color:#fff"><div style="flex:1;background:#22c55e;border-radius:4px 0 0 4px;padding:4px 2px">till 09:40<br>on time</div><div style="flex:1;background:#fbbf24;padding:4px 2px">09:41-10:00<br>L1</div><div style="flex:1;background:#fb923c;padding:4px 2px">10:01-10:30<br>L2</div><div style="flex:1;background:#ef4444;border-radius:0 4px 4px 0;padding:4px 2px">after 10:30<br>L3</div></div><div style="font-size:12px;margin-top:4px">e.g. L1 after 1 min &rarr; 0.25 day, L2 after 20 &rarr; 0.5, L3 after 60 &rarr; 1 day (your numbers). First <b>Free Lates</b> forgiven.</div><div style="font-weight:700;color:var(--text);margin:12px 0 4px">Net-hours example (full 9h, half 4.5h)</div><div style="font-size:12px">Worked 9h+ &rarr; <b>no cut</b> even if late &middot; 4.5&ndash;9h &rarr; <b>half day</b> &middot; under 4.5h &rarr; <b>full day</b>.</div><div style="font-weight:700;color:var(--text);margin:12px 0 4px">Break budget (any mode)</div><div style="font-size:12px">If a day&#39;s total break exceeds <b>Break Budget</b>: <b>Half-day</b>, or <b>0.25 day per 30 min</b> over. Breaks = gaps between a punch-out and the next punch-in.</div><div style="margin-top:10px;color:var(--text3);font-size:11.5px">Cuts lower paid days in that month&#39;s payroll. Leave a field 0 or blank to ignore it.</div></div>', fields: [
+            { k: 'company_name', l: 'Company', src: 'company' }, { k: 'scope', l: 'Applies To', type: 'select', opts: ['company', 'team', 'employee'], optLabels: ['Whole company', 'A team', 'One employee'] }, { k: 'scope_target', l: 'Team name / Emp code (if not company)' }, { k: 'mode', l: 'Calculation Mode', type: 'select', opts: ['simple', 'tiered', 'net_hours'], optLabels: ['Simple (free lates + flat cut)', 'Tiered (L1/L2/L3 by minutes late)', 'Net working hours (make-up time)'] }, { k: 'shift_start', l: 'Shift Start (HH:MM)' }, { k: 'shift_end', l: 'Shift End (HH:MM)' }, { k: 'grace_min', l: 'Grace (min)', type: 'number' }, { k: 'full_day_hours', l: 'Full-day Hours', type: 'number' }, { k: 'half_day_hours', l: 'Half-day Hours (net mode)', type: 'number' }, { k: 'lates_before_cut', l: 'Free Lates / month', type: 'number' }, { k: 'cut_mode', l: 'Simple Cut Rule', type: 'select', opts: ['none', 'half_day_per_late', 'one_day_per_n', 'full_day_per_late'], optLabels: ['No cut (flag only)', 'Half-day per extra late', '1 day per N extra lates', 'Full day per extra late'] }, { k: 'cut_n', l: 'N (for 1 day per N)', type: 'number' }, { k: 'l1_min', l: 'L1 after (min late)', type: 'number' }, { k: 'l1_cut', l: 'L1 cut (days)', type: 'number' }, { k: 'l2_min', l: 'L2 after (min late)', type: 'number' }, { k: 'l2_cut', l: 'L2 cut (days)', type: 'number' }, { k: 'l3_min', l: 'L3 after (min late)', type: 'number' }, { k: 'l3_cut', l: 'L3 cut (days)', type: 'number' }, { k: 'break_budget', l: 'Break Budget (min/day)', type: 'number' }, { k: 'break_cut', l: 'Break Over-budget', type: 'select', opts: ['none', 'half_day', 'per_30min'], optLabels: ['No cut', 'Half-day if over', '0.25 day / 30 min over'] }, { k: 'addl_late', l: 'Notes' }, { k: 'weekoff_action', l: 'Week-off Action' }, { k: 'no_cut_on_weekoff', l: 'No Cut on Week-off?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }] },
+        'salary-setup': { type: 'salary-setup', title: 'Salary Structure', sub: 'Define how each company splits monthly pay (CTC/12) into components. Payroll uses these instead of the default Basic 50% / HRA 40% when present.', help: '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.55;color:var(--text2)"><div style="font-weight:700;color:var(--text);margin-bottom:8px"><i class="fas fa-circle-info" style="color:#f97316;margin-right:6px"></i>How salary components work</div><div style="margin-bottom:8px">Monthly <b>Gross = CTC / 12</b>. Each <b>Earning</b> component takes a slice of it; a <b>Balance</b> component (Special Allowance) absorbs whatever is left so the parts always add up to gross. <b>PF</b> is computed on the component named <b>Basic</b>.</div><table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="background:#eef2f7"><th style="text-align:left;padding:6px 8px">Base</th><th style="text-align:left;padding:6px 8px">Means</th></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>pct_gross</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">Value % of monthly gross (e.g. Basic 50)</td></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>pct_basic</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">Value % of the Basic component (e.g. HRA 40)</td></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>fixed</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">A flat rupee amount per month</td></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>balance</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">The leftover of gross (use for Special Allowance)</td></tr></table><div style="margin-top:10px;font-weight:700;color:var(--text)">Example structure (Seq order)</div><div style="font-size:12px;margin-top:2px">1 Basic = pct_gross 50 &middot; 2 HRA = pct_basic 40 &middot; 3 Conveyance = fixed 1600 &middot; 4 Special Allowance = balance. Add Deduction components (e.g. Loan EMI = fixed) the same way; PF/ESI/PT are added automatically.</div><div style="margin-top:10px;color:var(--text3);font-size:11.5px">Leave Company blank to apply to all companies, or set it for a per-company structure. No components = the default fixed formula is used.</div></div>', fields: [
+            { k: 'company_name', l: 'Company (blank = all)', src: 'company' }, { k: 'scope', l: 'Applies To', type: 'select', opts: ['company', 'team', 'employee'], optLabels: ['Whole company', 'A team', 'One employee'] }, { k: 'scope_target', l: 'Team name / Emp code (if not company)' }, { k: 'seq', l: 'Seq (order)', type: 'number' }, { k: 'code', l: 'Code' }, { k: 'name', l: 'Component Name' }, { k: 'ctype', l: 'Type', type: 'select', opts: ['earning', 'deduction'], optLabels: ['Earning', 'Deduction'] }, { k: 'base', l: 'Base', type: 'select', opts: ['pct_gross', 'pct_basic', 'fixed', 'balance'], optLabels: ['% of Gross', '% of Basic', 'Fixed amount', 'Balance (remainder)'] }, { k: 'calc_value', l: 'Value (% or amount)', type: 'number' }, { k: 'taxable', l: 'Taxable?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }] },
+        'incentive-schemes': { type: 'incentive-schemes', title: 'Incentive Schemes', sub: 'Portfolio incentive schemes', fields: [
+            { k: 'name', l: 'Scheme Name' }, { k: 'portfolio', l: 'Portfolio' }, { k: 'basis', l: 'Basis' }, { k: 'clawback', l: 'Clawback?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'points-ledger': { type: 'points-ledger', title: 'Points Ledger', sub: 'Every points entry (auto-applied rules show "Auto:" in the Note; you can also add manual one-off entries). The Leaderboard ranks employees by the sum of these.', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'event', l: 'Event' }, { k: 'category', l: 'Category', type: 'select', opts: ['positive', 'negative'], optLabels: ['Positive', 'Negative'] }, { k: 'points', l: 'Points', type: 'number' }, { k: 'date', l: 'Date', type: 'date' }, { k: 'note', l: 'Note' }, { k: 'source_ref', l: 'Reference' }] },
+        'points-rules': { type: 'points-rules', title: 'Points Rules', sub: 'Define how an event awards or deducts points. Run them monthly from Scores & Leaderboard → Auto-apply rules.', help: '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.55;color:var(--text2)"><div style="font-weight:700;color:var(--text);margin-bottom:8px"><i class="fas fa-circle-info" style="color:#f97316;margin-right:6px"></i>How points rules work</div><div style="margin-bottom:8px">Pick an <b>Event</b> and the <b>Points</b> for it (use a <b>negative</b> number to deduct). Rules do not fire instantly — once a month you go to <b>Scores &amp; Leaderboard &rarr; Auto-apply rules</b>, pick the month, and the engine scans that month and awards/deducts points to each employee.</div><table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="background:#eef2f7"><th style="text-align:left;padding:6px 8px">Event</th><th style="text-align:left;padding:6px 8px">Applied as</th></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>Late arrival</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">points x late days that month</td></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>Absent</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">points x absent days</td></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>Perfect attendance</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">points once, if no lates/absences</td></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>Award received</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">points x awards that month</td></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>Test passed</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">points x tests passed</td></tr></table><div style="margin-top:10px;color:var(--text3);font-size:11.5px">Example: Late arrival = -5, Perfect attendance = +20, Test passed = +10. Then Auto-apply each month.</div></div>', fields: [
+            { k: 'event', l: 'Event', type: 'select', opts: ['Late arrival', 'Absent', 'Perfect attendance', 'Award received', 'Test passed'], optLabels: ['Late arrival', 'Absent', 'Perfect attendance', 'Award received', 'Test passed'] }, { k: 'points', l: 'Points (negative = deduct)', type: 'number' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'category', l: 'Category', type: 'select', opts: ['positive', 'negative'], optLabels: ['Positive (award)', 'Negative (deduct)'] }, { k: 'note', l: 'Note' }] },
+        'tests': { type: 'tests', title: 'Tests', sub: 'Assessments / tests', fields: [
+            { k: 'name', l: 'Test Name' }, { k: 'category', l: 'Category' }, { k: 'target_type', l: 'Target Type' }, { k: 'target', l: 'Target' }, { k: 'questions', l: 'Questions', type: 'number' }, { k: 'pass_mark', l: 'Pass Mark', type: 'number' }, { k: 'scheduled_on', l: 'Scheduled On', type: 'date' }] },
+        'training-programs': { type: 'training-programs', title: 'Training Programs', sub: 'Training catalogue', fields: [
+            { k: 'name', l: 'Program Name' }, { k: 'category', l: 'Category' }, { k: 'mode', l: 'Mode', type: 'select', opts: ['online', 'classroom', 'field'], optLabels: ['Online', 'Classroom', 'Field'] }, { k: 'mandatory', l: 'Mandatory?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }, { k: 'validity', l: 'Validity' }, { k: 'description', l: 'Description / Objectives', type: 'textarea' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'training-records': { type: 'training-records', title: 'Training Records', sub: 'Who completed which program', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'program', l: 'Program (exact name)' }, { k: 'status', l: 'Status', type: 'select', opts: ['assigned', 'completed', 'expired'], optLabels: ['Assigned', 'Completed', 'Expired'] }, { k: 'completed_on', l: 'Completed On', type: 'date' }, { k: 'score', l: 'Score', type: 'number' }, { k: 'expiry', l: 'Expiry', type: 'date' }] },
+        'code-of-conduct': { type: 'code-of-conduct', title: 'Code of Conduct', sub: 'CoC acknowledgements', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'acknowledged', l: 'Acknowledged?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }, { k: 'ack_date', l: 'Ack Date', type: 'date' }] },
+        'faqs': { type: 'faqs', title: 'FAQs', sub: 'Frequently asked questions', fields: [
+            { k: 'category', l: 'Category' }, { k: 'question', l: 'Question' }, { k: 'answer', l: 'Answer' }] },
+        'escalations': { type: 'escalations', title: 'Escalations', sub: 'Field/ops escalations', fields: [
+            { k: 'date', l: 'Date', type: 'date' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'bank', l: 'Bank' }, { k: 'team', l: 'Team' }, { k: 'issue', l: 'Issue' }, { k: 'severity', l: 'Severity', type: 'select', opts: ['low', 'medium', 'high'], optLabels: ['Low', 'Medium', 'High'] }, { k: 'priority', l: 'Priority', type: 'select', opts: ['low', 'medium', 'high', 'urgent'], optLabels: ['Low', 'Medium', 'High', 'Urgent'] }, { k: 'status', l: 'Status', type: 'select', opts: ['open', 'in_progress', 'resolved', 'closed'], optLabels: ['Open', 'In progress', 'Resolved', 'Closed'] }, { k: 'action_taken', l: 'Action Taken' }] },
+        'agent-auth': { type: 'agent-auth', title: 'Agent Authorization', sub: 'DRA / bank authorizations', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'bank', l: 'Bank' }, { k: 'portfolio', l: 'Portfolio' }, { k: 'auth_no', l: 'Authorization No.' }, { k: 'valid_to', l: 'Valid To', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'expired', 'revoked'], optLabels: ['Active', 'Expired', 'Revoked'] }] },
+        'messages': { type: 'messages', title: 'Messages', sub: 'Message / broadcast log', fields: [
+            { k: 'target', l: 'Target' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'channels', l: 'Channels' }, { k: 'message', l: 'Message' }, { k: 'recipients', l: 'Recipients', type: 'number' }, { k: 'sent_at', l: 'Sent At', type: 'date' }] },
+        'companies': { type: 'companies', title: 'Companies', sub: 'Group companies — the signed-up company is the Master; additional companies are Subsidiaries', fields: [
+            { k: 'name', l: 'Company Name' }, { k: 'is_master', l: 'Company Level', type: 'select', opts: ['1', '0'], optLabels: ['Master company', 'Subsidiary'] }, { k: 'type', l: 'Type' }, { k: 'pan', l: 'PAN' }, { k: 'gstin', l: 'GSTIN' }, { k: 'address', l: 'Address' }, { k: 'phone', l: 'Phone' }, { k: 'email', l: 'Email' }, { k: 'website', l: 'Website' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'letters-offer': { type: 'letters-offer', title: 'Offer Letters', sub: 'Offer to a CANDIDATE (add them in Recruitment first) + a saved Offer template → Preview / Email', rowAction: { label: 'Preview', cfg: 'lettersBase', suffix: '/pdf' }, rowEmail: true, rowAcceptLink: true, fields: [
+            { k: 'candidate', l: 'Candidate', src: 'candidate' }, { k: 'template', l: 'Template', src: 'template' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'issued_on', l: 'Issued On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['draft', 'issued', 'signed'], optLabels: ['Draft', 'Issued', 'Signed'] }] },
+        'letters-increment': { type: 'letters-increment', title: 'Increment Letters', sub: 'Pick an employee + a saved Increment template → Preview / Email', rowAction: { label: 'Preview', cfg: 'lettersBase', suffix: '/pdf' }, rowEmail: true, fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'template', l: 'Template', src: 'template' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'issued_on', l: 'Issued On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['draft', 'issued', 'signed'], optLabels: ['Draft', 'Issued', 'Signed'] }] },
+        'letters-warning': { type: 'letters-warning', title: 'Warning Letters', sub: 'Pick an employee + a saved Warning template → Preview / Email', rowAction: { label: 'Preview', cfg: 'lettersBase', suffix: '/pdf' }, rowEmail: true, fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'template', l: 'Template', src: 'template' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'issued_on', l: 'Issued On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['draft', 'issued', 'signed'], optLabels: ['Draft', 'Issued', 'Signed'] }] },
+        'letters-relieving': { type: 'letters-relieving', title: 'Relieving Letters', sub: 'Pick an employee + a saved Relieving template → Preview / Email', rowAction: { label: 'Preview', cfg: 'lettersBase', suffix: '/pdf' }, rowEmail: true, fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'template', l: 'Template', src: 'template' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'issued_on', l: 'Issued On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['draft', 'issued', 'signed'], optLabels: ['Draft', 'Issued', 'Signed'] }] },
+        'letters-templates': { type: 'letters-templates', title: 'Letter Templates', sub: 'Reusable letter bodies. Pick a type to load a professional sample, then edit. Placeholders like {{employee_name}}, {{designation}}, {{ctc}}, {{date}} are filled when a letter is generated', fields: [
+            { k: 'title', l: 'Template Title' }, { k: 'letter_type', l: 'For Letter Type', type: 'select', opts: ['offer', 'increment', 'warning', 'relieving', 'experience', 'custom'], optLabels: ['Offer', 'Increment', 'Warning / PIP', 'Relieving', 'Experience', 'Custom'], fill: 'LETTER_SAMPLES', fillTarget: 'body' }, { k: 'body', l: 'Body', type: 'textarea', hint: 'Placeholders: {{employee_name}} {{emp_code}} {{designation}} {{department}} {{company}} {{date}} {{ctc}} {{doj}} {{pan}} {{uan}} {{bank_acc}} {{ifsc}}' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'roster': { type: 'roster', title: 'Roster', sub: 'Shift roster', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'team', l: 'Team' }, { k: 'date', l: 'Date', type: 'date' }, { k: 'shift', l: 'Shift' }, { k: 'status', l: 'Status', type: 'select', opts: ['scheduled', 'present', 'absent', 'off'], optLabels: ['Scheduled', 'Present', 'Absent', 'Week-off'] }] },
+        'onboarding-board': { type: 'onboarding-board', title: 'Onboarding', sub: 'New-joiner onboarding', fields: [
+            { k: 'employee', l: 'New hire', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'stage', l: 'Stage', type: 'select', opts: ['docs', 'verification', 'training', 'active'], optLabels: ['Documents', 'Verification', 'Training', 'Active'] }, { k: 'joined_on', l: 'Joined On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['in_progress', 'completed'], optLabels: ['In progress', 'Completed'] }] },
+        'awards': { type: 'awards', title: 'Awards & Rewards', sub: 'Recognition', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'award', l: 'Award' }, { k: 'date', l: 'Date', type: 'date' }, { k: 'note', l: 'Note' }] },
+        'performance': { type: 'performance', title: 'Performance', sub: 'Performance reviews', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'cycle', l: 'Cycle' }, { k: 'rating', l: 'Rating (1-5)', type: 'number' }, { k: 'reviewer', l: 'Reviewer', src: 'emp' }, { k: 'status', l: 'Status', type: 'select', opts: ['draft', 'submitted', 'finalised'], optLabels: ['Draft', 'Submitted', 'Finalised'] }] },
+        'notice-board': { type: 'notice-board', title: 'Notice Board', sub: 'Company notices', fields: [
+            { k: 'title', l: 'Title' }, { k: 'body', l: 'Notice', type: 'textarea' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'posted_on', l: 'Posted On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['published', 'draft'], optLabels: ['Published', 'Draft'] }] },
+        'notice': { type: 'notice-board', title: 'Notice Board', sub: 'Company notices — published ones appear on every dashboard', fields: [
+            { k: 'title', l: 'Title' }, { k: 'body', l: 'Notice', type: 'textarea' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'posted_on', l: 'Posted On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['published', 'draft'], optLabels: ['Published', 'Draft'] }] },
+        'feature-flags': { type: 'feature-flags', title: 'Feature Flags', sub: 'Platform feature toggles', fields: [
+            { k: 'name', l: 'Flag' }, { k: 'value', l: 'Value', type: 'select', opts: ['on', 'off'], optLabels: ['On', 'Off'] }, { k: 'note', l: 'Note' }] },
+        'training-content': { type: 'training-content', title: 'Training Content', sub: 'Subjects/modules under a program', fields: [
+            { k: 'program', l: 'Program (exact name)' }, { k: 'module', l: 'Module' }, { k: 'subject', l: 'Subject' }, { k: 'hours', l: 'Hours', type: 'number' }, { k: 'content', l: 'Content', type: 'textarea' }] },
+        'test-results': { type: 'test-results', title: 'Test Results', sub: 'Attempts & scores', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'test', l: 'Test (exact name)' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'passed', 'failed'], optLabels: ['Pending', 'Passed', 'Failed'] }, { k: 'score', l: 'Score', type: 'number' }, { k: 'attempted_on', l: 'Attempted On', type: 'date' }] },
+        'pay-cycle': { type: 'pay-cycle', title: 'Pay Cycle', sub: 'Pay cycles & cut-offs', fields: [
+            { k: 'name', l: 'Cycle Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'cycle', l: 'Cycle', type: 'select', opts: ['monthly', 'fortnightly', 'weekly'], optLabels: ['Monthly', 'Fortnightly', 'Weekly'] }, { k: 'cutoff_day', l: 'Cut-off Day', type: 'number' }, { k: 'pay_day', l: 'Pay Day', type: 'number' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'wa-settings': { type: 'wa-settings', title: 'WhatsApp Settings', sub: 'WhatsApp provider config — Interakt is LIVE for signup welcome messages (provider "interakt" + API key, status active)', fields: [
+            { k: 'company_name', l: 'Company', src: 'company' }, { k: 'provider', l: 'Provider (Gupshup/Meta)' }, { k: 'api_url', l: 'API URL' }, { k: 'api_key', l: 'API Key' }, { k: 'sender_number', l: 'Sender Number' }, { k: 'waba_id', l: 'WABA ID' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'sms-settings': { type: 'sms-settings', title: 'SMS Settings', sub: 'SMS provider config (sending wired later)', fields: [
+            { k: 'company_name', l: 'Company', src: 'company' }, { k: 'provider', l: 'Provider (MSG91/Twilio)' }, { k: 'api_url', l: 'API URL' }, { k: 'api_key', l: 'API Key' }, { k: 'sender_id', l: 'Sender ID' }, { k: 'dlt_entity_id', l: 'DLT Entity ID' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'sms-templates': { type: 'sms-templates', title: 'SMS Templates', sub: 'DLT-approved SMS templates', fields: [
+            { k: 'company_name', l: 'Company', src: 'company' }, { k: 'name', l: 'Template Name' }, { k: 'type', l: 'Type' }, { k: 'dlt_template_id', l: 'DLT Template ID' }, { k: 'content', l: 'Content', type: 'textarea' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'att-manual': { type: 'att-manual', title: 'Manual Attendance', sub: 'Record a punch manually (writes to attendance logs)', fields: [
+            { k: 'emp_name', l: 'Employee (type to search)', src: 'emp' }, { k: 'log_date', l: 'Date', type: 'date' }, { k: 'punch_at', l: 'Punch Time', type: 'datetime' }, { k: 'direction', l: 'Direction', type: 'select', opts: ['in', 'out'], optLabels: ['In', 'Out'] }] },
+        'att-zkteco': { type: 'biometric-devices', title: 'ZKTeco Devices', sub: 'Registered ZKTeco devices. Set IP + port, then Sync to pull punches into attendance.', rowPost: { label: 'Sync', cfg: 'deviceBase', suffix: '/sync', icon: 'fa-rotate' }, fields: DEVICE_FIELDS }
+    };
+    window.__MASTER = {};
+    // Alias screens (e.g. geofence-list -> geofence, att-zkteco -> biometric-devices) keep
+    // their own nav key for local state, but the backend def is keyed by mc.type. Always hit
+    // the canonical type on the server, else MasterController returns "Unknown master".
+    function masterType(type) { var mc = MASTER_MAP[type]; return (mc && mc.type) || type; }
+    function masterLoad(type) {
+        fetch(cfg.masterBase + '/' + masterType(type), { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__MASTER[type] = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__MASTER[type] = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function masterOptsFor(src) {
+        if (src === 'company') { return ((typeof DB !== 'undefined' && DB.companies) || []).map(function (c) { return c.name; }); }
+        if (src === 'branch') { return ((typeof DB !== 'undefined' && DB.branchesC) || []).map(function (b) { return b.name; }); }
+        if (src === 'dept') { return ((typeof DB !== 'undefined' && DB.departments) || []).map(function (d) { return d.name; }); }
+        if (src === 'emp') { return ((typeof DB !== 'undefined' && DB.employees) || []).map(function (e) { return e.name; }); }
+        return null;
+    }
+    function masterScreen(type) {
+        var mc = MASTER_MAP[type];
+        var d = window.__MASTER[type];
+        if (!d) { setTimeout(function () { if (!window.__MASTER[type]) { masterLoad(type); } }, 10); }
+        var canManage = !d || d.canManage !== false;
+        var addBtn = canManage ? '<button class="btn btn-primary" onclick="masterEdit(\'' + type + '\',null)"><i class="fas fa-plus"></i> Add ' + mc.title.replace(/s$/, '') + '</button>' : '';
+        if (type === 'points-rules' && canManage) { addBtn = '<button class="btn btn-outline" onclick="pointsAutoApply()"><i class="fas fa-wand-magic-sparkles"></i> Auto-apply for a month</button> ' + addBtn; }
+        if (!d) { return pghead(mc.title, mc.sub, addBtn) + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead(mc.title, mc.sub, addBtn) + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load.</b><br><span style="font-size:12px;color:var(--text2)">' + String(d.error) + '</span></div></div>'; }
+        var rows = d.rows || [];
+        // noList:1 fields show in the add/edit form only — keeps wide masters readable.
+        var lcols = mc.fields.filter(function (f) { return !f.noList; });
+        var th = lcols.map(function (f) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + f.l + '</th>'; }).join('') + '<th style="padding:10px 12px"></th>';
+        var dash = '<span style="color:var(--text3)">—</span>';
+        var body = rows.map(function (r) {
+            var c = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+            var cells = lcols.map(function (f, i) {
+                var raw = r[f.k]; var disp;
+                if (raw === '' || raw == null) { disp = dash; }
+                else if (f.type === 'select' && f.opts) { var idx = f.opts.map(String).indexOf(String(raw)); disp = idx >= 0 ? (f.optLabels || f.opts)[idx] : String(raw); }
+                else if (f.type === 'date') { disp = String(raw).slice(0, 10); }
+                else if (f.src === 'emp') { disp = empNameLink(String(raw)); }   // rev 86: profile popup
+                else { disp = String(raw); }
+                return '<td style="' + c + (i === 0 ? ';font-weight:600' : '') + '">' + disp + '</td>';
+            }).join('');
+            var ra = mc.rowAction ? '<a href="' + (cfg[mc.rowAction.cfg] || '') + '/' + r.id + mc.rowAction.suffix + '" target="_blank" rel="noopener" title="' + mc.rowAction.label + '" style="color:#4f46e5;font-size:12px;margin-right:16px;text-decoration:none;white-space:nowrap"><i class="fas fa-file-pdf"></i> ' + mc.rowAction.label + '</a>' : '';
+            if (mc.rowEmail) { ra += '<a onclick="letterEmail(' + r.id + ')" title="Email this letter to the recipient" style="cursor:pointer;color:#0891b2;font-size:12px;margin-right:16px;white-space:nowrap"><i class="fas fa-paper-plane"></i> Email</a>'; }
+            if (mc.rowAcceptLink) { ra += '<a onclick="letterAcceptLink(' + r.id + ')" title="Email the candidate an offer-acceptance link" style="cursor:pointer;color:#16a34a;font-size:12px;margin-right:16px;white-space:nowrap"><i class="fas fa-link"></i> Acceptance link</a>'; }
+            if (mc.rowPost) { ra += '<a onclick="masterRowPost(' + "'" + (cfg[mc.rowPost.cfg] || '') + '/' + r.id + mc.rowPost.suffix + "'" + ')" title="' + mc.rowPost.label + '" style="cursor:pointer;color:#0891b2;font-size:12px;margin-right:16px;white-space:nowrap"><i class="fas ' + (mc.rowPost.icon || 'fa-bolt') + '"></i> ' + mc.rowPost.label + '</a>'; }
+            if (mc.rowFn) { ra += '<a onclick="' + mc.rowFn + '(' + r.id + ')" title="' + (mc.rowFnLabel || '') + '" style="cursor:pointer;color:#7c3aed;font-size:12px;margin-right:16px;white-space:nowrap"><i class="fas ' + (mc.rowFnIcon || 'fa-id-card') + '"></i> ' + (mc.rowFnLabel || '') + '</a>'; }
+            var act = canManage ? '<td style="' + c + ';white-space:nowrap;text-align:right">' + ra + '<i class="fas fa-pen" title="Edit" style="cursor:pointer;color:var(--text2);margin-right:14px" onclick="masterEdit(\'' + type + '\',' + r.id + ')"></i><i class="fas fa-trash" title="Delete" style="cursor:pointer;color:var(--red)" onclick="masterDelete(\'' + type + '\',' + r.id + ')"></i></td>' : (ra ? '<td style="' + c + ';text-align:right">' + ra + '</td>' : '<td></td>');
+            return '<tr>' + cells + act + '</tr>';
+        }).join('');
+        return pghead(mc.title, rows.length + ' record(s) · ' + mc.sub, addBtn)
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="' + (lcols.length + 1) + '" style="padding:36px;text-align:center;color:var(--text3)">No records yet. Click the button above to add one.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.masterEdit = function (type, id) {
+        var mc = MASTER_MAP[type];
+        var d = window.__MASTER[type] || { rows: [] };
+        var rec = id ? (d.rows || []).find(function (x) { return x.id === id; }) : null;
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var f = mc.fields.map(function (fl) {
+            var val = rec ? (rec[fl.k] != null ? rec[fl.k] : '') : '';
+            var ctrl;
+            if (fl.type === 'textarea') {
+                ctrl = '<textarea id="ms_' + fl.k + '" rows="9" style="' + inp + ';resize:vertical;line-height:1.5">' + String(val).replace(/</g, '&lt;') + '</textarea>';
+            } else if (fl.type === 'select') {
+                var labels = fl.optLabels || fl.opts;
+                var oc = fl.fill ? ' onchange="masterFillSample(' + "'ms_" + (fl.fillTarget || '') + "','" + fl.fill + "',this.value)" + '"' : '';
+                ctrl = '<select id="ms_' + fl.k + '"' + oc + ' style="' + inp + '">' + fl.opts.map(function (o, i) { return '<option value="' + o + '"' + (String(o) === String(val) ? ' selected' : '') + '>' + labels[i] + '</option>'; }).join('') + '</select>';
+            } else if (fl.src === 'template') {
+                var tpls = (window.__MASTER[type] && window.__MASTER[type].templates) || [];
+                ctrl = '<select id="ms_' + fl.k + '" style="' + inp + '"><option value="">— pick a saved template —</option>' + tpls.map(function (o) { return '<option' + (o === val ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select>';
+            } else if (fl.src === 'candidate') {
+                var cands = (window.__MASTER[type] && window.__MASTER[type].candidates) || [];
+                ctrl = '<select id="ms_' + fl.k + '" style="' + inp + '"><option value="">— pick a candidate (Recruitment) —</option>' + cands.map(function (o) { return '<option' + (o === val ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select>';
+            } else if (fl.src === 'emp') {
+                // rev 81b (Ejaz): employee fields are SEARCHABLE — type to filter,
+                // pick from the list (shows the emp code as a hint). The value
+                // stays the NAME so every existing backend resolver still works.
+                var eopts = ((typeof DB !== 'undefined' && DB.employees) || []);
+                ctrl = '<input id="ms_' + fl.k + '" list="msdl_' + fl.k + '" value="' + String(val).replace(/"/g, '&quot;') + '" placeholder="Type to search employee…" autocomplete="off" style="' + inp + '">'
+                    + '<datalist id="msdl_' + fl.k + '">' + eopts.map(function (e2) { return '<option value="' + String(e2.name || '').replace(/"/g, '&quot;') + '">' + (e2.id || '') + '</option>'; }).join('') + '</datalist>';
+            } else if (fl.src) {
+                var opts = masterOptsFor(fl.src) || [];
+                ctrl = '<select id="ms_' + fl.k + '" style="' + inp + '"><option value="">Select…</option>' + opts.map(function (o) { return '<option' + (o === val ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select>';
+            } else {
+                var itype = fl.type === 'date' ? 'date' : (fl.type === 'datetime' ? 'datetime-local' : (fl.type === 'number' ? 'number' : 'text'));
+                var v2 = val;
+                if (fl.type === 'date' && val) { v2 = String(val).slice(0, 10); }
+                else if (fl.type === 'datetime' && val) { v2 = String(val).replace(' ', 'T').slice(0, 16); }
+                ctrl = '<input id="ms_' + fl.k + '" type="' + itype + '" value="' + String(v2).replace(/"/g, '&quot;') + '" style="' + inp + '">';
+            }
+            var wrapStyle = (fl.type === 'textarea') ? ' style="grid-column:1 / -1"' : '';
+            return '<div' + wrapStyle + '><label style="' + lbl + '">' + fl.l + '</label>' + ctrl + (fl.hint ? '<div style="font-size:11px;color:var(--text3);margin-top:3px">' + fl.hint + '</div>' : '') + '</div>';
+        }).join('');
+        var m = document.getElementById('master-modal') || (function () { var x = document.createElement('div'); x.id = 'master-modal'; document.body.appendChild(x); return x; })();
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+        m.innerHTML = '<div class="card" style="max-width:640px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:18px">' + (id ? 'Edit ' : 'Add ') + mc.title.replace(/s$/, '') + '</h3><button class="btn btn-outline btn-sm" onclick="masterClose()"><i class="fas fa-xmark"></i></button></div>'
+            + (mc.help ? '<div style="padding:16px 22px 0">' + mc.help + '</div>' : '')
+            + '<div style="padding:22px;display:grid;grid-template-columns:1fr 1fr;gap:14px">' + f + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 22px 20px"><button class="btn btn-outline" onclick="masterClose()">Cancel</button><button class="btn btn-primary" onclick="masterSave(\'' + type + '\',' + (id || 'null') + ')"><i class="fas fa-check"></i> Save</button></div>'
+            + '</div>';
+        m.style.display = 'flex';
+        m.onclick = function (e) { if (e.target === m) { masterClose(); } };
+        // Pre-load a sample body for any field that declares one (fills if empty).
+        try { mc.fields.forEach(function (fl) { if (fl.fill && fl.fillTarget) { var sel = document.getElementById('ms_' + fl.k); if (sel) { masterFillSample('ms_' + fl.fillTarget, fl.fill, sel.value); } } }); } catch (e) {}
+    };
+    window.masterClose = function () { var m = document.getElementById('master-modal'); if (m) { m.style.display = 'none'; } };
+    window.letterAcceptLink = function (id) {
+        if (!window.confirm('Email the candidate a link to review and accept this offer?')) { return; }
+        fetch(cfg.lettersBase + '/' + id + '/accept-link', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: '{}' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Acceptance link sent'); } if (j.link) { window.prompt('Acceptance link (also emailed to the candidate — copy to share manually):', j.link); } }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not send'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not send'); } });
+    };
+    window.letterEmail = function (id) {
+        if (!window.confirm('Email this letter (as a PDF) to the recipient on file?')) { return; }
+        fetch(cfg.lettersBase + '/' + id + '/email', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: '{}' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Letter emailed'); } }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not email'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not email'); } });
+    };
+    window.masterSave = function (type, id) {
+        var mc = MASTER_MAP[type];
+        var item = {}; if (id) { item.id = id; }
+        mc.fields.forEach(function (fl) { var el = document.getElementById('ms_' + fl.k); if (el) { item[fl.k] = el.value; } });
+        // Required-field validation is enforced server-side per screen (def.required);
+        // the backend returns a specific "<Field> is required" message we surface below.
+        fetch(cfg.masterBase + '/' + masterType(type), { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ item: item }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('Saved'); } masterClose(); masterLoad(type); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Save failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Save failed'); } });
+    };
+    window.masterRowPost = function (url) {
+        if (!url) { return; }
+        if (typeof toast === 'function') { toast('Working…'); }
+        fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Done'); } }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Failed'); } });
+    };
+    window.masterDelete = function (type, id) {
+        if (!window.confirm('Delete this record?')) { return; }
+        fetch(cfg.masterBase + '/' + masterType(type) + '/' + id + '/delete', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('Deleted'); } masterLoad(type); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Delete failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Delete failed'); } });
+    };
+    function inr(n) { return '₹' + Number(Math.round(n)).toLocaleString('en-IN'); }
+    // Effective statutory rates: server-provided (window.__RATES) overlaid on safe defaults.
+    function spRates() {
+        var d = { pf_wage_cap: 15000, pf_rate: 12, esi_threshold: 21000, esi_employee_rate: 0.75, esi_employer_rate: 3.25, pt_amount: 200, std_deduction: 50000, rebate_87a_limit: 700000, cess_rate: 4, comm_tds_rate: 5, no_pan_tds_rate: 20, tds_slabs: [{ upto: 300000, rate: 0 }, { upto: 700000, rate: 5 }, { upto: 1000000, rate: 10 }, { upto: 1200000, rate: 15 }, { upto: 1500000, rate: 20 }, { upto: 0, rate: 30 }] };
+        var r = window.__RATES || {};
+        var out = {}; for (var k in d) { out[k] = (r[k] != null) ? r[k] : d[k]; }
+        if (!out.tds_slabs || !out.tds_slabs.length) { out.tds_slabs = d.tds_slabs; }
+        return out;
+    }
+    function tdsTax(taxable) {
+        var r = spRates();
+        if (taxable <= Number(r.rebate_87a_limit)) { return 0; }
+        var t = 0, prev = 0;
+        r.tds_slabs.forEach(function (s) {
+            var cap = Number(s.upto) > 0 ? Number(s.upto) : 1e15;
+            var rate = Number(s.rate) / 100;
+            if (taxable > prev) { t += (Math.min(taxable, cap) - prev) * rate; prev = cap; }
+        });
+        return Math.round(t * (1 + Number(r.cess_rate) / 100));
+    }
+    function statBox(n, l, color, icon) {
+        return '<div class="stat-card"><div class="icon" style="background:' + color + '22;color:' + color + '"><i class="fas ' + (icon || 'fa-indian-rupee-sign') + '"></i></div><h3>' + n + '</h3><p>' + l + '</p></div>';
+    }
+    // Month-wise payslip history (real DB payslips), with a month selector + per-row PDF.
+    window.psSetMonth = function (m) { window.__psMonth = m; if (typeof render === 'function') { render(); } };
+    function payslipHistoryScreen() {
+        var ps = window.__PAYSLIPS || [];
+        var title = (typeof SCREENS !== 'undefined' && SCREENS.payslip && SCREENS.payslip.title) || 'Payslips';
+        if (!ps.length) {
+            return pghead(title, 'Monthly payslip history', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No payslips yet — open Payroll → Generate Payroll.</div></div>';
+        }
+        var months = [];
+        ps.forEach(function (p) { if (months.indexOf(p.month) < 0) { months.push(p.month); } });
+        months.sort().reverse();
+        var sel = (window.__psMonth && months.indexOf(window.__psMonth) >= 0) ? window.__psMonth : months[0];
+        var labelFor = function (m) { var r = ps.find(function (x) { return x.month === m; }); return r ? r.monthLabel : m; };
+        var opts = months.map(function (m) { return '<option value="' + m + '"' + (m === sel ? ' selected' : '') + '>' + labelFor(m) + '</option>'; }).join('');
+        // Filters: Company + free-text search (payslip rows carry company + status).
+        var companies = [];
+        ps.forEach(function (p) { if (p.company && companies.indexOf(p.company) < 0) { companies.push(p.company); } });
+        companies.sort();
+        var cSel = (window.__psCo && companies.indexOf(window.__psCo) >= 0) ? window.__psCo : '';
+        var term = (window.__psQ || '').toLowerCase();
+        var inMonth = ps.filter(function (p) {
+            if (p.month !== sel) { return false; }
+            if (cSel && p.company !== cSel) { return false; }
+            if (term && (String(p.code) + ' ' + String(p.name)).toLowerCase().indexOf(term) < 0) { return false; }
+            return true;
+        });
+        var lbMap = { pending: ['#fef3c7', '#d97706'], on_hold: ['#fee2e2', '#b91c1c'], in_review: ['#e0e7ff', '#4338ca'], approved: ['#dbeafe', '#2563eb'], disbursed: ['#dcfce7', '#15803d'], acknowledged: ['#bbf7d0', '#166534'], rejected: ['#fee2e2', '#dc2626'] };
+        var meEmail = (cfg.userEmail || '').toLowerCase();
+        var rows = inMonth.map(function (p) {
+            var pdf = (cfg.payslipBase || '/app/payslip') + '/' + encodeURIComponent(p.code) + '/pdf?month=' + encodeURIComponent(p.month);
+            var ls = p.lineStatus || 'pending';
+            var col = lbMap[ls] || ['#f1f5f9', '#64748b'];
+            var badge = '<span style="background:' + col[0] + ';color:' + col[1] + ';padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap">' + (p.lineLabel || ls) + '</span>';
+            var mine = meEmail && p.email && p.email.toLowerCase() === meEmail;
+            var ackBtn = (mine && ls === 'disbursed') ? ' <button class="btn btn-primary btn-sm" onclick="salAck(' + p.id + ',\'' + (p.name || '').replace(/'/g, '') + '\')"><i class="fas fa-pen-nib"></i> Acknowledge</button>' : '';
+            return '<tr><td><strong>' + p.code + '</strong></td><td>' + p.name + (p.company ? '<br><span style="font-size:11px;color:var(--text3)">' + p.company + '</span>' : '') + '</td><td style="font-family:var(--mono)">' + inr(p.gross) + '</td><td style="font-family:var(--mono);color:var(--red)">' + inr(p.ded) + '</td><td style="font-family:var(--mono)"><strong>' + inr(p.net) + '</strong></td><td>' + badge + '</td><td style="text-align:right"><a class="btn btn-ghost btn-sm" href="' + pdf + '" target="_blank" rel="noopener"><i class="fas fa-file-pdf"></i> PDF</a>' + ackBtn + '</td></tr>';
+        }).join('');
+        var totGross = inMonth.reduce(function (a, p) { return a + (p.gross || 0); }, 0);
+        var totDed = inMonth.reduce(function (a, p) { return a + (p.ded || 0); }, 0);
+        var totNet = inMonth.reduce(function (a, p) { return a + (p.net || 0); }, 0);
+        var coOpts = '<option value="">All companies</option>' + companies.map(function (cn) { return '<option value="' + cn + '"' + (cn === cSel ? ' selected' : '') + '>' + cn + '</option>'; }).join('');
+        var filter = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+            + '<div style="display:flex;align-items:center;gap:6px"><label style="font-size:12px;color:var(--text2)">Month</label><select class="filter-select" onchange="psSetMonth(this.value)">' + opts + '</select></div>'
+            + (companies.length > 1 ? '<div style="display:flex;align-items:center;gap:6px"><label style="font-size:12px;color:var(--text2)">Company</label><select class="filter-select" onchange="psSetCo(this.value)">' + coOpts + '</select></div>' : '')
+            + '<input type="text" placeholder="Search code or name…" value="' + (window.__psQ || '') + '" oninput="psSetQ(this.value)" class="filter-select" style="min-width:180px">'
+            + '<button class="btn btn-ghost btn-sm" onclick="psExport()"><i class="fas fa-file-csv"></i> Export CSV</button></div>';
+        var band = '<div class="stats-grid" style="margin-bottom:14px">'
+            + statBox(String(inMonth.length), 'Payslips (' + labelFor(sel) + ')', '#3b82f6', 'fa-file-invoice')
+            + statBox(inr(totGross), 'Total Gross', '#8b5cf6', 'fa-coins')
+            + statBox(inr(totDed), 'Total Deductions', '#ef4444', 'fa-scissors')
+            + statBox(inr(totNet), 'Total Net Pay', '#16a34a', 'fa-wallet')
+            + '</div>';
+        return pghead(title, 'Monthly payslip history — ' + months.length + ' month(s) on record', '')
+            + band
+            + '<div class="card"><div class="card-header"><div><h3>Payslips — ' + labelFor(sel) + '</h3><p>' + inMonth.length + ' employee(s) · net payable ' + inr(totNet) + '</p></div><div class="actions">' + filter + '</div></div><div class="table-wrap"><table><thead><tr><th>Code</th><th>Employee</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Status</th><th style="text-align:right">Payslip</th></tr></thead><tbody>' + (inMonth.length ? rows : '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:24px">No payslips match the filters.</td></tr>') + '</tbody></table></div></div>';
+    }
+    window.psSetCo = function (v) { window.__psCo = v; if (typeof render === 'function') { render(); } };
+    window.psSetQ = function (v) { window.__psQ = v; if (typeof render === 'function') { render(); } };
+    // Bulk export the visible (month + company + search) payslips to CSV — works
+    // entirely client-side. Combined-PDF/ZIP is queued with the PDF/email engine
+    // item (per-employee PDF is already available via the PDF link per row).
+    window.psExport = function () {
+        var ps = window.__PAYSLIPS || [];
+        if (!ps.length) { if (typeof toast === 'function') { toast('Nothing to export'); } return; }
+        var months = []; ps.forEach(function (p) { if (months.indexOf(p.month) < 0) { months.push(p.month); } });
+        months.sort().reverse();
+        var sel = (window.__psMonth && months.indexOf(window.__psMonth) >= 0) ? window.__psMonth : months[0];
+        var cSel = window.__psCo || '';
+        var term = (window.__psQ || '').toLowerCase();
+        var rows = ps.filter(function (p) {
+            if (p.month !== sel) { return false; }
+            if (cSel && p.company !== cSel) { return false; }
+            if (term && (String(p.code) + ' ' + String(p.name)).toLowerCase().indexOf(term) < 0) { return false; }
+            return true;
+        });
+        if (!rows.length) { if (typeof toast === 'function') { toast('Nothing to export'); } return; }
+        var head = ['Code', 'Employee', 'Company', 'Month', 'Gross', 'Deductions', 'Net', 'Status'];
+        var esc = function (v) { v = (v === null || v === undefined) ? '' : String(v); return '"' + v.replace(/"/g, '""') + '"'; };
+        var lines = [head.map(esc).join(',')];
+        rows.forEach(function (p) { lines.push([p.code, p.name, p.company || '', p.monthLabel || p.month, p.gross, p.ded, p.net, p.status || ''].map(esc).join(',')); });
+        var blob = new Blob([lines.join(String.fromCharCode(10))], { type: 'text/csv;charset=utf-8;' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'payslips-' + sel + '.csv';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    };
+    // Knowledge Base — role-filtered help articles, with admin add/edit/delete.
+    function kbEsc(s) { return (s == null ? '' : String(s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+    function kbVal(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+    function kbFind(kb, id) { var f = null; kb.categories.forEach(function (c) { c.topics.forEach(function (t) { if (t.id === id) { f = { id: t.id, title: t.title, body: t.body, roles: t.roles, cat: c.name, icon: c.icon }; } }); }); return f; }
+    function kbReload() { fetch(cfg.kbUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' }).then(function (r) { return r.json(); }).then(function (j) { window.__KB = j; if (typeof render === 'function') { render(); } }).catch(function () {}); }
+    window.kbOpen = function (id) { window.__kbTopic = id; if (typeof render === 'function') { render(); } };
+    window.kbNew = function () { window.__kbEdit = 'new'; if (typeof render === 'function') { render(); } };
+    window.kbEditOpen = function (id) { window.__kbEdit = id; if (typeof render === 'function') { render(); } };
+    window.kbCancel = function () { window.__kbEdit = null; if (typeof render === 'function') { render(); } };
+    window.kbDelete = function (id) {
+        if (!confirm('Delete this article?')) { return; }
+        fetch(cfg.kbUrl + '/' + id, { method: 'DELETE', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); }).then(function () { window.__kbTopic = null; if (typeof toast === 'function') { toast('Article deleted'); } kbReload(); }).catch(function () {});
+    };
+    window.kbSaveTopic = function () {
+        var roles = []; document.querySelectorAll('.kb_role:checked').forEach(function (c) { roles.push(c.value); });
+        var payload = { category: kbVal('kb_f_cat'), icon: kbVal('kb_f_icon'), title: kbVal('kb_f_title'), body: kbVal('kb_f_body'), roles: roles, sort: 0 };
+        if (!payload.title) { if (typeof toast === 'function') { toast('Title is required'); } return; }
+        var id = window.__kbEdit; var url = cfg.kbUrl + (id !== 'new' ? '/' + id : ''); var method = id !== 'new' ? 'PUT' : 'POST';
+        fetch(url, { method: method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); }).then(function (d) { if (d && d.ok) { window.__kbEdit = null; if (typeof toast === 'function') { toast('Article saved'); } kbReload(); } else if (typeof toast === 'function') { toast('Save failed'); } }).catch(function () {});
+    };
+    function kbEditor(kb) {
+        var ed = (window.__kbEdit !== 'new') ? kbFind(kb, window.__kbEdit) : null;
+        var sep = String.fromCharCode(10, 10);
+        var cat = ed ? ed.cat : '', icon = ed ? (ed.icon || 'fa-book-open') : 'fa-book-open', title = ed ? ed.title : '', body = ed ? ed.body.join(sep) : '', roles = ed ? ed.roles : ['all'];
+        var boxes = (kb.roleOptions || ['all']).map(function (r) { var ck = roles.indexOf(r) >= 0 ? ' checked' : ''; return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 16px 8px 0;font-size:13px;color:var(--text2)"><input type="checkbox" class="kb_role" value="' + r + '"' + ck + '> ' + r.replace(/_/g, ' ') + '</label>'; }).join('');
+        var fl = function (l, ctrl) { return '<div class="fg" style="margin-bottom:14px"><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">' + l + '</label>' + ctrl + '</div>'; };
+        var inp = 'width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        return pghead('Knowledge Base', ed ? 'Edit article' : 'New article', '<button class="btn btn-outline" onclick="kbCancel()"><i class="fas fa-arrow-left"></i> Back</button>')
+            + '<div class="card" style="padding:24px;max-width:780px">'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+            + '<div>' + fl('Category', '<input id="kb_f_cat" value="' + kbEsc(cat) + '" placeholder="Payroll" style="' + inp + '">') + '</div>'
+            + '<div>' + fl('Icon (Font Awesome class)', '<input id="kb_f_icon" value="' + kbEsc(icon) + '" placeholder="fa-book-open" style="' + inp + '">') + '</div>'
+            + '</div>'
+            + fl('Title', '<input id="kb_f_title" value="' + kbEsc(title) + '" style="' + inp + '">')
+            + fl('Visible to roles', '<div style="padding:4px 0">' + boxes + '</div>')
+            + fl('Body (one paragraph per line)', '<textarea id="kb_f_body" rows="9" style="' + inp + '">' + kbEsc(body) + '</textarea>')
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px"><button class="btn btn-outline" onclick="kbCancel()">Cancel</button><button class="btn btn-primary" onclick="kbSaveTopic()"><i class="fas fa-check"></i> Save article</button></div>'
+            + '</div>';
+    }
+    function kbScreen() {
+        var kb = window.__KB;
+        if (!kb || !kb.categories) { return pghead('Knowledge Base', 'Loading…', ''); }
+        var manage = !!kb.canManage;
+        if (manage && window.__kbEdit != null) { return kbEditor(kb); }
+        var addBtn = manage ? '<button class="btn btn-primary" onclick="kbNew()"><i class="fas fa-plus"></i> Add Article</button>' : '';
+        if (!kb.categories.length) { return pghead('Knowledge Base', '', addBtn) + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No articles yet.</div></div>'; }
+        var all = [];
+        kb.categories.forEach(function (c) { c.topics.forEach(function (t) { t.cat = c.name; all.push(t); }); });
+        var sel = (window.__kbTopic && all.find(function (t) { return t.id === window.__kbTopic; })) || all[0];
+        var left = kb.categories.map(function (c) {
+            var items = c.topics.map(function (t) {
+                var on = sel && t.id === sel.id;
+                var mv = manage ? '<span style="float:right;white-space:nowrap"><i class="fas fa-chevron-up" title="Move up" onclick="event.stopPropagation();kbMove(' + t.id + ',-1)" style="padding:2px 4px;color:var(--text3)"></i><i class="fas fa-chevron-down" title="Move down" onclick="event.stopPropagation();kbMove(' + t.id + ',1)" style="padding:2px 4px;color:var(--text3)"></i></span>' : '';
+                var key = (t.title + ' ' + c.name).toLowerCase().replace(/"/g, '');
+                return '<div class="kb-item" data-kbt="' + key + '" onclick="kbOpen(' + t.id + ')" style="cursor:pointer;padding:7px 10px;border-radius:8px;font-size:13px;margin-bottom:2px;' + (on ? 'background:var(--accent-soft);color:var(--accent);font-weight:600' : 'color:var(--text2)') + '">' + mv + t.title + '</div>';
+            }).join('');
+            return '<div class="kb-cat" style="margin-bottom:12px"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--text3);font-weight:700;padding:6px 10px"><i class="fas ' + c.icon + '" style="color:var(--accent);margin-right:6px"></i>' + c.name + '</div>' + items + '</div>';
+        }).join('');
+        var mbtn = (manage && sel) ? '<div style="margin-bottom:14px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" onclick="kbEditOpen(' + sel.id + ')"><i class="fas fa-pen"></i> Edit</button><button class="btn btn-outline btn-sm" style="color:var(--red)" onclick="kbDelete(' + sel.id + ')"><i class="fas fa-trash"></i> Delete</button></div>' : '';
+        var art = sel
+            ? mbtn + '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);font-weight:700;margin-bottom:4px">' + sel.cat + '</div><h2 style="margin:0 0 14px;font-size:22px">' + sel.title + '</h2>' + sel.body.map(function (p) { return '<p style="margin-bottom:12px;line-height:1.7;color:var(--text2);font-family:var(--font2)">' + p + '</p>'; }).join('')
+            : 'Select a topic.';
+        return pghead('Knowledge Base', 'Help articles for your role (' + kb.role.replace(/_/g, ' ') + ')', addBtn)
+            + '<div class="dash-grid" style="grid-template-columns:280px 1fr;align-items:start">'
+            + '<div class="card" style="padding:14px"><input type="text" placeholder="Search articles…" oninput="kbFilter(this.value)" style="width:100%;padding:9px 11px;margin-bottom:10px;border:1.5px solid var(--border);border-radius:9px;background:#f8fafc;font-family:var(--font2)"><div id="kb-nav">' + left + '</div></div>'
+            + '<div class="card" style="padding:26px">' + art + '</div>'
+            + '</div>';
+    }
+    // KB live search (filters the article list without losing input focus).
+    window.kbFilter = function (q) {
+        q = (q || '').toLowerCase().trim();
+        document.querySelectorAll('#kb-nav .kb-cat').forEach(function (cat) {
+            var any = false;
+            cat.querySelectorAll('.kb-item').forEach(function (it) {
+                var hit = !q || (it.getAttribute('data-kbt') || '').indexOf(q) >= 0;
+                it.style.display = hit ? '' : 'none';
+                if (hit) { any = true; }
+            });
+            cat.style.display = any ? '' : 'none';
+        });
+    };
+    // KB reorder — move an article up/down and persist the new order (admins).
+    window.kbMove = function (id, dir) {
+        var kb = window.__KB; if (!kb) { return; }
+        var ids = []; kb.categories.forEach(function (c) { c.topics.forEach(function (t) { ids.push(t.id); }); });
+        var i = ids.indexOf(id); if (i < 0) { return; }
+        var j = i + dir; if (j < 0 || j >= ids.length) { return; }
+        var tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp;
+        fetch(cfg.kbReorderUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ ids: ids }) })
+            .then(function (r) { return r.json(); }).then(function () { kbReload(); }).catch(function () {});
+    };
+    // ---- Daily Attendance Report (live punch logs from biometric/app/manual) ----
+    window.__attFrom = null; window.__attTo = null;
+    function attToday() { var d = new Date(); var z = function (n) { return (n < 10 ? '0' : '') + n; }; return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()); }
+    var attInp = 'padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+    function attHm(min) { min = Math.max(0, min || 0); return Math.floor(min / 60) + 'h ' + (min % 60) + 'm'; }
+    function attField(label, ctrl) { return '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px">' + label + '</label>' + ctrl + '</div>'; }
+    function attChip(label, val, color) { return '<div style="flex:1;background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center"><div style="font-size:20px;font-weight:800;color:' + color + '">' + val + '</div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px">' + label + '</div></div>'; }
+    window.attLoad = function (from, to) {
+        window.__attFrom = from; window.__attTo = to;
+        var url = cfg.attReportUrl + '?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to);
+        fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__ATTREPORT = j; if (typeof render === 'function') { render(); } })
+            .catch(function () {});
+    };
+    window.attSubmit = function () {
+        var f = document.getElementById('att_from'); var t = document.getElementById('att_to');
+        attLoad((f && f.value) || attToday(), (t && t.value) || attToday());
+    };
+    window.attDownload = function () {
+        var rep = window.__ATTREPORT; if (!rep || !rep.rows) { return; }
+        var head = ['Employee', 'Code', 'Branch', 'Team', 'Manager', 'Leader', 'Date', 'First In', 'Last Out', 'Last In', 'Total Time', 'Break Time', 'Early Min', 'Overtime Min', 'IN Count', 'OUT Count', 'Rating', 'Remarks'];
+        var lines = [head.join(',')];
+        attApplyFilters(rep.rows).forEach(function (r) {
+            var row = [r.emp_name, r.emp_code, (r.branch || ''), (r.team || ''), (r.reporting || ''), (r.leader || ''), r.date, r.first_in, r.last_out, r.last_in, r.total_time, r.break_time, r.early_min, r.overtime_min, r.in_count, r.out_count, (r.rating || ''), (r.remarks || '').replace(/[,\\r\\n]/g, ' ')];
+            lines.push(row.map(function (x) { return '"' + String(x) + '"'; }).join(','));
+        });
+        var blob = new Blob([lines.join(String.fromCharCode(10))], { type: 'text/csv' });
+        var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'attendance-report.csv'; a.click();
+    };
+    // Build a <select> of the distinct values of a field across the report rows.
+    window.__attFilters = { branch: '', team: '', reporting: '', leader: '' };
+    window.attSetFilter = function (k, v) { window.__attFilters[k] = v; if (typeof render === 'function') { render(); } };
+    function attDistinct(rows, k) {
+        var seen = {}; var out = [];
+        rows.forEach(function (r) { var v = r[k]; if (v && !seen[v]) { seen[v] = 1; out.push(v); } });
+        out.sort(); return out;
+    }
+    function attFilterSelect(label, k, rows) {
+        var cur = window.__attFilters[k] || '';
+        var vals = attDistinct(rows, k);
+        // rev 86b (Ejaz): no punches in the period → the filters looked like a
+        // dummy screen. Fall back to the live org data from the directory so
+        // Branch / Team / Manager / Team Leader are always real choices.
+        if (!vals.length) {
+            var seen2 = {};
+            ((typeof DB !== 'undefined' && DB.employees) || []).forEach(function (e2) {
+                var v2 = e2[k];
+                if (v2 && !seen2[v2]) { seen2[v2] = 1; vals.push(v2); }
+            });
+            vals.sort();
+        }
+        var opts = '<option value="">All</option>' + vals.map(function (v) {
+            return '<option value="' + v.replace(/"/g, '&quot;') + '"' + (v === cur ? ' selected' : '') + '>' + v + '</option>';
+        }).join('');
+        return attField(label, '<select onchange="attSetFilter(\'' + k + '\',this.value)" style="' + attInp + '">' + opts + '</select>');
+    }
+    function attApplyFilters(rows) {
+        var f = window.__attFilters;
+        return rows.filter(function (r) {
+            return (!f.branch || r.branch === f.branch) && (!f.team || r.team === f.team)
+                && (!f.reporting || r.reporting === f.reporting) && (!f.leader || r.leader === f.leader);
+        });
+    }
+    function attReportScreen() {
+        var rep = window.__ATTREPORT;
+        var from = window.__attFrom || attToday(); var to = window.__attTo || attToday();
+        if (!rep) { setTimeout(function () { if (!window.__ATTREPORT) { attLoad(from, to); } }, 10); }
+        var allRows = (rep && rep.rows) || [];
+        var pdfQ = '?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to);
+        ['branch', 'team', 'reporting', 'leader'].forEach(function (k) { if (window.__attFilters[k]) { pdfQ += '&' + k + '=' + encodeURIComponent(window.__attFilters[k]); } });
+        var controls = '<div class="card" style="padding:16px;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">'
+            + attField('From', '<input type="date" id="att_from" value="' + from + '" style="' + attInp + '">')
+            + attField('To', '<input type="date" id="att_to" value="' + to + '" style="' + attInp + '">')
+            + attFilterSelect('Branch', 'branch', allRows)
+            + attFilterSelect('Team', 'team', allRows)
+            + attFilterSelect('Manager', 'reporting', allRows)
+            + attFilterSelect('Team Leader', 'leader', allRows)
+            + '<button class="btn btn-primary" onclick="attSubmit()"><i class="fas fa-magnifying-glass"></i> Submit</button>'
+            + '<button class="btn btn-outline" onclick="attDownload()"><i class="fas fa-download"></i> Download CSV</button>'
+            + '<a class="btn btn-outline" href="' + cfg.attPdfUrl + pdfQ + '" target="_blank"><i class="fas fa-file-pdf"></i> Download PDF</a>'
+            + '</div>';
+        if (!rep || !rep.rows) { return pghead('Attendance Report', 'Daily punch summary', '') + controls + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (rep.error) { return pghead('Attendance Report', 'Daily punch summary', '') + controls + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not build the report.</b><br><span style="font-size:12px;color:var(--text2)">' + String(rep.error) + '</span></div></div>'; }
+        var rows = attApplyFilters(allRows);
+        if (!rows.length) { return pghead('Attendance Report', 'Daily punch summary', '') + controls + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No punch logs match this period/filter.</div></div>'; }
+        var head = ['Employee', 'Branch', 'Team', 'Manager', 'Leader', 'Date', 'First In', 'Last Out', 'Total Time', 'Break Time', 'IN', 'OUT', 'Rating', 'Logs'];
+        var th = head.map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        var dash = '<span style="color:var(--text3)">—</span>';
+        var body = rows.map(function (r) {
+            var brkRed = r.break_over || r.break_min > 90;
+            var manyPunch = (r.in_count > 4 || r.out_count > 4);
+            var lateCol = r.late_level ? 'var(--amber)' : 'var(--green)';
+            var lateBadge = r.late_level ? ' <span style="background:' + (r.late_level === 'L3' ? '#dc2626' : (r.late_level === 'L2' ? '#fb923c' : '#f59e0b')) + ';color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:700;vertical-align:middle">' + r.late_level + (r.late_min ? (' ' + r.late_min + 'm') : '') + '</span>' : '';
+            var ratingTxt = r.rating ? (r.rating + '/10') : '—';
+            var c = 'padding:10px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+            return '<tr>'
+                + '<td style="' + c + ';font-weight:600">' + r.emp_name + ' <span style="color:var(--text3);font-weight:400">(' + r.emp_code + ')</span></td>'
+                + '<td style="' + c + '">' + (r.branch || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.team || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.reporting || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.leader || dash) + '</td>'
+                + '<td style="' + c + '">' + r.date + '</td>'
+                + '<td style="' + c + ';color:' + lateCol + ';font-weight:600">' + r.first_in + lateBadge + '</td>'
+                + '<td style="' + c + ';color:var(--red);font-weight:600">' + r.last_out + '</td>'
+                + '<td style="' + c + ';font-weight:600">' + r.total_time + '</td>'
+                + '<td style="' + c + ';' + (brkRed ? 'color:var(--red);font-weight:700' : '') + '">' + r.break_time + (brkRed ? ' <i class="fas fa-triangle-exclamation"></i>' : '') + '</td>'
+                + '<td style="' + c + ';' + (manyPunch ? 'color:var(--amber);font-weight:700' : '') + '">' + r.in_count + '</td>'
+                + '<td style="' + c + ';' + (manyPunch ? 'color:var(--amber);font-weight:700' : '') + '">' + r.out_count + '</td>'
+                + '<td style="' + c + '">' + ratingTxt + '</td>'
+                + '<td style="' + c + '"><button class="btn btn-sm btn-primary" onclick="attLogsOpen(\'' + r.emp_code + '\',\'' + r.date + '\')">Show Logs</button></td>'
+                + '</tr>';
+        }).join('');
+        var sub = 'Punches ' + from + (to !== from ? ' → ' + to : '') + ' · ' + rows.length + ' of ' + allRows.length + ' records · default shift ' + rep.shift.start + '–' + rep.shift.end + ' · late tiers (L1/L2/L3) & over-budget breaks flagged per each company Late Policy';
+        return pghead('Attendance Report', sub, '')
+            + controls
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    }
+    // ---- Daily Attendance (today) — punch state per employee + hierarchy ----
+    function dailyAttendanceScreen() {
+        var rep = window.__ATTREPORT;
+        var today = attToday();
+        // Reuse the report endpoint scoped to today.
+        if (!rep || window.__attFrom !== today || window.__attTo !== today) {
+            setTimeout(function () { if (window.__attFrom !== today) { attLoad(today, today); } }, 10);
+        }
+        var head = '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px">'
+            + '<button class="btn btn-primary" onclick="punchDo()"><i class="fas fa-fingerprint"></i> <span id="punch_btn_lbl">Punch In / Out</span></button>'
+            + '<span style="color:var(--text3);font-size:13px">Punch from biometric device, this web app, or the mobile/desktop app — all land here.</span>'
+            + '</div>';
+        if (!rep || !rep.rows) { return pghead('Daily Attendance', 'Today · ' + today, '') + head + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (rep.error) { return pghead('Daily Attendance', 'Today · ' + today, '') + head + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load attendance.</b><br><span style="font-size:12px;color:var(--text2)">' + String(rep.error) + '</span></div></div>'; }
+        var rows = attApplyFilters(rep.rows);
+        if (!rows.length) {
+            return pghead('Daily Attendance', 'Today · ' + today, '') + head
+                + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">No attendance yet for today.<br><span style="font-size:12px">Punches will appear here as they come in. If the employee list is empty, run the demo seeder (deploy) or add employees first.</span></div></div>';
+        }
+        var dash = '<span style="color:var(--text3)">—</span>';
+        var th = ['Employee', 'Branch', 'Team', 'Manager', 'Leader', 'First In', 'Last Out', 'Total', 'Status'].map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        var body = rows.map(function (r) {
+            var c = 'padding:10px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+            var present = r.first_in && r.first_in !== '—';
+            var status = present ? '<span style="background:#dcfce7;color:#166534;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600">Present</span>' : '<span style="background:#fee2e2;color:#991b1b;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600">Absent</span>';
+            return '<tr><td style="' + c + ';font-weight:600">' + r.emp_name + ' <span style="color:var(--text3);font-weight:400">(' + r.emp_code + ')</span></td>'
+                + '<td style="' + c + '">' + (r.branch || dash) + '</td><td style="' + c + '">' + (r.team || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.reporting || dash) + '</td><td style="' + c + '">' + (r.leader || dash) + '</td>'
+                + '<td style="' + c + ';color:var(--green);font-weight:600">' + r.first_in + '</td>'
+                + '<td style="' + c + ';color:var(--red);font-weight:600">' + r.last_out + '</td>'
+                + '<td style="' + c + ';font-weight:600">' + r.total_time + '</td>'
+                + '<td style="' + c + '">' + status + '</td></tr>';
+        }).join('');
+        var present = rows.filter(function (r) { return r.first_in && r.first_in !== '—'; }).length;
+        return pghead('Daily Attendance', 'Today · ' + today + ' · ' + present + ' / ' + rows.length + ' present', '')
+            + head
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    }
+    // ---- In-app Punch (web / mobile / desktop), with optional GPS ----
+    function punchSource() {
+        var ua = (navigator.userAgent || '').toLowerCase();
+        if (/android|iphone|ipad|mobile/.test(ua)) { return 'mobile'; }
+        if (window.navigator && window.navigator.standalone) { return 'desktop'; }
+        return 'web';
+    }
+    window.punchDo = function () {
+        var send = function (lat, lng) {
+            fetch(cfg.punchUrl, {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({ lat: lat, lng: lng, source: punchSource() })
+            }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); }).then(function (res) {
+                var d = res.j || {};
+                if (res.ok && d.ok) {
+                    if (typeof toast === 'function') { toast('Punched ' + (d.direction === 'in' ? 'IN' : 'OUT') + ' at ' + d.time); }
+                    // Always refresh today's attendance so the punch shows immediately,
+                    // even if the user punched from the topbar without opening the report.
+                    attLoad(attToday(), attToday());
+                    punchRefreshLabel();
+                } else if (typeof toast === 'function') { toast(d.error || 'Punch failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Punch failed'); } });
+        };
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                function (p) { send(p.coords.latitude, p.coords.longitude); },
+                function () { send(null, null); },   // user denied / unavailable → punch without GPS
+                { enableHighAccuracy: true, timeout: 8000 }
+            );
+        } else { send(null, null); }
+    };
+    function punchRefreshLabel() {
+        fetch(cfg.punchStatusUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (d) {
+                var lbl = document.getElementById('punch_btn_lbl');
+                var top = document.getElementById('punch_top_lbl');
+                var txt = d.next === 'in' ? 'Punch In' : 'Punch Out';
+                if (lbl) { lbl.textContent = txt; }
+                if (top) { top.textContent = txt; }
+            }).catch(function () {});
+    }
+    // Topbar punch button (always available, any screen).
+    function wirePunch(cfg) {
+        var bar = document.querySelector('.topbar-actions');
+        if (!bar || bar.__punchWired) { return; }
+        var b = document.createElement('button');
+        b.className = 'topbar-btn sp-keep'; b.title = 'Punch In / Out';
+        b.style.cssText = 'width:auto;padding:0 12px;gap:6px;background:var(--accent);color:#fff';
+        b.innerHTML = '<i class="fas fa-fingerprint"></i> <span id="punch_top_lbl">Punch</span>';
+        b.onclick = function () { punchDo(); };
+        bar.insertBefore(b, bar.firstChild);
+        bar.__punchWired = true;
+        punchRefreshLabel();
+    }
+    // ---- Live notifications bell (real pending approvals awaiting this user) ----
+    // Reuses the /app/approvals data (no new endpoint). Shows a count badge, a
+    // dropdown of the latest pending items, and links into the Approvals Inbox.
+    function wireBell(cfg) {
+        var bar = document.querySelector('.topbar-actions');
+        if (!bar || bar.__bellWired) { return; }
+        var wrap = document.createElement('div');
+        wrap.className = 'sp-keep';
+        wrap.style.cssText = 'position:relative';
+        wrap.innerHTML = '<button class="topbar-btn" id="sp-bell" title="Notifications"><i class="fas fa-bell"></i><span id="sp-bell-dot" style="display:none;position:absolute;top:3px;right:3px;min-width:16px;height:16px;padding:0 3px;background:var(--red);color:#fff;border-radius:9px;font-size:10px;line-height:16px;text-align:center;font-weight:700"></span></button>'
+            + '<div id="sp-bell-panel" style="display:none;position:absolute;right:0;top:44px;width:340px;max-height:420px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 30px rgba(15,23,42,.18);z-index:300"></div>';
+        bar.insertBefore(wrap, bar.firstChild);
+        bar.__bellWired = true;
+        // Move the panel to <body> and position it with fixed coords from the
+        // bell's on-screen rect, so it always drops directly under the bell and
+        // never overlaps the sidebar (the relative-wrapper approach mis-placed it).
+        var panel = wrap.querySelector('#sp-bell-panel');
+        document.body.appendChild(panel);
+        panel.style.position = 'fixed';
+        var btn = wrap.querySelector('#sp-bell');
+        function positionPanel() {
+            var r = btn.getBoundingClientRect();
+            var w = 340;
+            var left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
+            panel.style.top = (r.bottom + 6) + 'px';
+            panel.style.left = left + 'px';
+            panel.style.right = 'auto';
+            panel.style.width = w + 'px';
+        }
+        btn.onclick = function (e) {
+            e.stopPropagation();
+            if (panel.style.display === 'block') { panel.style.display = 'none'; return; }
+            bellRenderPanel(); positionPanel(); panel.style.display = 'block';
+        };
+        panel.addEventListener('click', function (e) { e.stopPropagation(); });
+        document.addEventListener('click', function () { panel.style.display = 'none'; });
+        window.addEventListener('resize', function () { if (panel.style.display === 'block') { positionPanel(); } });
+        bellRefresh();
+        // Poll every 60s so the badge stays live.
+        if (!window.__bellTimer) { window.__bellTimer = setInterval(bellRefresh, 60000); }
+    }
+    window.__BELL = null;
+    function bellRefresh() {
+        fetch(cfg.approvalsUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                window.__BELL = j;
+                var dot = document.getElementById('sp-bell-dot');
+                var n = (j && j.count) || 0;
+                if (dot) { dot.textContent = n > 99 ? '99+' : n; dot.style.display = n > 0 ? 'block' : 'none'; }
+                var p = document.getElementById('sp-bell-panel');
+                if (p && p.style.display === 'block') { bellRenderPanel(); }
+            }).catch(function () {});
+    }
+    function bellRenderPanel() {
+        var p = document.getElementById('sp-bell-panel'); if (!p) { return; }
+        var d = window.__BELL || { items: [] };
+        var items = (d.items || []).slice(0, 12);
+        var head = '<div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between"><b style="font-size:14px">Notifications</b><span style="font-size:11px;color:var(--text3)">' + ((d.count || 0)) + ' pending</span></div>';
+        var body = items.length ? items.map(function (it) {
+            return '<div style="padding:11px 14px;border-bottom:1px solid var(--border);cursor:pointer" onclick="go(\'approvals-inbox\',document.querySelector(&quot;.nav-item[data-id=approvals-inbox]&quot;));var pp=document.getElementById(\'sp-bell-panel\');if(pp)pp.style.display=\'none\';">'
+                + '<div style="font-size:13px;font-weight:600">' + (it.kind || 'Request') + ' · ' + (it.employee || '') + '</div>'
+                + '<div style="font-size:12px;color:var(--text2)">' + (it.detail || '') + '</div></div>';
+        }).join('') : '<div style="padding:28px 14px;text-align:center;color:var(--text3)"><i class="fas fa-circle-check" style="color:var(--green);font-size:22px"></i><br>All clear — nothing pending.</div>';
+        var foot = '<div style="padding:10px 14px;text-align:center"><a style="font-size:13px;color:var(--accent);cursor:pointer" onclick="go(\'approvals-inbox\',document.querySelector(&quot;.nav-item[data-id=approvals-inbox]&quot;));var pp=document.getElementById(\'sp-bell-panel\');if(pp)pp.style.display=\'none\';">Open Approvals Inbox →</a></div>';
+        p.innerHTML = head + body + foot;
+    }
+    // ---- Company-wise Branding (logo, colour, display name, tagline) ----
+    function brandingScreen() {
+        if (!window.__BRANDING) {
+            fetch(cfg.brandingUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+                .then(function (r) { return r.json(); }).then(function (d) { window.__BRANDING = d; if (typeof render === 'function') { render(); } }).catch(function () {});
+            return pghead('Company Branding', 'Loading…', '');
+        }
+        var d = window.__BRANDING;
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var cards = (d.companies || []).map(function (c) {
+            var b = c.brand || {};
+            var logo = b.logo ? '<img src="' + b.logo + '" style="height:38px;max-width:150px;object-fit:contain" onerror="this.style.display=\'none\'">' : '<span style="color:var(--text3);font-size:12px">No logo</span>';
+            return '<div class="card" style="padding:18px;margin-bottom:14px">'
+                + '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">'
+                + '<div style="width:42px;height:42px;border-radius:10px;background:' + (b.color || '#f97316') + ';display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800">' + (c.name || '?').slice(0, 1) + '</div>'
+                + '<div><h3 style="margin:0;font-size:16px">' + c.name + '</h3><div style="font-size:12px;color:var(--text3)">' + logo + '</div></div></div>'
+                + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+                + '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Display name</label><input id="br_name_' + c.id + '" value="' + (b.display_name || '').replace(/"/g, '&quot;') + '" style="' + inp + '"></div>'
+                + '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Brand colour</label><input id="br_color_' + c.id + '" type="color" value="' + (b.color || '#f97316') + '" style="width:100%;height:40px;border:1.5px solid var(--border);border-radius:9px;background:#fff"></div>'
+                + '<div style="grid-column:1/3"><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Logo image URL</label><input id="br_logo_' + c.id + '" value="' + (b.logo || '').replace(/"/g, '&quot;') + '" placeholder="https://…/logo.png" style="' + inp + '"></div>'
+                + '<div style="grid-column:1/3"><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Tagline</label><input id="br_tag_' + c.id + '" value="' + (b.tagline || '').replace(/"/g, '&quot;') + '" style="' + inp + '"></div>'
+                + '</div>'
+                + (d.canManage ? '<div style="text-align:right;margin-top:12px"><button class="btn btn-primary btn-sm" onclick="brandingSave(\'' + c.id + '\')"><i class="fas fa-check"></i> Save</button></div>' : '')
+                + '</div>';
+        }).join('');
+        if (!(d.companies || []).length) { cards = '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No companies found for this tenant.</div></div>'; }
+        return pghead('Company Branding', 'Logo, colour and display name per company', '') + cards;
+    }
+    window.brandingSave = function (cid) {
+        var g = function (p) { var e = document.getElementById(p + cid); return e ? e.value : ''; };
+        var payload = { company_id: cid, display_name: g('br_name_'), color: g('br_color_'), logo: g('br_logo_'), tagline: g('br_tag_') };
+        fetch(cfg.brandingSaveUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) { window.__BRANDING = null; if (typeof toast === 'function') { toast('Branding saved'); } if (typeof render === 'function') { render(); } }
+                else if (typeof toast === 'function') { toast('Save failed — admin only'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Save failed'); } });
+    };
+    // ---- SMTP / Email Settings — PER COMPANY (+ tenant default) + send test ----
+    window.__mailSel = '0';   // which company's SMTP is being edited; '0' = tenant default
+    window.mailSelect = function (cid) { window.__mailSel = cid; if (typeof render === 'function') { render(); } };
+    function mailScreen() {
+        if (!window.__MAIL) {
+            fetch(cfg.mailUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+                .then(function (r) { return r.json(); }).then(function (d) { window.__MAIL = d; if (typeof render === 'function') { render(); } }).catch(function () {});
+            return pghead('Email / SMTP Settings', 'Loading…', '');
+        }
+        var d = window.__MAIL;
+        var companies = d.companies || [];
+        // Build the selector: tenant default + each company.
+        var sel = window.__mailSel || '0';
+        var entry = (sel === '0') ? { id: '0', name: 'Tenant default (fallback)', mail: d.default || {} }
+            : (companies.find(function (c) { return c.id === sel; }) || { id: sel, name: sel, mail: {} });
+        var m = entry.mail || {};
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var fld = function (label, id, val, type, ph) {
+            return '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">' + label + '</label><input id="' + id + '" type="' + (type || 'text') + '" value="' + (val != null ? String(val).replace(/"/g, '&quot;') : '') + '"' + (ph ? ' placeholder="' + ph + '"' : '') + ' style="' + inp + '"></div>';
+        };
+        var enc = m.encryption || 'tls';
+        var encSel = '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Encryption</label><select id="m_enc" style="' + inp + '">'
+            + ['tls', 'ssl', 'none'].map(function (x) { return '<option value="' + x + '"' + (x === enc ? ' selected' : '') + '>' + x.toUpperCase() + '</option>'; }).join('') + '</select></div>';
+        var pwPh = m.hasPassword ? '•••••• (leave blank to keep)' : '';
+        var save = d.canManage ? '<button class="btn btn-primary" onclick="mailSave()"><i class="fas fa-check"></i> Save SMTP</button>' : '';
+        // Company picker (left column): tenant default + companies, with a green dot if configured.
+        var pick = function (id, name, configured) {
+            var on = id === sel;
+            var dot = configured ? '<span style="width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;margin-left:auto"></span>' : '<span style="width:8px;height:8px;border-radius:50%;background:var(--border);display:inline-block;margin-left:auto"></span>';
+            return '<div onclick="mailSelect(\'' + id + '\')" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:9px 11px;border-radius:8px;font-size:13px;margin-bottom:2px;' + (on ? 'background:var(--accent-soft);color:var(--accent);font-weight:600' : 'color:var(--text2)') + '">' + name + dot + '</div>';
+        };
+        var left = pick('0', 'Tenant default', !!(d.default && d.default.host))
+            + '<div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);font-weight:700;padding:8px 10px 4px">Companies</div>'
+            + companies.map(function (c) { return pick(c.id, c.name, !!(c.mail && c.mail.host)); }).join('');
+        var subNote = sel === '0'
+            ? 'Used when a company has no SMTP of its own.'
+            : 'This company\'s own outgoing mail server. Leave blank to use the tenant default.';
+        var formCard = '<div class="card" style="padding:22px">'
+            + '<h3 style="margin:0 0 2px;font-size:16px">' + entry.name + '</h3>'
+            + '<p style="margin:0 0 16px;font-size:12px;color:var(--text3)">' + subNote + '</p>'
+            + '<div style="display:grid;grid-template-columns:2fr 1fr;gap:14px">'
+            + fld('SMTP Host', 'm_host', m.host, 'text', 'smtp.gmail.com')
+            + fld('Port', 'm_port', m.port || 587, 'number')
+            + '</div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">'
+            + fld('Username', 'm_user', m.username, 'text', 'you@company.in')
+            + fld('Password', 'm_pass', '', 'password', pwPh)
+            + '</div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px">'
+            + encSel
+            + fld('From address', 'm_from', m.from_address, 'text', 'noreply@company.in')
+            + fld('From name', 'm_fromname', m.from_name || 'SmartPRS', 'text')
+            + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px">' + save + '</div>'
+            + '<hr style="border:none;border-top:1px solid var(--border);margin:18px 0">'
+            + '<div style="display:grid;grid-template-columns:2fr auto;gap:12px;align-items:end">'
+            + fld('Send a test email to', 'm_test', '', 'text', 'someone@company.in')
+            + '<button class="btn btn-outline" onclick="mailTest()"><i class="fas fa-paper-plane"></i> Send Test</button>'
+            + '</div>'
+            + '<div style="font-size:11px;color:var(--text3);margin-top:10px">Tip: for Gmail use host smtp.gmail.com, port 587, TLS, and an App Password. The test uses this company\'s SMTP (or the tenant default if blank).</div>'
+            + '</div>';
+        return pghead('Email / SMTP Settings', 'Per-company outgoing mail server, with a tenant-wide fallback', '')
+            + '<div class="dash-grid" style="grid-template-columns:260px 1fr;align-items:start">'
+            + '<div class="card" style="padding:12px">' + left + '</div>'
+            + formCard
+            + '</div>';
+    }
+    window.mailSave = function () {
+        var g = function (id) { var e = document.getElementById(id); return e ? e.value : ''; };
+        var payload = { company_id: window.__mailSel || '0', host: g('m_host'), port: g('m_port'), username: g('m_user'), password: g('m_pass'), encryption: g('m_enc'), from_address: g('m_from'), from_name: g('m_fromname') };
+        fetch(cfg.mailSaveUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) { window.__MAIL = null; if (typeof toast === 'function') { toast('SMTP settings saved'); } if (typeof render === 'function') { render(); } }
+                else if (typeof toast === 'function') { toast('Save failed — admin only'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Save failed'); } });
+    };
+    window.mailTest = function () {
+        var to = (document.getElementById('m_test') || {}).value || '';
+        if (!to) { if (typeof toast === 'function') { toast('Enter an email to test'); } return; }
+        fetch(cfg.mailTestUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ to: to, company_id: window.__mailSel || '0' }) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) { if (typeof toast === 'function') { toast(res.j.message || 'Test email sent'); } }
+                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Test failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Test failed'); } });
+    };
+    // Show Logs modal — every punch, break after each, totals, rating + remarks.
+    window.attLogsOpen = function (code, date) {
+        var url = cfg.attLogsUrl + '/' + encodeURIComponent(code) + '/' + encodeURIComponent(date);
+        fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (d) { attRenderModal(d); }).catch(function () {});
+    };
+    window.attLogClose = function () { var m = document.getElementById('attlog-modal'); if (m) { m.style.display = 'none'; } };
+    function attRenderModal(d) {
+        var m = document.getElementById('attlog-modal');
+        if (!m) { m = document.createElement('div'); m.id = 'attlog-modal'; document.body.appendChild(m); }
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:36px 16px;overflow:auto';
+        var rows = (d.pairs || []).map(function (p) {
+            var bt = (p.break_after != null) ? ('<span style="background:#fde68a;color:#92400e;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600">' + attHm(p.break_after) + '</span>') : '<span style="color:var(--text3)">—</span>';
+            var td = 'padding:9px 12px;border-top:1px solid var(--border)';
+            return '<tr><td style="' + td + ';text-align:center">' + p.no + '</td>'
+                + '<td style="' + td + ';color:var(--green);font-weight:600">' + p.in + '</td>'
+                + '<td style="' + td + ';color:var(--red);font-weight:600">' + p.out + '</td>'
+                + '<td style="' + td + '">' + attHm(p.worked) + '</td>'
+                + '<td style="' + td + '">' + bt + '</td></tr>';
+        }).join('');
+        var rv = d.rating || 5;
+        var inner = '<div class="card" style="max-width:740px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:18px">Attendance Logs — ' + d.emp_name + ' <span style="color:var(--text3);font-weight:400;font-size:14px">(' + d.date + ')</span></h3><button class="btn btn-outline btn-sm" onclick="attLogClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:22px">'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">'
+            + '<div><label style="font-size:12px;font-weight:700;color:var(--text2)">Employee Rating</label>'
+            + '<input type="range" min="1" max="10" value="' + rv + '" id="att_rate" oninput="attRateLbl()" style="width:100%;margin-top:14px">'
+            + '<div style="text-align:center;margin-top:6px"><span id="att_rate_v" style="font-size:26px;font-weight:800">' + rv + '</span><span style="color:var(--text3)">/10</span><div id="att_rate_t" style="font-weight:700;margin-top:2px"></div></div></div>'
+            + '<div><label style="font-size:12px;font-weight:700;color:var(--text2)">Remarks</label>'
+            + '<textarea id="att_remarks" rows="4" placeholder="Stand-up note (e.g. too many breaks today)" style="width:100%;margin-top:8px;padding:10px;border:1.5px solid var(--border);border-radius:9px;font-family:var(--font2)">' + (d.remarks || '') + '</textarea>'
+            + '<button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="attRateSave(\'' + d.emp_code + '\',\'' + d.date + '\')"><i class="fas fa-check"></i> Save Rating</button></div>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;margin-bottom:14px">'
+            + attChip('Total Worked', d.total_work_h, 'var(--green)')
+            + attChip('Total Break', d.total_break_h, 'var(--red)')
+            + attChip('Punch Pairs', (d.pairs || []).length, 'var(--accent)')
+            + '</div>'
+            + '<table style="width:100%;border-collapse:collapse"><thead><tr>'
+            + '<th style="padding:9px 12px;text-align:center;font-size:11px;text-transform:uppercase;color:var(--text3)">#</th>'
+            + '<th style="padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">In</th>'
+            + '<th style="padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">Out</th>'
+            + '<th style="padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">Worked</th>'
+            + '<th style="padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">Break After</th>'
+            + '</tr></thead><tbody>' + rows + '</tbody>'
+            + '<tfoot><tr><td colspan="3" style="padding:10px 12px;text-align:right;font-weight:700;background:#0f172a;color:#fff">Total Break Time</td><td colspan="2" style="padding:10px 12px;font-weight:700;background:#0f172a;color:#fff">' + d.total_break_h + '</td></tr></tfoot>'
+            + '</table></div></div>';
+        m.innerHTML = inner;
+        m.style.display = 'flex';
+        m.onclick = function (e) { if (e.target === m) { attLogClose(); } };
+        attRateLbl();
+    }
+    window.attRateLbl = function () {
+        var el = document.getElementById('att_rate'); var v = el ? +el.value : 5;
+        var lbls = ['', 'Very Poor', 'Poor', 'Below Avg', 'Fair', 'Average', 'Above Avg', 'Good', 'Very Good', 'Excellent', 'Outstanding'];
+        var cols = ['', '#dc2626', '#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16', '#22c55e', '#16a34a', '#15803d', '#166534'];
+        var vEl = document.getElementById('att_rate_v'); var tEl = document.getElementById('att_rate_t');
+        if (vEl) { vEl.textContent = v; }
+        if (tEl) { tEl.textContent = lbls[v]; tEl.style.color = cols[v]; }
+    };
+    window.attRateSave = function (code, date) {
+        var el = document.getElementById('att_rate'); var rate = el ? +el.value : null;
+        var rem = (document.getElementById('att_remarks') || {}).value || '';
+        fetch(cfg.attRatingUrl, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ emp_code: code, date: date, rating: rate, remarks: rem })
+        }).then(function (r) { return r.json(); }).then(function (d) {
+            if (d && d.ok) { if (typeof toast === 'function') { toast('Rating saved'); } attLogClose(); if (window.__attFrom) { attLoad(window.__attFrom, window.__attTo); } }
+        }).catch(function () {});
+    };
+    function statutoryScreen(id) {
+        var emps = (typeof DB !== 'undefined' && DB.employees) || [];
+        var period = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+        var title = (typeof SCREENS !== 'undefined' && SCREENS[id] && SCREENS[id].title) || id;
+        if (id === 'pf-esic') {
+            var pfEe = 0, pfEr = 0, esiEe = 0, esiEr = 0, body = '';
+            var rr = spRates();
+            emps.forEach(function (e) {
+                var gross = (Number(e.ctc) || 0) / 12, basic = gross * 0.5;
+                var pfW = Math.min(basic, Number(rr.pf_wage_cap)), pe = Math.round(pfW * Number(rr.pf_rate) / 100), pr = pe;
+                var elig = gross <= Number(rr.esi_threshold), ee = elig ? Math.round(gross * Number(rr.esi_employee_rate) / 100) : 0, er = elig ? Math.round(gross * Number(rr.esi_employer_rate) / 100) : 0;
+                pfEe += pe; pfEr += pr; esiEe += ee; esiEr += er;
+                body += '<tr><td><strong>' + e.id + '</strong></td><td>' + e.name + '</td><td>' + (e.uan || '—') + '</td><td>' + inr(pfW) + '</td><td>' + inr(pe) + '</td><td>' + inr(pr) + '</td><td>' + inr(ee) + '</td><td>' + inr(er) + '</td></tr>';
+            });
+            var acts = '<button class="btn btn-outline btn-sm" onclick="rateSettingsOpen()"><i class="fas fa-sliders"></i> Edit Rates</button> <a class="btn btn-outline btn-sm" href="/app/statutory/pf/pdf" target="_blank"><i class="fas fa-download"></i> PF Challan</a> <a class="btn btn-primary btn-sm" href="/app/statutory/esi/pdf" target="_blank"><i class="fas fa-download"></i> ESIC Challan</a>';
+            return pghead(title, 'Provident Fund & ESIC contributions · ' + period, acts)
+                + '<div class="stats-grid">' + statBox(inr(pfEe + pfEr), 'PF Remittance', '#3b82f6', 'fa-piggy-bank') + statBox(inr(esiEe + esiEr), 'ESI Remittance', '#10b981', 'fa-briefcase-medical') + statBox(emps.length, 'Employees', '#f97316', 'fa-users') + statBox(inr(pfEe + pfEr + esiEe + esiEr), 'Total Statutory', '#8b5cf6', 'fa-scale-balanced') + '</div>'
+                + '<div class="card"><div class="card-header"><div><h3>Contribution Register</h3><p>PF 12%+12% · ESI 0.75%+3.25% (gross ≤ ₹21k)</p></div></div><div class="table-wrap"><table><thead><tr><th>Code</th><th>Employee</th><th>UAN (PF)</th><th>PF Wage</th><th>PF Employee</th><th>PF Employer</th><th>ESI Employee</th><th>ESI Employer</th></tr></thead><tbody>' + (body || '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text3)">No employees</td></tr>') + '</tbody></table></div></div>';
+        }
+        // tds — salary (192) + commission (194H), with deductee detail
+        var RR = spRates();
+        var COMM_RATE = Number(RR.comm_tds_rate) / 100; // Sec 194H
+        var NOPAN = Number(RR.no_pan_tds_rate) / 100;   // higher rate when no PAN
+        var STDDED = Number(RR.std_deduction);
+        var salT = 0, comT = 0, monT = 0, commEarn = 0, tb = '', cb = '';
+        emps.forEach(function (e) {
+            var annual = Number(e.ctc) || 0;
+            var st = e.salaryType || 'Salary';
+            var commBase = st === 'Commission' ? annual : (st === 'Salary + Commission' ? annual * ((Number(e.commPct) || 30) / 100) : 0);
+            var salBase = Math.max(0, annual - commBase);
+            var salTds = tdsTax(Math.max(0, salBase - STDDED));
+            var effRate = e.pan ? COMM_RATE : Math.max(COMM_RATE, NOPAN);
+            var commTds = Math.round(commBase * effRate);
+            var tot = salTds + commTds, m = Math.round(tot / 12);
+            salT += salTds; comT += commTds; monT += m;
+            tb += '<tr><td><strong>' + e.id + '</strong></td><td>' + e.name + '</td><td>' + st + '</td><td>' + inr(salTds) + '</td><td>' + inr(commTds) + '</td><td><strong>' + inr(tot) + '</strong></td><td>' + inr(m) + '</td></tr>';
+            if (commBase > 0) {
+                commEarn += commBase;
+                cb += '<tr><td><strong>' + e.id + '</strong></td><td>' + e.name + '</td><td>' + (e.pan || '<span style="color:var(--red)">No PAN</span>') + '</td><td>194H</td><td>' + inr(commBase) + '</td><td>' + (Math.round(effRate * 1000) / 10) + '%</td><td><strong>' + inr(commTds) + '</strong></td><td>' + inr(commBase - commTds) + '</td></tr>';
+            }
+        });
+        var commCount = (cb.match(/<tr>/g) || []).length;
+        var a2 = '<button class="btn btn-outline btn-sm" onclick="rateSettingsOpen()"><i class="fas fa-sliders"></i> Edit Rates</button> <a class="btn btn-outline btn-sm" href="/app/statutory/commtds/pdf" target="_blank"><i class="fas fa-download"></i> Commission Deductees</a> <a class="btn btn-primary btn-sm" href="/app/statutory/tds/pdf" target="_blank"><i class="fas fa-download"></i> TDS Statement (24Q)</a>';
+        return pghead(title, 'TDS — salary (Sec 192) + commission (Sec 194H) · ' + period, a2)
+            + '<div class="stats-grid">' + statBox(inr(salT), 'Salary TDS (192)', '#ef4444', 'fa-receipt') + statBox(inr(comT), 'Commission TDS (194H)', '#8b5cf6', 'fa-percent') + statBox(inr(salT + comT), 'Total Annual TDS', '#f97316', 'fa-landmark') + statBox(inr(monT), 'Monthly TDS', '#3b82f6', 'fa-calendar-days') + '</div>'
+            + '<div class="card"><div class="card-header"><div><h3>TDS Computation</h3><p>Salary: new regime, ₹50k std deduction, 87A ≤ ₹7L, 4% cess · Commission: Sec 194H @ 5% (configurable)</p></div></div><div class="table-wrap"><table><thead><tr><th>Code</th><th>Employee</th><th>Pay Type</th><th>Salary TDS (192)</th><th>Comm. TDS (194H)</th><th>Total</th><th>Monthly</th></tr></thead><tbody>' + (tb || '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text3)">No employees</td></tr>') + '</tbody></table></div></div>'
+            + '<div class="card" style="margin-top:18px"><div class="card-header"><div><h3>Commission TDS — Deductee Register (Sec 194H)</h3><p>' + commCount + ' deductee(s) · commission earned ' + inr(commEarn) + ' · TDS ' + inr(comT) + '</p></div></div><div class="table-wrap"><table><thead><tr><th>Code</th><th>Deductee</th><th>PAN</th><th>Section</th><th>Commission Earned</th><th>Rate</th><th>TDS Deducted</th><th>Net Paid</th></tr></thead><tbody>' + (cb || '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text3)">No commission-based employees</td></tr>') + '</tbody></table></div></div>';
+    }
+    // ---- Statutory Rate Settings (editable PF/ESI/PT/TDS/194H/no-PAN rates) ----
+    window.rateSettingsOpen = function () {
+        fetch(cfg.settingsUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) { if (d && d.rates) { window.__RATES = d.rates; } rateSettingsRender(d || {}); })
+            .catch(function () { rateSettingsRender({ rates: spRates(), canManage: true }); });
+    };
+    window.rateSettingsClose = function () { var m = document.getElementById('rate-modal'); if (m) { m.style.display = 'none'; } };
+    function rateField(label, key, val, hint) {
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        return '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">' + label + '</label><input type="number" step="any" id="rate_' + key + '" value="' + (val != null ? val : '') + '" style="' + inp + '">' + (hint ? '<div style="font-size:11px;color:var(--text3);margin-top:3px">' + hint + '</div>' : '') + '</div>';
+    }
+    function rateSettingsRender(d) {
+        var r = (d && d.rates) || spRates();
+        var canManage = !d || d.canManage !== false;
+        var m = document.getElementById('rate-modal');
+        if (!m) { m = document.createElement('div'); m.id = 'rate-modal'; document.body.appendChild(m); }
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:36px 16px;overflow:auto';
+        var slabRows = (r.tds_slabs || []).map(function (s) {
+            var cell = 'padding:6px 8px;border:1.5px solid var(--border);border-radius:8px;background:#f8fafc';
+            return '<tr><td style="padding:4px 8px 4px 0"><input type="number" step="any" class="slab_upto" value="' + (s.upto != null ? s.upto : 0) + '" style="width:150px;' + cell + '"></td><td style="padding:4px 0"><input type="number" step="any" class="slab_rate" value="' + (s.rate != null ? s.rate : 0) + '" style="width:90px;' + cell + '"> %</td></tr>';
+        }).join('');
+        var grid = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">'
+            + rateField('PF wage cap (₹)', 'pf_wage_cap', r.pf_wage_cap)
+            + rateField('PF rate (% each side)', 'pf_rate', r.pf_rate)
+            + rateField('Professional Tax / month (₹)', 'pt_amount', r.pt_amount)
+            + rateField('ESI threshold (gross ≤ ₹)', 'esi_threshold', r.esi_threshold)
+            + rateField('ESI employee (%)', 'esi_employee_rate', r.esi_employee_rate)
+            + rateField('ESI employer (%)', 'esi_employer_rate', r.esi_employer_rate)
+            + rateField('Standard deduction (₹)', 'std_deduction', r.std_deduction)
+            + rateField('87A rebate up to (₹)', 'rebate_87a_limit', r.rebate_87a_limit)
+            + rateField('Health & edu cess (%)', 'cess_rate', r.cess_rate)
+            + rateField('Commission TDS 194H (%)', 'comm_tds_rate', r.comm_tds_rate)
+            + rateField('No-PAN higher TDS (%)', 'no_pan_tds_rate', r.no_pan_tds_rate)
+            + '</div>';
+        var slabTbl = '<h3 style="margin:20px 0 6px;font-size:15px">Income-tax slabs (new regime)</h3>'
+            + '<p style="font-size:12px;color:var(--text3);margin:0 0 8px">Annual taxable income up to the amount is taxed at the rate beside it. Put 0 in the last row to mean "and above".</p>'
+            + '<table style="border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px 8px 4px 0;font-size:11px;color:var(--text3)">Up to (₹)</th><th style="text-align:left;padding:4px 0;font-size:11px;color:var(--text3)">Rate</th></tr></thead><tbody>' + slabRows + '</tbody></table>';
+        var saveBtn = canManage ? '<button class="btn btn-primary" onclick="rateSettingsSave()"><i class="fas fa-check"></i> Save Rates</button>' : '';
+        var inner = '<div class="card" style="max-width:840px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:18px">Statutory Rate Settings</h3><button class="btn btn-outline btn-sm" onclick="rateSettingsClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:22px">' + grid + slabTbl
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px"><button class="btn btn-outline" onclick="rateSettingsClose()">Cancel</button>' + saveBtn + '</div>'
+            + '<div style="font-size:11px;color:var(--text3);margin-top:10px">These rates drive payroll, PF/ESIC and TDS calculations and the statutory PDFs. Indicative — confirm against current law before filing.</div>'
+            + '</div></div>';
+        m.innerHTML = inner;
+        m.style.display = 'flex';
+        m.onclick = function (e) { if (e.target === m) { rateSettingsClose(); } };
+    }
+    window.rateSettingsSave = function () {
+        var keys = ['pf_wage_cap', 'pf_rate', 'pt_amount', 'esi_threshold', 'esi_employee_rate', 'esi_employer_rate', 'std_deduction', 'rebate_87a_limit', 'cess_rate', 'comm_tds_rate', 'no_pan_tds_rate'];
+        var payload = {};
+        keys.forEach(function (k) { var el = document.getElementById('rate_' + k); if (el && el.value !== '') { payload[k] = Number(el.value); } });
+        var uptos = document.querySelectorAll('.slab_upto'); var rs = document.querySelectorAll('.slab_rate');
+        var slabs = []; for (var i = 0; i < uptos.length; i++) { slabs.push({ upto: Number(uptos[i].value) || 0, rate: Number(rs[i].value) || 0 }); }
+        payload.tds_slabs = slabs;
+        fetch(cfg.settingsSaveUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (d && d.ok) { window.__RATES = d.rates; if (typeof toast === 'function') { toast('Statutory rates saved'); } rateSettingsClose(); if (typeof render === 'function') { render(); } }
+                else if (typeof toast === 'function') { toast('Save failed — admin only'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Save failed'); } });
+    };
+    // Bulk employee import (CSV) + template download, added to the top bar.
+    function wireImport(cfg) {
+        var bar = document.querySelector('.topbar-actions');
+        if (!bar || bar.__importWired) { return; }
+        var tpl = document.createElement('a');
+        tpl.href = cfg.empTemplateUrl; tpl.className = 'topbar-btn'; tpl.title = 'Download employee CSV template';
+        tpl.innerHTML = '<i class="fas fa-file-csv"></i>';
+        var btn = document.createElement('button');
+        btn.className = 'topbar-btn'; btn.title = 'Import employees (CSV)';
+        btn.innerHTML = '<i class="fas fa-file-import"></i>';
+        var inp = document.createElement('input');
+        inp.type = 'file'; inp.accept = '.csv,text/csv'; inp.style.display = 'none';
+        btn.onclick = function () { inp.click(); };
+        inp.onchange = function () {
+            if (!inp.files || !inp.files[0]) { return; }
+            var fd = new FormData(); fd.append('file', inp.files[0]);
+            fetch(cfg.empImportUrl, {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) { if (typeof toast === 'function') { toast('Imported ' + d.count + ' employees'); } reloadEmployees(cfg); }
+                else if (typeof toast === 'function') { toast('Import failed — check the CSV format'); }
+            }).catch(function () {});
+            inp.value = '';
+        };
+        bar.insertBefore(btn, bar.firstChild);
+        bar.insertBefore(tpl, bar.firstChild);
+        bar.appendChild(inp);
+        bar.__importWired = true;
+    }
+    function reloadEmployees(cfg) {
+        fetch(cfg.dataUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (live) {
+                if (live && Array.isArray(live.employees)) { DB.employees = live.employees; if (typeof render === 'function') { render(); } }
+            }).catch(function () {});
+    }
+    // Generic CSV sample + import for any list screen.
+    function csvParse(text) {
+        var lines = text.split(/\\r\\n|\\n|\\r/).filter(function (l) { return l.length > 0; });
+        return lines.map(function (line) {
+            var out = [], cur = '', q = false;
+            for (var i = 0; i < line.length; i++) {
+                var c = line[i];
+                if (q) { if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else { q = false; } } else { cur += c; } }
+                else { if (c === '"') { q = true; } else if (c === ',') { out.push(cur); cur = ''; } else { cur += c; } }
+            }
+            out.push(cur); return out;
+        });
+    }
+    function sampleVal(k) {
+        k = (k || '').toLowerCase();
+        if (k.indexOf('email') >= 0) { return 'sample@company.in'; }
+        if (k.indexOf('date') >= 0 || k === 'doj' || k === 'dob') { return '2026-01-01'; }
+        if (k.indexOf('mobile') >= 0 || k.indexOf('phone') >= 0 || k.indexOf('whatsapp') >= 0) { return '+919999999999'; }
+        if (k.indexOf('amount') >= 0 || k.indexOf('ctc') >= 0 || k.indexOf('salary') >= 0 || k.indexOf('rate') >= 0 || k.indexOf('price') >= 0 || k.indexOf('emi') >= 0) { return '10000'; }
+        if (k.indexOf('status') >= 0) { return 'Active'; }
+        if (k.indexOf('name') >= 0) { return 'Sample ' + k; }
+        return 'Sample';
+    }
+    window.sampleCsv = function (sid) {
+        if (sid === 'emp-list') { var a0 = document.createElement('a'); a0.href = cfg.empTemplateUrl; document.body.appendChild(a0); a0.click(); a0.remove(); return; }
+        var s = (typeof SCREENS !== 'undefined') && SCREENS[sid]; if (!s) { return; }
+        var keys = ((s.fields || s.cols || [])).map(function (f) { return f.k; }).filter(Boolean);
+        if (!keys.length) { if (typeof toast === 'function') { toast('No importable columns'); } return; }
+        var csv = keys.join(',') + '\\n' + keys.map(sampleVal).join(',') + '\\n' + keys.map(sampleVal).join(',') + '\\n';
+        var blob = new Blob([csv], { type: 'text/csv' });
+        var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = sid + '-import-template.csv';
+        document.body.appendChild(a); a.click(); a.remove();
+    };
+    window.importCsv = function (sid) {
+        var s = (typeof SCREENS !== 'undefined') && SCREENS[sid]; if (!s) { return; }
+        var inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.csv,text/csv';
+        inp.onchange = function () {
+            var f = inp.files && inp.files[0]; if (!f) { return; }
+            if (sid === 'emp-list') {
+                var fd = new FormData(); fd.append('file', f);
+                fetch(cfg.empImportUrl, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
+                    .then(function (r) { return r.json(); }).then(function (d) { if (d && d.ok) { if (typeof toast === 'function') { toast('Imported ' + d.count + ' employees'); } reloadEmployees(cfg); } }).catch(function () {});
+                return;
+            }
+            var reader = new FileReader();
+            reader.onload = function () {
+                var rows = csvParse(reader.result); if (rows.length < 2) { if (typeof toast === 'function') { toast('Empty CSV'); } return; }
+                var header = rows[0].map(function (h) { return h.trim(); });
+                var coll = s.type === 'lettered' ? 'letters' : s.coll;
+                if (!coll) { return; }
+                DB[coll] = DB[coll] || []; var n = 0;
+                for (var i = 1; i < rows.length; i++) {
+                    var r = rows[i]; if (r.join('').trim() === '') { continue; }
+                    var obj = { id: (typeof prefix === 'function' ? prefix(coll) : (coll.toUpperCase().slice(0, 3) + '-' + Date.now() + i)) };
+                    header.forEach(function (h, idx) { if (h) { obj[h] = (r[idx] !== undefined ? r[idx] : '').trim(); } });
+                    if (s.companyKey !== null && !obj.companyId) { obj.companyId = (typeof COMPANY !== 'undefined' && COMPANY !== 'ALL') ? COMPANY : (DB.companies[0] && DB.companies[0].id); }
+                    if (s.type === 'lettered') { obj.letterType = s.ltype; }
+                    DB[coll].unshift(obj); n++;
+                }
+                if (typeof persist === 'function') { persist(); }
+                if (typeof render === 'function') { render(); }
+                if (typeof toast === 'function') { toast('Imported ' + n + ' record(s)'); }
+            };
+            reader.readAsText(f);
+        };
+        inp.click();
+    };
+    function addLogout(cfg) {
+        if (!cfg.logoutUrl) { return; }
+        var bar = document.querySelector('.topbar-actions') || document.querySelector('.topbar');
+        if (bar) {
+            var f = document.createElement('form');
+            f.method = 'POST'; f.action = cfg.logoutUrl; f.style.cssText = 'display:inline;margin-left:6px';
+            f.innerHTML = '<input type="hidden" name="_token" value="' + cfg.csrf + '">' +
+                '<button type="submit" class="topbar-btn sp-keep" title="Sign out"><i class="fas fa-right-from-bracket"></i></button>';
+            bar.appendChild(f);
+        }
+        // The top-bar icon can be crowded off-screen, so also make the ALWAYS-visible
+        // sidebar profile card an account/logout menu — the natural place users look.
+        var card = document.querySelector('.sidebar-footer .user-card');
+        var foot = document.querySelector('.sidebar-footer');
+        if (card && foot) {
+            card.style.cursor = 'pointer';
+            card.setAttribute('title', 'Account menu');
+            card.onclick = function (ev) {
+                ev.stopPropagation();
+                var open = document.getElementById('sp-acct-menu');
+                if (open) { open.remove(); return; }
+                foot.style.position = 'relative';
+                var m = document.createElement('div');
+                m.id = 'sp-acct-menu';
+                m.style.cssText = 'position:absolute;left:12px;right:12px;bottom:62px;background:#fff;border:1px solid rgba(15,23,42,0.12);border-radius:10px;box-shadow:0 10px 28px rgba(15,23,42,0.22);overflow:hidden;z-index:9000';
+                m.innerHTML =
+                    '<div class="sp-acct-row" data-act="account" style="padding:11px 14px;font-size:13px;color:#0f172a;cursor:pointer;display:flex;align-items:center;gap:9px"><i class="fas fa-user-gear" style="width:15px;color:#64748b"></i> Account settings</div>' +
+                    '<div class="sp-acct-row" data-act="logout" style="padding:11px 14px;font-size:13px;color:#dc2626;cursor:pointer;display:flex;align-items:center;gap:9px;border-top:1px solid rgba(15,23,42,0.07)"><i class="fas fa-right-from-bracket" style="width:15px"></i> Sign out</div>';
+                foot.appendChild(m);
+                m.querySelectorAll('.sp-acct-row').forEach(function (r) {
+                    r.onclick = function (e) {
+                        e.stopPropagation();
+                        if (r.getAttribute('data-act') === 'account') {
+                            m.remove();
+                            try { if (typeof go === 'function') { go('account-settings', null); } } catch (er) {}
+                            return;
+                        }
+                        var lf = document.createElement('form');
+                        lf.method = 'POST'; lf.action = cfg.logoutUrl;
+                        lf.innerHTML = '<input type="hidden" name="_token" value="' + cfg.csrf + '">';
+                        document.body.appendChild(lf); lf.submit();
+                    };
+                });
+                var closer = function () { var x = document.getElementById('sp-acct-menu'); if (x) { x.remove(); } document.removeEventListener('click', closer); };
+                setTimeout(function () { document.addEventListener('click', closer); }, 0);
+            };
+        }
+    }
+    // Topbar "Account" button → Account Settings (change password). Kept in the
+    // declutter allow-list (sp-keep) like logout/punch so it's never hidden.
+    function addAccountMenu(cfg) {
+        var bar = document.querySelector('.topbar-actions') || document.querySelector('.topbar');
+        if (!bar || document.getElementById('sp-account-btn')) { return; }
+        var b = document.createElement('button');
+        b.id = 'sp-account-btn';
+        b.className = 'topbar-btn sp-keep';
+        b.title = 'Account settings (change password)';
+        b.innerHTML = '<i class="fas fa-user-gear"></i>';
+        b.onclick = function () { try { if (typeof go === 'function') { go('account-settings', null); } } catch (e) {} };
+        bar.appendChild(b);
+    }
+    if (document.readyState !== 'loading') { boot(); }
+    else { document.addEventListener('DOMContentLoaded', boot); }
+})();
+</script>
+HTML;
+
+        // Inject before the LAST </body> (the real document end), so we never
+        // land inside a JS string that happens to contain "</body>".
+        if (($b = strrpos($html, '</body>')) !== false) {
+            $html = substr($html, 0, $b).$boot.substr($html, $b);
+        } else {
+            $html .= $boot;
+        }
+
+        // Never cache the app shell. The boot JS is regenerated on every deploy
+        // (and carries per-login cfg/perms/plan data), so a stale cached copy can
+        // show an empty/old sidebar until a hard refresh. These headers force the
+        // browser to always fetch the current page.
+        return response($html)
+            ->header('Content-Type', 'text/html; charset=UTF-8')
+            ->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+            ->header('Pragma', 'no-cache')
+            ->header('Expires', '0');
+    }
+}

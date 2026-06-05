@@ -1,0 +1,315 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
+
+/**
+ * Per-tenant / per-company configuration store for two features:
+ *   • SMTP / email settings — now PER COMPANY (each group company has its own
+ *     mail server), with a tenant-wide default fallback when a company has none.
+ *   • Company-wise branding (display name, brand colour, logo URL, tagline).
+ *
+ * Both live in a self-creating `app_settings` table (tenant_id, ckey, value
+ * JSON) as maps keyed by company id. The special company key '0' holds the
+ * tenant-wide default SMTP. Static resolvers (brandFor / mailConfigFor) are
+ * reused by AppDataController + the PDF controllers so branding and the right
+ * mail server apply wherever relevant.
+ */
+class ConfigController extends Controller
+{
+    private static function ensureTable(): void
+    {
+        if (Schema::hasTable('app_settings')) {
+            return;
+        }
+        Schema::create('app_settings', function (Blueprint $t) {
+            $t->id();
+            $t->unsignedBigInteger('tenant_id')->nullable()->index();
+            $t->string('ckey')->index();
+            $t->longText('value')->nullable();
+            $t->timestamps();
+            $t->unique(['tenant_id', 'ckey']);
+        });
+    }
+
+    private static function get(?int $tenantId, string $key): array
+    {
+        self::ensureTable();
+        $row = DB::table('app_settings')->where('tenant_id', $tenantId ?? 0)->where('ckey', $key)->value('value');
+
+        return $row ? (json_decode($row, true) ?: []) : [];
+    }
+
+    private static function put(?int $tenantId, string $key, array $value): void
+    {
+        self::ensureTable();
+        DB::table('app_settings')->updateOrInsert(
+            ['tenant_id' => $tenantId ?? 0, 'ckey' => $key],
+            ['value' => json_encode($value), 'updated_at' => now(), 'created_at' => now()]
+        );
+    }
+
+    private function canManage(Request $request): bool
+    {
+        return $request->user()->hasAnyRole(['super_admin', 'admin']);
+    }
+
+    // ================================================================ SMTP ===
+    // Stored under ckey 'mail' as a map: { "<companyId>": {...}, "0": {tenant default} }
+
+    public static function mailDefaults(): array
+    {
+        return [
+            'host' => '', 'port' => 587, 'username' => '', 'password' => '',
+            'encryption' => 'tls', 'from_address' => '', 'from_name' => 'SmartPRS',
+        ];
+    }
+
+    /** Effective mail config for a company: its own settings, else tenant default. */
+    public static function mailConfigFor(?int $tenantId, $companyId): array
+    {
+        $map = self::get($tenantId, 'mail');
+        $own = $map[(string) $companyId] ?? [];
+        if (! empty($own['host'])) {
+            return array_merge(self::mailDefaults(), $own);
+        }
+        $default = $map['0'] ?? [];
+
+        return array_merge(self::mailDefaults(), $default);
+    }
+
+    public function mailIndex(Request $request)
+    {
+        $tenantId = $request->user()->tenant_id;
+        $map = self::get($tenantId, 'mail');
+        // Super admin (tenant NULL) manages only the PLATFORM mailbox (the '0'
+        // default below) — the sender used for invoices, payment confirmations
+        // and login-credential emails when a tenant has no SMTP of its own.
+        $companies = $tenantId === null
+            ? collect([])
+            : DB::table('companies')->where('tenant_id', $tenantId)
+                ->whereNull('deleted_at')->orderBy('name')->get(['id', 'name']);
+
+        $mask = function (array $m) {
+            $m = array_merge(self::mailDefaults(), $m);
+            $m['hasPassword'] = ! empty($m['password']);
+            $m['password'] = '';
+
+            return $m;
+        };
+
+        $rows = $companies->map(fn ($c) => [
+            'id' => (string) $c->id,
+            'name' => $c->name,
+            'mail' => $mask($map[(string) $c->id] ?? []),
+        ])->values();
+
+        return response()->json([
+            'companies' => $rows,
+            'default' => $mask($map['0'] ?? []),   // tenant-wide fallback
+            'canManage' => $this->canManage($request),
+        ]);
+    }
+
+    public function mailSave(Request $request)
+    {
+        abort_unless($this->canManage($request), 403);
+        $tenantId = $request->user()->tenant_id;
+        $v = $request->validate([
+            'company_id' => ['required', 'string'],   // '0' = tenant default
+            'host' => ['nullable', 'string', 'max:191'],
+            'port' => ['nullable', 'integer', 'min:1', 'max:65535'],
+            'username' => ['nullable', 'string', 'max:191'],
+            'password' => ['nullable', 'string', 'max:191'],
+            'encryption' => ['nullable', 'in:tls,ssl,none'],
+            'from_address' => ['nullable', 'email', 'max:191'],
+            'from_name' => ['nullable', 'string', 'max:191'],
+        ]);
+        $cid = (string) $v['company_id'];
+        $map = self::get($tenantId, 'mail');
+        $existing = array_merge(self::mailDefaults(), $map[$cid] ?? []);
+        unset($v['company_id']);
+        $merged = array_merge($existing, $v);
+        if (empty($v['password'])) {        // keep stored password if field left blank
+            $merged['password'] = $existing['password'];
+        }
+        $merged['port'] = (int) ($merged['port'] ?: 587);
+        $map[$cid] = $merged;
+        self::put($tenantId, 'mail', $map);
+
+        return response()->json(['ok' => true]);
+    }
+
+    /** Recent outbound mail (audit) for the Mail Log screen. */
+    public function mailLog(Request $request)
+    {
+        try {
+            abort_unless($this->canManage($request), 403);
+            \App\Services\MailService::ensureTable();
+            $tenantId = $request->user()->tenant_id;
+            $rows = DB::table('mail_log')
+                ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+                ->orderByDesc('id')->limit(200)
+                ->get(['id', 'kind', 'recipient', 'subject', 'status', 'error', 'sent_at', 'created_at']);
+            $counts = ['sent' => 0, 'failed' => 0, 'queued' => 0, 'skipped' => 0];
+            foreach ($rows as $r) {
+                if (isset($counts[$r->status])) {
+                    $counts[$r->status]++;
+                }
+            }
+
+            return response()->json([
+                'rows' => $rows->map(fn ($r) => [
+                    'id' => $r->id,
+                    'kind' => $r->kind,
+                    'to' => $r->recipient,
+                    'subject' => $r->subject,
+                    'status' => $r->status,
+                    'error' => $r->error,
+                    'at' => \Illuminate\Support\Carbon::parse($r->sent_at ?? $r->created_at)->format('d M Y H:i'),
+                ])->values(),
+                'counts' => $counts,
+                'canManage' => true,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['rows' => [], 'error' => $e->getMessage()]);
+        }
+    }
+
+    public function mailTest(Request $request)
+    {
+        abort_unless($this->canManage($request), 403);
+        $tenantId = $request->user()->tenant_id;
+        $v = $request->validate([
+            'to' => ['required', 'email'],
+            'company_id' => ['required', 'string'],
+        ]);
+        $m = self::mailConfigFor($tenantId, $v['company_id']);
+        if (empty($m['host']) || empty($m['from_address'])) {
+            return response()->json(['ok' => false, 'error' => 'No SMTP for this company (and no tenant default). Set host + From address, Save, then test.'], 422);
+        }
+
+        config([
+            'mail.default' => 'smtp',
+            'mail.mailers.smtp.host' => $m['host'],
+            'mail.mailers.smtp.port' => (int) $m['port'],
+            'mail.mailers.smtp.username' => $m['username'] ?: null,
+            'mail.mailers.smtp.password' => $m['password'] ?: null,
+            'mail.mailers.smtp.encryption' => $m['encryption'] === 'none' ? null : $m['encryption'],
+            'mail.from.address' => $m['from_address'],
+            'mail.from.name' => $m['from_name'] ?: 'SmartPRS',
+        ]);
+
+        try {
+            Mail::raw('This is a test email from SmartPRS. Your SMTP settings are working.', function ($msg) use ($v) {
+                $msg->to($v['to'])->subject('SmartPRS SMTP test');
+            });
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'error' => 'Send failed: '.$e->getMessage()], 422);
+        }
+
+        return response()->json(['ok' => true, 'message' => 'Test email sent to '.$v['to']]);
+    }
+
+    // ============================================================ branding ===
+    // Stored under ckey 'branding' as a map: { "<companyId>": {display_name,color,logo,tagline} }
+
+    /** Effective branding for one company (saved overrides → company row → defaults). */
+    public static function brandFor(?int $tenantId, $companyId): array
+    {
+        $map = self::get($tenantId, 'branding');
+        $c = DB::table('companies')->where('id', $companyId)->first();
+        $saved = $map[(string) $companyId] ?? [];
+
+        return [
+            'display_name' => $saved['display_name'] ?? ($c->name ?? 'SmartPRS'),
+            'color' => $saved['color'] ?? ($c->color ?? '#f97316'),
+            'logo' => $saved['logo'] ?? ($c->logo_path ?? ''),
+            'tagline' => $saved['tagline'] ?? '',
+            'name' => $c->name ?? 'SmartPRS',
+        ];
+    }
+
+    /** Whole branding map (companyId → brand) for the frontend to switch live. */
+    public static function brandingMap(?int $tenantId): array
+    {
+        $map = self::get($tenantId, 'branding');
+        $companies = DB::table('companies')
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->whereNull('deleted_at')->get(['id', 'name', 'color', 'logo_path']);
+        $out = [];
+        foreach ($companies as $c) {
+            $saved = $map[(string) $c->id] ?? [];
+            $out[(string) $c->id] = [
+                'display_name' => $saved['display_name'] ?? $c->name,
+                'color' => $saved['color'] ?? ($c->color ?? '#f97316'),
+                'logo' => $saved['logo'] ?? ($c->logo_path ?? ''),
+                'tagline' => $saved['tagline'] ?? '',
+            ];
+        }
+
+        return $out;
+    }
+
+    public function brandingIndex(Request $request)
+    {
+        $tenantId = $request->user()->tenant_id;
+        $map = self::get($tenantId, 'branding');
+        $companies = DB::table('companies')
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->whereNull('deleted_at')->orderBy('name')->get(['id', 'name', 'logo_path', 'color']);
+        $out = $companies->map(fn ($c) => [
+            'id' => (string) $c->id,
+            'name' => $c->name,
+            'brand' => $map[(string) $c->id] ?? [
+                'display_name' => $c->name,
+                'color' => $c->color ?: '#f97316',
+                'logo' => $c->logo_path ?: '',
+                'tagline' => '',
+            ],
+        ])->values();
+
+        return response()->json([
+            'companies' => $out,
+            'canManage' => $this->canManage($request),
+        ]);
+    }
+
+    public function brandingSave(Request $request)
+    {
+        abort_unless($this->canManage($request), 403);
+        $tenantId = $request->user()->tenant_id;
+        $v = $request->validate([
+            'company_id' => ['required'],
+            'display_name' => ['nullable', 'string', 'max:120'],
+            'color' => ['nullable', 'string', 'max:20'],
+            'logo' => ['nullable', 'string', 'max:1000'],
+            'tagline' => ['nullable', 'string', 'max:200'],
+        ]);
+        $cid = (string) $v['company_id'];
+        $map = self::get($tenantId, 'branding');
+        $map[$cid] = [
+            'display_name' => $v['display_name'] ?? '',
+            'color' => $v['color'] ?: '#f97316',
+            'logo' => $v['logo'] ?? '',
+            'tagline' => $v['tagline'] ?? '',
+        ];
+        self::put($tenantId, 'branding', $map);
+
+        // Reflect colour + logo onto the company record so PDFs/landing can use them.
+        $companyQ = DB::table('companies')->where('id', $cid)
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId));
+        $companyQ->update([
+            'color' => $map[$cid]['color'],
+            'logo_path' => $map[$cid]['logo'] ?: DB::raw('logo_path'),
+            'updated_at' => now(),
+        ]);
+
+        return response()->json(['ok' => true, 'brand' => $map[$cid]]);
+    }
+}

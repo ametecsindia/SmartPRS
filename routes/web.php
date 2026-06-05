@@ -1,0 +1,297 @@
+<?php
+
+use App\Http\Controllers\AppController;
+use App\Http\Controllers\AttendanceController;
+use App\Http\Controllers\AuthController;
+use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\DepartmentController;
+use App\Http\Controllers\DeviceController;
+use App\Http\Controllers\EmployeeController;
+use App\Http\Controllers\LeaveController;
+use App\Http\Controllers\LoanController;
+use App\Http\Controllers\LandingController;
+use App\Http\Controllers\PayslipController;
+use App\Http\Controllers\SalaryRunController;
+use App\Http\Controllers\StaffController;
+use App\Http\Controllers\TenantController;
+use Illuminate\Support\Facades\Route;
+
+// Public marketing landing page.
+Route::get('/', [LandingController::class, 'show'])->name('landing');
+
+// Public offer-acceptance page (candidate, no login — secured by the token).
+Route::get('/offer/{token}', [App\Http\Controllers\OfferAcceptController::class, 'show'])->name('offer.show');
+Route::post('/offer/{token}/accept', [App\Http\Controllers\OfferAcceptController::class, 'accept'])->name('offer.accept');
+
+// Public off-roll agent email verification (no login — secured by the token).
+Route::get('/agent/verify/{token}', [App\Http\Controllers\OffrollAgentController::class, 'verifyEmail'])->name('agent.verify');
+
+// Public off-roll agent LIVE EARNINGS page (no login — token-secured, read-only).
+Route::get('/agent/earnings/{token}', [App\Http\Controllers\OffrollAgentController::class, 'publicEarnings'])->name('agent.earnings');
+
+// Public transfer-order acknowledgement (employee, no login — token-secured).
+Route::get('/transfer/accept/{token}', [App\Http\Controllers\TransferController::class, 'accept'])->name('transfer.accept');
+
+// PUBLIC self-serve signup + Razorpay checkout (amounts computed server-side;
+// payment verified by HMAC signature; provisioning idempotent per signup).
+Route::get('/signup', [App\Http\Controllers\SignupController::class, 'show'])->name('signup.show');
+Route::post('/signup/order', [App\Http\Controllers\SignupController::class, 'createOrder'])->name('signup.order');
+Route::post('/signup/complete', [App\Http\Controllers\SignupController::class, 'complete'])->name('signup.complete');
+
+// Razorpay payment webhook (public, server-to-server). CSRF-exempt at the route
+// level — the source tree has no bootstrap/app.php to register exceptions in.
+// Security is the X-Razorpay-Signature HMAC check inside the controller.
+Route::post('/webhooks/razorpay', [App\Http\Controllers\BillingController::class, 'razorpayWebhook'])
+    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+    ->name('webhooks.razorpay');
+
+Route::middleware('guest')->group(function () {
+    Route::get('/login', [AuthController::class, 'show'])->name('login');
+    Route::post('/login', [AuthController::class, 'login']);
+    // Dedicated platform Super Admin login portal.
+    Route::get('/super', [AuthController::class, 'showSuper'])->name('login.super');
+    // Branded per-company login portal: /c/{company-slug}
+    Route::get('/c/{slug}', [AuthController::class, 'showBranded'])->name('login.branded');
+    // Forgot / reset password (public).
+    Route::get('/forgot-password', [AuthController::class, 'showForgot'])->name('password.request');
+    Route::post('/forgot-password', [AuthController::class, 'sendReset'])->name('password.email')->middleware('throttle:6,1');
+    Route::get('/reset-password/{token}', [AuthController::class, 'showReset'])->name('password.reset');
+    Route::post('/reset-password', [AuthController::class, 'doReset'])->name('password.update')->middleware('throttle:6,1');
+});
+
+Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
+
+Route::middleware(['auth', App\Http\Middleware\EnsureSubscriptionActive::class])->group(function () {
+    // Super-admin admin panel (landing CMS + platform staff).
+    Route::get('/admin/landing', [LandingController::class, 'editor'])->name('landing.editor');
+    Route::post('/admin/landing', [LandingController::class, 'save'])->name('landing.save');
+    Route::get('/admin/staff', [StaffController::class, 'index'])->name('admin.staff');
+    Route::post('/admin/staff', [StaffController::class, 'store'])->name('admin.staff.store');
+    Route::put('/admin/staff/{user}', [StaffController::class, 'update'])->name('admin.staff.update');
+    Route::delete('/admin/staff/{user}', [StaffController::class, 'destroy'])->name('admin.staff.destroy');
+
+    // Full prototype engine (113 screens) — the primary UI.
+    Route::get('/app/data', [App\Http\Controllers\AppDataController::class, 'bootstrap'])->name('app.data');
+    Route::post('/app/employees', [App\Http\Controllers\AppDataController::class, 'storeEmployee'])->name('app.employees.store');
+    Route::post('/app/employees/import', [App\Http\Controllers\AppDataController::class, 'importEmployees'])->name('app.employees.import');
+    Route::post('/app/employees/bulk-delete', [App\Http\Controllers\AppDataController::class, 'bulkDeleteEmployees'])->name('app.employees.bulkdel');
+    Route::get('/app/employees/template', [App\Http\Controllers\AppDataController::class, 'employeeTemplate'])->name('app.employees.template');
+    Route::get('/app/payslip/{code}/pdf', [App\Http\Controllers\AppDataController::class, 'payslipPdf'])->name('app.payslip.pdf');
+    Route::get('/app/statutory/{type}/pdf', [App\Http\Controllers\AppDataController::class, 'statutoryPdf'])->name('app.statutory.pdf');
+    Route::get('/app/kb', [App\Http\Controllers\KbController::class, 'index'])->name('app.kb');
+    Route::post('/app/kb', [App\Http\Controllers\KbController::class, 'store'])->name('app.kb.store');
+    Route::put('/app/kb/{id}', [App\Http\Controllers\KbController::class, 'update'])->name('app.kb.update');
+    Route::delete('/app/kb/{id}', [App\Http\Controllers\KbController::class, 'destroy'])->name('app.kb.destroy');
+    Route::post('/app/kb/reorder', [App\Http\Controllers\KbController::class, 'reorder'])->name('app.kb.reorder');
+    // Code of Conduct — read + acknowledge.
+    Route::get('/app/code-of-conduct', [App\Http\Controllers\CodeOfConductController::class, 'show'])->name('app.coc');
+    Route::post('/app/code-of-conduct/ack', [App\Http\Controllers\CodeOfConductController::class, 'acknowledge'])->name('app.coc.ack');
+    // Commission / Incentive bulk calculation engine.
+    Route::get('/app/incentive/template', [App\Http\Controllers\IncentiveController::class, 'template'])->name('app.incentive.template');
+    Route::post('/app/incentive/calculate', [App\Http\Controllers\IncentiveController::class, 'calculate'])->name('app.incentive.calc');
+    Route::post('/app/incentive/commit', [App\Http\Controllers\IncentiveController::class, 'commit'])->name('app.incentive.commit');
+    // Financial Year (set active FY + per-FY summary).
+    Route::get('/app/fin-year', [App\Http\Controllers\FinYearController::class, 'index'])->name('app.finyear');
+    Route::post('/app/fin-year/set', [App\Http\Controllers\FinYearController::class, 'setActive'])->name('app.finyear.set');
+    // My Subscription (tenant admin): own plan/expiry/invoices + self-serve renew or upgrade via Razorpay.
+    Route::get('/app/my-subscription', [App\Http\Controllers\TenantBillingController::class, 'index'])->name('app.mysub');
+    Route::post('/app/my-subscription/quote', [App\Http\Controllers\TenantBillingController::class, 'quote'])->name('app.mysub.quote');
+    Route::post('/app/my-subscription/renew/order', [App\Http\Controllers\TenantBillingController::class, 'renewOrder'])->name('app.mysub.renew.order');
+    Route::post('/app/my-subscription/renew/complete', [App\Http\Controllers\TenantBillingController::class, 'renewComplete'])->name('app.mysub.renew.complete');
+    Route::get('/app/my-subscription/invoice/{id}/pdf', [App\Http\Controllers\TenantBillingController::class, 'invoicePdf'])->whereNumber('id')->name('app.mysub.invoice.pdf');
+    // Statutory rate settings (editable PF/ESI/PT/TDS/194H/no-PAN rates).
+    Route::get('/app/settings', [App\Http\Controllers\SettingsController::class, 'index'])->name('app.settings');
+    Route::post('/app/settings', [App\Http\Controllers\SettingsController::class, 'save'])->name('app.settings.save');
+    // Bulk attendance upload with approval gate (rev 82).
+    Route::get('/app/attendance-bulk', [App\Http\Controllers\AttendanceBulkController::class, 'index'])->name('app.attbulk');
+    Route::get('/app/attendance-bulk/template', [App\Http\Controllers\AttendanceBulkController::class, 'template'])->name('app.attbulk.template');
+    Route::post('/app/attendance-bulk/upload', [App\Http\Controllers\AttendanceBulkController::class, 'upload'])->name('app.attbulk.upload');
+    Route::post('/app/attendance-bulk/{batch}/decide', [App\Http\Controllers\AttendanceBulkController::class, 'decide'])->name('app.attbulk.decide');
+    Route::post('/app/attendance-bulk/row/{id}/delete', [App\Http\Controllers\AttendanceBulkController::class, 'deleteRow'])->whereNumber('id')->name('app.attbulk.row.del');
+    Route::get('/app/attendance-report', [App\Http\Controllers\AttendanceReportController::class, 'report'])->name('app.attreport');
+    Route::get('/app/attendance-report/pdf', [App\Http\Controllers\AttendanceReportController::class, 'reportPdf'])->name('app.attreport.pdf');
+    // In-app self punch (web / mobile / desktop) with optional GPS.
+    Route::get('/app/attendance/punch-status', [App\Http\Controllers\AttendanceReportController::class, 'punchStatus'])->name('app.punch.status');
+    Route::post('/app/attendance/punch', [App\Http\Controllers\AttendanceReportController::class, 'punch'])->name('app.punch');
+    // SMTP / email settings (+ send test) and company-wise branding.
+    Route::get('/app/mail-settings', [App\Http\Controllers\ConfigController::class, 'mailIndex'])->name('app.mail');
+    Route::post('/app/mail-settings', [App\Http\Controllers\ConfigController::class, 'mailSave'])->name('app.mail.save');
+    Route::post('/app/mail-settings/test', [App\Http\Controllers\ConfigController::class, 'mailTest'])->name('app.mail.test');
+    Route::get('/app/mail-log', [App\Http\Controllers\ConfigController::class, 'mailLog'])->name('app.mail.log');
+    // Field-force compliance: DRA/PCC expiry alerts (screen + manual send).
+    Route::get('/app/compliance-alerts', [App\Http\Controllers\ComplianceController::class, 'alerts'])->name('app.compliance.alerts');
+    Route::post('/app/compliance-alerts/run', [App\Http\Controllers\ComplianceController::class, 'runNow'])->name('app.compliance.run');
+    // Company user logins (Admin + HR) + self change-password.
+    Route::get('/app/users', [App\Http\Controllers\UserController::class, 'list'])->name('app.users');
+    Route::post('/app/users', [App\Http\Controllers\UserController::class, 'save'])->name('app.users.save');
+    Route::post('/app/users/{id}/invite', [App\Http\Controllers\UserController::class, 'invite'])->name('app.users.invite');
+    Route::post('/app/users/{id}/status', [App\Http\Controllers\UserController::class, 'setStatus'])->name('app.users.status');
+    Route::post('/app/users/{id}/password', [App\Http\Controllers\UserController::class, 'setPassword'])->name('app.users.password');
+    Route::post('/app/change-password', [App\Http\Controllers\AuthController::class, 'changePassword'])->name('app.change.password');
+    // SaaS Platform (super admin): tenant provisioning + plans.
+    Route::get('/app/saas/tenants', [App\Http\Controllers\SaasController::class, 'tenants'])->name('app.saas.tenants');
+    Route::post('/app/saas/tenants', [App\Http\Controllers\SaasController::class, 'provisionTenant'])->name('app.saas.tenants.create');
+    Route::post('/app/saas/tenants/{id}', [App\Http\Controllers\SaasController::class, 'updateTenant'])->name('app.saas.tenants.update');
+    Route::post('/app/saas/tenants/{id}/status', [App\Http\Controllers\SaasController::class, 'tenantStatus'])->name('app.saas.tenants.status');
+    Route::post('/app/saas/tenants/{id}/plan', [App\Http\Controllers\SaasController::class, 'tenantPlan'])->name('app.saas.tenants.plan');
+    Route::get('/app/saas/plans', [App\Http\Controllers\SaasController::class, 'plans'])->name('app.saas.plans');
+    Route::post('/app/saas/plans', [App\Http\Controllers\SaasController::class, 'savePlan'])->name('app.saas.plans.save');
+    // SaaS billing (super admin): subscriptions, invoices, payments, gateways + Razorpay test mode.
+    Route::get('/app/billing/subscriptions', [App\Http\Controllers\BillingController::class, 'subscriptions'])->name('app.billing.subs');
+    Route::post('/app/billing/subscriptions', [App\Http\Controllers\BillingController::class, 'saveSubscription'])->name('app.billing.subs.save');
+    Route::get('/app/billing/invoices', [App\Http\Controllers\BillingController::class, 'invoices'])->name('app.billing.invoices');
+    Route::post('/app/billing/invoices/generate', [App\Http\Controllers\BillingController::class, 'generateInvoice'])->name('app.billing.invoices.gen');
+    Route::post('/app/billing/invoices/pay', [App\Http\Controllers\BillingController::class, 'payInvoice'])->name('app.billing.invoices.pay');
+    Route::get('/app/billing/payments', [App\Http\Controllers\BillingController::class, 'payments'])->name('app.billing.payments');
+    Route::get('/app/billing/gateways', [App\Http\Controllers\BillingController::class, 'gateways'])->name('app.billing.gateways');
+    Route::post('/app/billing/gateways', [App\Http\Controllers\BillingController::class, 'saveGateway'])->name('app.billing.gateways.save');
+    Route::post('/app/billing/razorpay/order', [App\Http\Controllers\BillingController::class, 'razorpayOrder'])->name('app.billing.rzp.order');
+    Route::post('/app/billing/razorpay/verify', [App\Http\Controllers\BillingController::class, 'razorpayVerify'])->name('app.billing.rzp.verify');
+    Route::get('/app/billing/invoices/{id}/pdf', [App\Http\Controllers\BillingController::class, 'invoicePdf'])->whereNumber('id')->name('app.billing.invoices.pdf');
+    Route::post('/app/billing/invoices/email', [App\Http\Controllers\BillingController::class, 'emailInvoiceNow'])->name('app.billing.invoices.email');
+    Route::get('/app/branding', [App\Http\Controllers\ConfigController::class, 'brandingIndex'])->name('app.branding');
+    Route::post('/app/branding', [App\Http\Controllers\ConfigController::class, 'brandingSave'])->name('app.branding.save');
+    Route::get('/app/attendance-report/logs/{code}/{date}', [App\Http\Controllers\AttendanceReportController::class, 'logs'])->name('app.attreport.logs');
+    Route::post('/app/attendance-report/rating', [App\Http\Controllers\AttendanceReportController::class, 'saveRating'])->name('app.attreport.rating');
+    Route::get('/app/state', [App\Http\Controllers\AppStateController::class, 'show'])->name('app.state');
+    Route::post('/app/state', [App\Http\Controllers\AppStateController::class, 'save'])->name('app.state.save');
+    // Leave — real DB-backed with hierarchy approval (apply / approve-reject / inbox).
+    Route::get('/app/leaves', [LeaveController::class, 'listLeaves'])->name('app.leaves');
+    Route::get('/app/leaves/balances/{employee}', [LeaveController::class, 'balances'])->name('app.leaves.balances');
+    Route::post('/app/leaves', [LeaveController::class, 'apply'])->name('app.leaves.apply');
+    Route::post('/app/leaves/{id}/decide', [LeaveController::class, 'decide'])->name('app.leaves.decide');
+    // Generic request + approval engine (expenses/advances/loans/commissions/etc).
+    Route::get('/app/requests/{module}', [App\Http\Controllers\RequestController::class, 'list'])->name('app.requests');
+    // rev 83 (Ejaz): commission bulk upload (Excel/CSV parsed client-side) —
+    // every row lands as PENDING with the employee's own hierarchy approver.
+    Route::post('/app/requests/commissions/bulk', [App\Http\Controllers\RequestController::class, 'bulkCommissions'])->name('app.requests.comm.bulk');
+    // rev 84 (Ejaz, USP): edit-after-approval (diff-logged), manual lock, history trail.
+    Route::post('/app/requests/commissions/{id}/update', [App\Http\Controllers\RequestController::class, 'updateCommission'])->name('app.requests.comm.update');
+    Route::post('/app/requests/commissions/{id}/lock', [App\Http\Controllers\RequestController::class, 'lockCommission'])->name('app.requests.comm.lock');
+    Route::get('/app/requests/commissions/{id}/history', [App\Http\Controllers\RequestController::class, 'commissionHistory'])->name('app.requests.comm.history');
+    // rev 85 (Ejaz): disbursement — partial payments + per-employee ledger.
+    Route::get('/app/requests/commissions/ledger', [App\Http\Controllers\RequestController::class, 'commissionLedger'])->name('app.requests.comm.ledger');
+    Route::post('/app/requests/commissions/{id}/pay', [App\Http\Controllers\RequestController::class, 'payCommission'])->name('app.requests.comm.pay');
+    Route::post('/app/requests/commissions/clean-orphans', [App\Http\Controllers\RequestController::class, 'cleanOrphanCommissions'])->name('app.requests.comm.orphans');
+    // rev 87 (Ejaz): salary disbursements (partial, per employee+month) for the ledger.
+    Route::post('/app/requests/salary-pay', [App\Http\Controllers\RequestController::class, 'salaryPay'])->name('app.requests.salary.pay');
+    Route::post('/app/requests/{module}', [App\Http\Controllers\RequestController::class, 'apply'])->name('app.requests.apply');
+    Route::post('/app/requests/{module}/{id}/decide', [App\Http\Controllers\RequestController::class, 'decide'])->name('app.requests.decide');
+    // rev 83b (Ejaz): increment letter PDF + HR's one-click manual application.
+    Route::get('/app/increments/{id}/letter', [App\Http\Controllers\IncrementController::class, 'letter'])->name('app.increments.letter');
+    Route::post('/app/increments/{id}/apply', [App\Http\Controllers\IncrementController::class, 'applyCtc'])->name('app.increments.apply');
+    // rev 84b (Ejaz): view/edit/delete — delete only BEFORE approval; edit until applied.
+    Route::post('/app/increments/{id}/update', [App\Http\Controllers\IncrementController::class, 'update'])->name('app.increments.update');
+    Route::post('/app/increments/{id}/delete', [App\Http\Controllers\IncrementController::class, 'destroy'])->name('app.increments.delete');
+    // Unified Approvals Inbox (leaves + all request modules).
+    Route::get('/app/approvals', [App\Http\Controllers\RequestController::class, 'inbox'])->name('app.approvals');
+    // Transfer Order letter (PDF) — managers or the transferred employee.
+    Route::get('/app/transfers/{id}/letter', [App\Http\Controllers\TransferController::class, 'letter'])->whereNumber('id')->name('app.transfers.letter');
+    // Salary run approval — two-step (HR → Finance), individual + bulk.
+    Route::get('/app/salary-runs', [App\Http\Controllers\SalaryApprovalController::class, 'listRuns'])->name('app.salaryruns');
+    Route::post('/app/salary-runs/{id}/decide', [App\Http\Controllers\SalaryApprovalController::class, 'decide'])->name('app.salaryruns.decide');
+    Route::post('/app/salary-runs/bulk', [App\Http\Controllers\SalaryApprovalController::class, 'bulk'])->name('app.salaryruns.bulk');
+    Route::get('/app/salary-runs/{id}/sheet', [App\Http\Controllers\SalaryApprovalController::class, 'sheet'])->name('app.salaryruns.sheet');
+    // Bank disbursement (NEFT) file for a run: preview (JSON) + download (CSV).
+    Route::get('/app/salary-runs/{id}/bank-file/preview', [App\Http\Controllers\SalaryApprovalController::class, 'bankFilePreview'])->name('app.salaryruns.bankfile.preview');
+    Route::get('/app/salary-runs/{id}/bank-file', [App\Http\Controllers\SalaryApprovalController::class, 'bankFile'])->name('app.salaryruns.bankfile');
+    // Per-employee salary line lifecycle: hold/review/approve/disburse + employee e-sign acknowledgement.
+    Route::post('/app/salary-lines/{id}/decide', [App\Http\Controllers\SalaryApprovalController::class, 'lineDecide'])->name('app.salarylines.decide');
+    Route::post('/app/salary-lines/bulk', [App\Http\Controllers\SalaryApprovalController::class, 'lineBulk'])->name('app.salarylines.bulk');
+    Route::post('/app/salary-lines/{id}/acknowledge', [App\Http\Controllers\SalaryApprovalController::class, 'acknowledge'])->name('app.salarylines.ack');
+    // Signed salary voucher PDF (with e-sign acknowledgement block).
+    Route::get('/app/salary-lines/{id}/voucher', [App\Http\Controllers\SalaryApprovalController::class, 'voucher'])->name('app.salarylines.voucher');
+    // Generate Payroll — create a real draft run + payslips for a month (front of the flow).
+    Route::get('/app/payroll/preview', [App\Http\Controllers\PayrollGenController::class, 'preview'])->name('app.payroll.preview');
+    // LIVE SALARY — one employee's running-month earnings till today (strict hierarchy).
+    Route::get('/app/live-salary/data', [App\Http\Controllers\PayrollGenController::class, 'liveSalary'])->name('app.livesalary');
+    Route::post('/app/payroll/generate', [App\Http\Controllers\PayrollGenController::class, 'generate'])->name('app.payroll.generate');
+    // Reports — preview + CSV export over existing data (employees/payslips/leaves/attendance).
+    Route::get('/app/reports/preview', [App\Http\Controllers\ReportController::class, 'preview'])->name('app.reports.preview');
+    Route::get('/app/reports/export', [App\Http\Controllers\ReportController::class, 'export'])->name('app.reports.export');
+    // Computed statutory reports (gratuity / professional tax).
+    Route::get('/app/statutory-report/{type}', [App\Http\Controllers\StatutoryController::class, 'report'])->name('app.statutory.report');
+    // HR letter PDF (merge a template with the employee's data) + email it.
+    Route::get('/app/letters/{id}/pdf', [App\Http\Controllers\LetterController::class, 'pdf'])->name('app.letters.pdf');
+    Route::post('/app/letters/{id}/email', [App\Http\Controllers\LetterController::class, 'email'])->name('app.letters.email');
+    Route::post('/app/letters/{id}/accept-link', [App\Http\Controllers\LetterController::class, 'sendAcceptLink'])->name('app.letters.acceptlink');
+    // Computed read-only screens (live-salary / points-scores / test-reports / attrition / activity-logs).
+    Route::get('/app/computed/{type}', [App\Http\Controllers\ComputedController::class, 'report'])->name('app.computed');
+    // Employee ID card PDF + photo upload.
+    Route::get('/app/idcard/{code}/pdf', [App\Http\Controllers\LetterController::class, 'idcard'])->name('app.idcard.pdf');
+    Route::post('/app/idcard/{code}/photo', [App\Http\Controllers\LetterController::class, 'uploadPhoto'])->name('app.idcard.photo');
+    Route::post('/app/my-photo', [App\Http\Controllers\LetterController::class, 'uploadMyPhoto'])->name('app.myphoto');
+    Route::get('/app/my-photo', [App\Http\Controllers\LetterController::class, 'myPhoto'])->name('app.myphoto.get');
+    Route::get('/app/emp-photo/{code}', [App\Http\Controllers\LetterController::class, 'servePhoto'])->name('app.empphoto');
+    // Send Message / broadcast (real email delivery).
+    Route::post('/app/send-message', [App\Http\Controllers\SendMessageController::class, 'send'])->name('app.sendmessage');
+    // Points: auto-apply attendance-based rules into the ledger for a month.
+    Route::post('/app/points/auto-apply', [App\Http\Controllers\PointsController::class, 'autoApply'])->name('app.points.autoapply');
+    // Tests engine: question bank (admin) + take-test + auto-score (employee).
+    Route::get('/app/tests/list', [App\Http\Controllers\TestController::class, 'list'])->name('app.tests.list');
+    Route::post('/app/tests/questions', [App\Http\Controllers\TestController::class, 'saveQuestion'])->name('app.tests.qsave');
+    Route::post('/app/tests/questions/{id}/delete', [App\Http\Controllers\TestController::class, 'deleteQuestion'])->whereNumber('id')->name('app.tests.qdel');
+    Route::get('/app/tests/{id}/questions', [App\Http\Controllers\TestController::class, 'questions'])->whereNumber('id')->name('app.tests.questions');
+    Route::get('/app/tests/{id}/take', [App\Http\Controllers\TestController::class, 'take'])->whereNumber('id')->name('app.tests.take');
+    Route::post('/app/tests/{id}/submit', [App\Http\Controllers\TestController::class, 'submit'])->whereNumber('id')->name('app.tests.submit');
+    // Biometric device: in-app sync (pull punches into attendance_logs).
+    Route::post('/app/device/{id}/sync', [App\Http\Controllers\DeviceController::class, 'syncById'])->whereNumber('id')->name('app.device.sync');
+    // Employee Self-Service snapshot (own profile/payslips/attendance/leave/notices).
+    Route::get('/app/ess/me', [App\Http\Controllers\EssController::class, 'me'])->name('app.ess.me');
+    // Onboarding checklist workflow.
+    Route::get('/app/onboarding/board', [App\Http\Controllers\OnboardingController::class, 'board'])->name('app.onboarding.board');
+    Route::post('/app/onboarding/item/{id}/toggle', [App\Http\Controllers\OnboardingController::class, 'toggle'])->whereNumber('id')->name('app.onboarding.toggle');
+    // Performance review workflow.
+    Route::get('/app/performance/board', [App\Http\Controllers\PerformanceController::class, 'board'])->name('app.performance.board');
+    Route::post('/app/performance/{id}/advance', [App\Http\Controllers\PerformanceController::class, 'advance'])->whereNumber('id')->name('app.performance.advance');
+    // Recruitment / ATS — pipeline board, candidates, job openings, hire→employee.
+    Route::get('/app/recruitment/board', [App\Http\Controllers\RecruitmentController::class, 'board'])->name('app.recruit.board');
+    Route::post('/app/recruitment/candidate', [App\Http\Controllers\RecruitmentController::class, 'saveCandidate'])->name('app.recruit.cand');
+    Route::post('/app/recruitment/import', [App\Http\Controllers\RecruitmentController::class, 'importCandidates'])->name('app.recruit.import');
+    Route::post('/app/recruitment/import-rows', [App\Http\Controllers\RecruitmentController::class, 'importRows'])->name('app.recruit.import.rows');
+    Route::get('/app/recruitment/pool', [App\Http\Controllers\RecruitmentController::class, 'pool'])->name('app.recruit.pool');
+    Route::post('/app/recruitment/candidate/{id}/assign', [App\Http\Controllers\RecruitmentController::class, 'assignToReq'])->name('app.recruit.assign');
+    Route::post('/app/recruitment/assign-bulk', [App\Http\Controllers\RecruitmentController::class, 'assignBulk'])->name('app.recruit.assign.bulk');
+    // Off-roll agent KYC — photo/document uploads + contact verification.
+    Route::get('/app/offroll-agent/{id}/profile', [App\Http\Controllers\OffrollAgentController::class, 'profile'])->whereNumber('id')->name('app.offroll.profile');
+    Route::post('/app/offroll-agent/{id}/contact', [App\Http\Controllers\OffrollAgentController::class, 'saveContact'])->whereNumber('id')->name('app.offroll.contact');
+    Route::post('/app/offroll-agent/{id}/upload/{slot}', [App\Http\Controllers\OffrollAgentController::class, 'uploadDoc'])->whereNumber('id')->name('app.offroll.upload');
+    Route::get('/app/offroll-agent/{id}/file/{slot}', [App\Http\Controllers\OffrollAgentController::class, 'serveDoc'])->whereNumber('id')->name('app.offroll.file');
+    Route::post('/app/offroll-agent/{id}/verify-email', [App\Http\Controllers\OffrollAgentController::class, 'sendEmailVerify'])->whereNumber('id')->name('app.offroll.verifyemail');
+    Route::post('/app/offroll-agent/{id}/verify-mobile', [App\Http\Controllers\OffrollAgentController::class, 'setMobileVerified'])->whereNumber('id')->name('app.offroll.verifymobile');
+    // Off-roll agent LIVE EARNINGS (rev 80): ledger + add entry + approve + share link.
+    Route::get('/app/offroll-agent/{id}/earnings', [App\Http\Controllers\OffrollAgentController::class, 'earnings'])->whereNumber('id')->name('app.offroll.earnings');
+    Route::post('/app/offroll-agent/{id}/earnings', [App\Http\Controllers\OffrollAgentController::class, 'addEarning'])->whereNumber('id')->name('app.offroll.earnings.add');
+    Route::post('/app/offroll-agent/earnings/{eid}/decide', [App\Http\Controllers\OffrollAgentController::class, 'decideEarning'])->whereNumber('eid')->name('app.offroll.earnings.decide');
+    Route::post('/app/offroll-agent/{id}/earnings-link', [App\Http\Controllers\OffrollAgentController::class, 'sendEarningsLink'])->whereNumber('id')->name('app.offroll.earnings.link');
+    Route::get('/app/recruitment/template', [App\Http\Controllers\RecruitmentController::class, 'template'])->name('app.recruit.template');
+    Route::post('/app/recruitment/candidate/{id}/stage', [App\Http\Controllers\RecruitmentController::class, 'moveStage'])->name('app.recruit.stage');
+    Route::post('/app/recruitment/candidate/{id}/hire', [App\Http\Controllers\RecruitmentController::class, 'convertToEmployee'])->name('app.recruit.hire');
+    Route::post('/app/recruitment/candidate/{id}/patch', [App\Http\Controllers\RecruitmentController::class, 'patchCandidate'])->name('app.recruit.patch');
+    Route::post('/app/recruitment/candidate/{id}/start-onboarding', [App\Http\Controllers\RecruitmentController::class, 'startOnboarding'])->name('app.recruit.onboard');
+    Route::post('/app/recruitment/candidate/{id}/delete', [App\Http\Controllers\RecruitmentController::class, 'deleteCandidate'])->name('app.recruit.cand.del');
+    Route::post('/app/recruitment/job', [App\Http\Controllers\RecruitmentController::class, 'saveJob'])->name('app.recruit.job');
+    Route::post('/app/recruitment/job/{id}/approve', [App\Http\Controllers\RecruitmentController::class, 'approveJob'])->name('app.recruit.job.approve');
+    Route::post('/app/recruitment/job/{id}/reject', [App\Http\Controllers\RecruitmentController::class, 'rejectJob'])->name('app.recruit.job.reject');
+    Route::post('/app/recruitment/job/{id}/delete', [App\Http\Controllers\RecruitmentController::class, 'deleteJob'])->name('app.recruit.job.del');
+    // Interviews — schedule, feedback, scorecards (per candidate).
+    Route::get('/app/recruitment/candidate/{id}/interviews', [App\Http\Controllers\RecruitmentController::class, 'interviews'])->name('app.recruit.iv.list');
+    Route::post('/app/recruitment/interview', [App\Http\Controllers\RecruitmentController::class, 'saveInterview'])->name('app.recruit.iv.save');
+    Route::post('/app/recruitment/interview/{id}/delete', [App\Http\Controllers\RecruitmentController::class, 'deleteInterview'])->name('app.recruit.iv.del');
+    // Live dashboard widgets + global search.
+    Route::get('/app/dashboard/stats', [App\Http\Controllers\DashboardController::class, 'stats'])->name('app.dashboard.stats');
+    Route::get('/app/search', [App\Http\Controllers\DashboardController::class, 'search'])->name('app.search');
+    // Master data — real DB (departments / branches / banks / designations).
+    Route::get('/app/master/{type}', [App\Http\Controllers\MasterController::class, 'list'])->name('app.master');
+    Route::post('/app/master/{type}', [App\Http\Controllers\MasterController::class, 'save'])->name('app.master.save');
+    Route::post('/app/master/{type}/import', [App\Http\Controllers\MasterController::class, 'import'])->name('app.master.import');
+    Route::get('/app/master/{type}/template', [App\Http\Controllers\MasterController::class, 'template'])->name('app.master.template');
+    Route::post('/app/master/{type}/{id}/delete', [App\Http\Controllers\MasterController::class, 'delete'])->name('app.master.delete');
+    Route::get('/app/{screen?}', [AppController::class, 'show'])->name('app');
+
+    // Legacy first-pass native module pages are superseded by the /app prototype
+    // (and target the pre-overhaul schema). Redirect any stray visits to the app.
+    foreach (['dashboard', 'employees', 'departments', 'attendance', 'leave', 'loans', 'salary-runs', 'payslips', 'devices', 'tenants'] as $legacy) {
+        Route::get('/'.$legacy, fn () => redirect('/app'));
+    }
+});
