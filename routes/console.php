@@ -68,3 +68,13 @@ Schedule::command('transfers:apply')
     ->dailyAt('06:30')
     ->withoutOverlapping()
     ->onOneServer();
+
+/*
+| rev 97: PUBLIC LIVE DEMO — wipe + reseed the shared demo workspace every
+| 3 hours so website visitors always land in a clean, populated demo
+| (Ejaz: "it helps reduce stress on our staff"). Runs at 00:00/03:00/06:00…
+*/
+Schedule::command('demo:reset')
+    ->cron('0 */3 * * *')
+    ->withoutOverlapping()
+    ->onOneServer();

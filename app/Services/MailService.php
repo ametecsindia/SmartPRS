@@ -76,6 +76,18 @@ class MailService
             if (empty($msg['to']) || empty($msg['subject'])) {
                 return null;   // nothing to send
             }
+            // rev 97: the PUBLIC demo workspace must never send real email —
+            // log it as skipped so the demo still "looks" like it worked.
+            if (! empty($msg['tenant_id']) && \App\Http\Controllers\DemoAccessController::isDemoTenant($msg['tenant_id'])) {
+                DB::table('mail_log')->insert([
+                    'tenant_id' => $msg['tenant_id'], 'company_id' => $msg['company_id'] ?? null,
+                    'kind' => $msg['kind'] ?? null, 'recipient' => $msg['to'], 'subject' => $msg['subject'],
+                    'status' => 'skipped', 'error' => 'Demo workspace — outgoing mail muted',
+                    'created_at' => now(), 'updated_at' => now(),
+                ]);
+
+                return null;
+            }
             $id = DB::table('mail_log')->insertGetId([
                 'tenant_id' => $msg['tenant_id'] ?? null,
                 'company_id' => $msg['company_id'] ?? null,

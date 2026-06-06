@@ -186,6 +186,7 @@
                 <a href="#features">Features</a>
                 <a href="#how">How it works</a>
                 <a href="#pricing">Pricing</a>
+                <a href="{{ url('/demo') }}" style="color:var(--accent);font-weight:700;">Live Demo</a>
                 <a href="#faq">FAQ</a>
                 <a href="{{ route('login') }}" class="btn btn-ghost">Sign in</a>
                 <a href="#contact" class="btn btn-accent">{{ $c['hero']['cta'] }}</a>

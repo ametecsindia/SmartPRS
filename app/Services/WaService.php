@@ -78,6 +78,7 @@ class WaService
             'payment' => env('INTERAKT_TEMPLATE_PAYMENT') ?: 'smartprs_payment',
             'renewal' => env('INTERAKT_TEMPLATE_RENEWAL') ?: 'smartprs_renewal',
             'lead' => env('INTERAKT_TEMPLATE_LEAD') ?: 'smartprs_lead',
+            'otp' => env('INTERAKT_TEMPLATE_OTP') ?: 'smartprs_otp',   // rev 98: demo entry verification
         ];
         try {
             if (Schema::hasTable('wa_templates')) {
@@ -115,6 +116,24 @@ class WaService
         $digits = preg_replace('/\D+/', '', (string) ($opts['mobile'] ?? ''));
         $phone = substr($digits, -10);
         $template = $opts['template'] ?? (env('INTERAKT_TEMPLATE_WELCOME') ?: 'smartprs_welcome');
+
+        // rev 97: the PUBLIC demo workspace must never send real WhatsApp.
+        try {
+            if (! empty($opts['tenant_id']) && \App\Http\Controllers\DemoAccessController::isDemoTenant($opts['tenant_id'])) {
+                self::ensureLog();
+                DB::table('wa_log')->insert([
+                    'tenant_id' => $opts['tenant_id'], 'mobile' => $phone ?: null, 'template' => $template,
+                    'body_values' => json_encode(array_values($opts['bodyValues'] ?? [])),
+                    'kind' => $opts['kind'] ?? null, 'status' => 'skipped',
+                    'error' => 'Demo workspace — outgoing WhatsApp muted',
+                    'created_at' => now(), 'updated_at' => now(),
+                ]);
+
+                return false;
+            }
+        } catch (\Throwable $e) {
+            // never block on the demo check
+        }
 
         try {
             $cfg = self::config();

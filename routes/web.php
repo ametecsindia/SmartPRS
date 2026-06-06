@@ -42,6 +42,12 @@ Route::get('/signup', [App\Http\Controllers\SignupController::class, 'show'])->n
 Route::post('/signup/order', [App\Http\Controllers\SignupController::class, 'createOrder'])->name('signup.order');
 Route::post('/signup/complete', [App\Http\Controllers\SignupController::class, 'complete'])->name('signup.complete');
 
+// rev 97: PUBLIC LIVE DEMO — lead-capture form → auto-login to the shared demo
+// workspace with the guided tour. Demo resets every 3 hours (routes/console.php).
+Route::get('/demo', [App\Http\Controllers\DemoAccessController::class, 'show'])->name('demo.show');
+Route::post('/demo/otp', [App\Http\Controllers\DemoAccessController::class, 'otp'])->middleware('throttle:8,1')->name('demo.otp');
+Route::post('/demo/start', [App\Http\Controllers\DemoAccessController::class, 'start'])->middleware('throttle:15,1')->name('demo.start');
+
 // rev 96: quotation flow — "Send a Quotation" + public pay link.
 Route::post('/signup/quote', [App\Http\Controllers\SignupController::class, 'quote'])->middleware('throttle:10,1')->name('signup.quote');
 Route::get('/quote/{token}', [App\Http\Controllers\SignupController::class, 'showQuote'])->name('quote.show');
@@ -77,7 +83,7 @@ Route::middleware('guest')->group(function () {
 
 Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
 
-Route::middleware(['auth', App\Http\Middleware\EnsureSubscriptionActive::class])->group(function () {
+Route::middleware(['auth', App\Http\Middleware\EnsureSubscriptionActive::class, App\Http\Middleware\DemoWriteGuard::class])->group(function () {
     // Super-admin admin panel (landing CMS + platform staff).
     Route::get('/admin/landing', [LandingController::class, 'editor'])->name('landing.editor');
     Route::post('/admin/landing', [LandingController::class, 'save'])->name('landing.save');

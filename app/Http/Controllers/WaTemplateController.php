@@ -34,6 +34,7 @@ class WaTemplateController extends Controller
         'payment' => 'Payment confirmation',
         'renewal' => 'Renewal reminder',
         'lead' => 'Website lead alert',
+        'otp' => 'OTP / verification (Authentication)',
         'custom' => 'Custom',
     ];
 
@@ -218,6 +219,17 @@ class WaTemplateController extends Controller
             self::ensure();
             if ($s['super']) {
                 self::seedPlatformDefaults();
+                // rev 98: the OTP template arrived after the first seeding —
+                // ensure it exists even on platforms that already have rows.
+                if (! DB::table('wa_templates')->whereNull('tenant_id')->where('purpose', 'otp')->exists()) {
+                    DB::table('wa_templates')->insert([
+                        'tenant_id' => null, 'purpose' => 'otp', 'name' => 'smartprs_otp',
+                        'language' => 'en', 'category' => 'authentication',
+                        'body' => "{{1}} is your SmartPRS verification code. For your security, do not share this code.",
+                        'sample_values' => '482913', 'var_count' => 1,
+                        'status' => 'draft', 'created_at' => now(), 'updated_at' => now(),
+                    ]);
+                }
             } elseif ($s['tid']) {
                 self::seedTenantDefaults((int) $s['tid']);   // rev 93: full HR library, ready to submit
             }

@@ -160,6 +160,10 @@ class AppController extends Controller
             'saasTenantsUrl' => url('/app/saas/tenants'),    // SaaS platform: tenant provisioning
             'saasPlansUrl' => url('/app/saas/plans'),
             'screen' => $screen,
+            // rev 97: public live demo — start the guided tour (?tour=1) and
+            // mark demo-workspace sessions (floating tour button + safety).
+            'tour' => request()->boolean('tour') ? 1 : 0,
+            'isDemo' => \App\Http\Controllers\DemoAccessController::isDemoTenant($user->tenant_id) ? 1 : 0,
             'user' => $user->name,
             'userEmail' => $user->email,
             'company' => optional($user->company)->name,
@@ -345,6 +349,10 @@ CSS;
         safe(function () { wireSidebarLogo(); });
         safe(function () { wireUserCard(cfg); });
         safe(function () { wireSubBanner(cfg); });
+        // rev 97: public live demo — guided tour + floating restart button.
+        safe(function () { if (cfg.isDemo) { spTourFab(); } });
+        safe(function () { wireDemoLockdown(); });
+        safe(function () { if (cfg.tour) { setTimeout(function () { try { spTourStart(); } catch (e) {} }, 1400); } });
         safe(function () { wireResponsive(); });
         safe(function () { wirePunch(cfg); });
         safe(function () { wireBell(cfg); });
@@ -3332,7 +3340,12 @@ CSS;
             for (var i = 0; i < rows.length; i++) {
                 var tr = rows[i]; if (tr.__av) { continue; }
                 var cell = tr.querySelector('td'); if (!cell) { tr.__av = 1; continue; }
-                // Skip rows whose first cell already shows an avatar (img, an avatar class, or a fa-user placeholder).
+                // rev 98b (Ejaz: "duplicate image/avatar" on ID Cards): a leading
+                // CHECKBOX column is a control cell, not an avatar target — move
+                // to the next cell (the name) before deciding anything.
+                if (cell.querySelector('input[type="checkbox"]')) { cell = cell.nextElementSibling; }
+                if (!cell) { tr.__av = 1; continue; }
+                // Skip rows whose target cell already shows an avatar (img, an avatar class, or a fa-user placeholder).
                 if (cell.querySelector('img') || cell.querySelector('.avatar-sm, .emp-avatar, .sp-av') || cell.querySelector('.fa-user')) { tr.__av = 1; continue; }
                 var em = matchEmp(tr.textContent);
                 if (em) {
@@ -4869,6 +4882,184 @@ CSS;
             window.__RECRUIT_MSG.rows = out; recruitMsgOpen('csv', null, '', id);
         });
     };
+    // ======================================================================
+    // rev 97: GUIDED DEMO TOUR — spotlight overlay for the public live demo
+    // (started by /app?tour=1 after the /demo lead form; restartable via the
+    // floating button shown only in the demo workspace).
+    // ======================================================================
+    // rev 98 REBUILD (Ejaz: overlay was "showing disturbance"): the dark layer
+    // is now a single static BACKDROP (no shadow-trick sliding), the spotlight
+    // is placed instantly (no transition), background clicks are blocked while
+    // the tour runs, positions recompute on resize and again after data loads.
+    // 16 steps / 13 screens + browser VOICE narration with a mute toggle.
+    var SP_TOUR = [
+        { screen: null, target: null, first: true, title: 'Welcome to SmartPRS!', text: 'This is a real, fully loaded workspace. Every screen is live and clickable. This short tour shows you the highlights, then you explore freely. The demo refreshes itself every few hours, so play boldly.' },
+        { screen: 'dashboard', target: '.sidebar', title: '16 modules, one platform', text: 'Everything an HR and payroll operation needs, ordered by the employee lifecycle. Hiring, attendance, leave, payroll, compliance, field force and reports.' },
+        { screen: 'dashboard', target: '.topbar-actions', title: 'Your command bar', text: 'Punch in and out, live notifications, employee search and the company switcher. Run multiple group companies from one login.' },
+        { screen: 'dashboard', target: null, title: 'Live dashboard', text: 'Headcount, attendance, pending approvals and payroll at a glance. Every number here is real and updates live.' },
+        { screen: 'emp-list', target: null, title: 'People — one source of truth', text: 'Every employee with profile, documents, team and reporting structure. Click any name anywhere in the app to see their profile card.' },
+        { screen: 'idcard', target: null, title: 'Instant ID cards', text: 'Professional employee ID cards generated automatically, ready to print as PDF.' },
+        { screen: 'att-report', target: null, title: 'Attendance that runs itself', text: 'Biometric devices, geo-fenced selfie punch for field agents and bulk uploads, all flowing into one attendance register that feeds payroll automatically.' },
+        { screen: 'leave-apply', target: null, title: 'Leave & approvals', text: 'Employees apply, managers approve, balances update, and payroll picks it up. The same approval chain powers expenses, advances and loans.' },
+        { screen: 'salary-gen', target: null, title: 'Payroll in one click', text: 'P F, E S I, professional tax and T D S calculated automatically, India compliant. Generate the month, approve, and payslips plus statutory registers are ready.' },
+        { screen: 'live-salary', target: null, title: 'Live Salary — the crowd favourite', text: 'Every employee sees the salary earned till today, entry by entry, including commissions awaiting approval. Total transparency, fewer disputes.' },
+        { screen: 'commissions', target: null, title: 'Built for collections & recovery', text: 'Commission entries with approval chains, automatic T D S, payout locking and a complete per-employee ledger. The incentive engine recovery teams run on.' },
+        { screen: 'recruitment', target: null, title: 'Hire at volume', text: 'Import hundreds of candidates from job portals, send bulk WhatsApp walk-in invites, plan hiring drives with interview panels, and track everyone to hired.' },
+        { screen: 'compliance-alerts', target: null, title: 'Never miss a D R A or P C C expiry', text: 'Field force certifications tracked with automatic alerts before anything lapses. Audit ready for banks and R B I expectations.' },
+        { screen: 'reports', target: null, title: 'Reports & analytics', text: 'Attendance, payroll, compliance and workforce insights, exportable on demand for your management and your bank partners.' },
+        { screen: 'notice', target: null, title: 'Keep everyone informed', text: 'Notice board, announcements and targeted messages. Plus a knowledge base loaded with collections industry content.' },
+        { screen: 'dashboard', target: null, title: 'Now it is yours to explore', text: 'Click anything, nothing can break. When you are ready, plans start at just one thousand rupees per month for all 16 modules.', finish: true }
+    ];
+    var SP_TOUR_I = 0;
+    window.__SP_TOUR_MUTE = (function () { try { return sessionStorage.getItem('sp_tour_mute') === '1'; } catch (e) { return false; } })();
+    // rev 99b (Ejaz: "voice should be as Indian"): browsers load the voice
+    // list LAZILY, so the first speak often fell back to a US/UK voice. We
+    // now cache the list on voiceschanged and pick strictly Indian-first:
+    // en-IN → any voice named "India(n)" (Microsoft Heera/Ravi etc.) →
+    // hi-IN (Indian-accented even for English text) → only then generic en.
+    var SP_VOICE = null;
+    function spPickVoice() {
+        try {
+            var vs = (window.speechSynthesis && window.speechSynthesis.getVoices()) || [];
+            if (!vs.length) { return null; }
+            var low = function (s) { return String(s || '').toLowerCase(); };
+            SP_VOICE = vs.filter(function (x) { return low(x.lang).indexOf('en-in') === 0; })[0]
+                || vs.filter(function (x) { return low(x.name).indexOf('india') >= 0; })[0]
+                || vs.filter(function (x) { return low(x.lang).indexOf('hi-in') === 0 || low(x.lang).indexOf('hi') === 0; })[0]
+                || vs.filter(function (x) { return low(x.lang).indexOf('en') === 0; })[0]
+                || null;
+            return SP_VOICE;
+        } catch (e) { return null; }
+    }
+    try { if (window.speechSynthesis) { window.speechSynthesis.onvoiceschanged = function () { spPickVoice(); }; spPickVoice(); } } catch (e) {}
+    function spSay(text) {
+        try {
+            if (window.__SP_TOUR_MUTE || !window.speechSynthesis) { return; }
+            window.speechSynthesis.cancel();
+            var u = new SpeechSynthesisUtterance(text);
+            var v = SP_VOICE || spPickVoice();
+            if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = 'en-IN'; }
+            u.rate = 0.98; u.pitch = 1;
+            window.speechSynthesis.speak(u);
+        } catch (e) {}
+    }
+    window.spTourMute = function () {
+        window.__SP_TOUR_MUTE = !window.__SP_TOUR_MUTE;
+        try { sessionStorage.setItem('sp_tour_mute', window.__SP_TOUR_MUTE ? '1' : '0'); } catch (e) {}
+        if (window.__SP_TOUR_MUTE) { try { window.speechSynthesis.cancel(); } catch (e) {} }
+        else { var st = SP_TOUR[SP_TOUR_I]; if (st) { spSay(st.title + '. ' + st.text); } }
+        spTourPlace(SP_TOUR[SP_TOUR_I]);
+    };
+    function spTourEl() {
+        var ov = document.getElementById('sp-tour');
+        if (!ov) {
+            ov = document.createElement('div'); ov.id = 'sp-tour';
+            // The root BLOCKS all background interaction while the tour runs.
+            ov.style.cssText = 'position:fixed;inset:0;z-index:9600';
+            ov.innerHTML = '<div id="sp-tour-bk" style="position:fixed;inset:0;background:rgba(12,25,41,.62)"></div>'
+                + '<div id="sp-tour-hl" style="display:none;position:fixed;border-radius:12px;border:2.5px solid #f97316;box-shadow:0 0 0 9999px rgba(12,25,41,.62);pointer-events:none"></div>'
+                + '<div id="sp-tour-card" style="position:fixed;max-width:370px;width:92vw;background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 18px 50px rgba(0,0,0,.4)"></div>';
+            document.body.appendChild(ov);
+            if (!window.__spTourResize) {
+                window.__spTourResize = true;
+                window.addEventListener('resize', function () { if (document.getElementById('sp-tour')) { spTourPlace(SP_TOUR[SP_TOUR_I]); } });
+            }
+        }
+        return ov;
+    }
+    window.spTourStart = function () { SP_TOUR_I = 0; spTourShow(); };
+    window.spTourGo = function (mute) {
+        // First click on the welcome card = the user gesture that unlocks voice.
+        window.__SP_TOUR_MUTE = !!mute;
+        try { sessionStorage.setItem('sp_tour_mute', mute ? '1' : '0'); } catch (e) {}
+        SP_TOUR_I = 1; spTourShow();
+    };
+    window.spTourNext = function () { if (SP_TOUR_I < SP_TOUR.length - 1) { SP_TOUR_I++; spTourShow(); } else { spTourEnd(); } };
+    window.spTourBack = function () { if (SP_TOUR_I > 0) { SP_TOUR_I--; spTourShow(); } };
+    window.spTourEnd = function () { try { window.speechSynthesis.cancel(); } catch (e) {} var ov = document.getElementById('sp-tour'); if (ov) { ov.remove(); } };
+    function spTourShow() {
+        var st = SP_TOUR[SP_TOUR_I]; if (!st) { spTourEnd(); return; }
+        try { if (st.screen && typeof go === 'function') { var nv = document.querySelector('.nav-item[data-id="' + st.screen + '"]'); go(st.screen, nv || undefined); } } catch (e) {}
+        // Place once when the screen mounts, and again after data settles —
+        // both placements are INSTANT (no transition), so nothing slides about.
+        setTimeout(function () { spTourPlace(st); }, st.screen ? 420 : 30);
+        if (st.screen) { setTimeout(function () { if (SP_TOUR[SP_TOUR_I] === st && document.getElementById('sp-tour')) { spTourPlace(st); } }, 1100); }
+        if (!st.first) { setTimeout(function () { if (SP_TOUR[SP_TOUR_I] === st) { spSay(st.title + '. ' + st.text); } }, st.screen ? 450 : 60); }
+    }
+    function spTourPlace(st) {
+        if (!st) { return; }
+        spTourEl();
+        var bk = document.getElementById('sp-tour-bk');
+        var hl = document.getElementById('sp-tour-hl');
+        var card = document.getElementById('sp-tour-card');
+        var t = st.target ? document.querySelector(st.target) : null;
+        if (t) {
+            var r = t.getBoundingClientRect();
+            bk.style.display = 'none';
+            hl.style.display = 'block';
+            hl.style.left = (r.left - 5) + 'px'; hl.style.top = (r.top - 5) + 'px';
+            hl.style.width = (r.width + 10) + 'px'; hl.style.height = (r.height + 10) + 'px';
+            var below = r.bottom + 250 < window.innerHeight;
+            card.style.top = (below ? (r.bottom + 14) : Math.max(14, r.top - 250)) + 'px';
+            var lx = Math.min(Math.max(14, r.left), Math.max(14, window.innerWidth - 400));
+            card.style.left = lx + 'px'; card.style.transform = 'none';
+        } else {
+            hl.style.display = 'none';
+            bk.style.display = 'block';
+            card.style.left = '50%'; card.style.top = '54%'; card.style.transform = 'translate(-50%,-50%)';
+        }
+        var n = SP_TOUR.length;
+        var muteBtn = '<button class="btn btn-outline btn-sm" onclick="spTourMute()" title="Voice on/off" style="min-width:38px">' + (window.__SP_TOUR_MUTE ? '<i class="fas fa-volume-xmark"></i>' : '<i class="fas fa-volume-high"></i>') + '</button>';
+        var btns;
+        if (st.first) {
+            btns = '<button class="btn btn-primary btn-sm" onclick="spTourGo(false)" style="background:#f97316"><i class="fas fa-volume-high"></i> Start tour with voice</button> '
+                + '<button class="btn btn-outline btn-sm" onclick="spTourGo(true)">Start muted</button> '
+                + '<button class="btn btn-outline btn-sm" onclick="spTourEnd()" style="border:none;color:#94a3b8">Skip</button>';
+        } else if (st.finish) {
+            btns = '<button class="btn btn-primary btn-sm" onclick="window.location.href=&#39;/signup&#39;" style="background:#f97316"><i class="fas fa-rocket"></i> See plans &amp; sign up</button> '
+                + '<button class="btn btn-outline btn-sm" onclick="spTourStart()">Restart</button> '
+                + '<button class="btn btn-outline btn-sm" onclick="spTourEnd()">Explore freely</button> ' + muteBtn;
+        } else {
+            btns = (SP_TOUR_I > 1 ? '<button class="btn btn-outline btn-sm" onclick="spTourBack()">Back</button> ' : '')
+                + '<button class="btn btn-primary btn-sm" onclick="spTourNext()" style="background:#f97316">Next <i class="fas fa-arrow-right"></i></button> '
+                + muteBtn + ' <button class="btn btn-outline btn-sm" onclick="spTourEnd()" style="border:none;color:#94a3b8">Skip</button>';
+        }
+        card.innerHTML = '<div style="font-size:10.5px;font-weight:800;color:#f97316;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Guided tour &middot; ' + (SP_TOUR_I + 1) + ' / ' + n + '</div>'
+            + '<div style="font-size:16.5px;font-weight:800;color:#0c1929;margin-bottom:7px">' + st.title + '</div>'
+            + '<div style="font-size:13.5px;color:#475569;line-height:1.6;margin-bottom:14px">' + st.text + '</div>'
+            + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' + btns + '</div>';
+    }
+    // rev 99 (Ejaz): in the PUBLIC demo, sensitive/config screens are hidden
+    // and a slim notice explains that settings & deletions are disabled.
+    // (Server-side the same actions are 403-blocked by DemoWriteGuard — this
+    // is just the polish so visitors don't find dead buttons.)
+    function wireDemoLockdown() {
+        if (!cfg.isDemo) { return; }
+        var hide = ['users', 'roles', 'branding', 'company-emails', 'mail-log', 'wa-settings', 'wa-templates', 'sms-settings', 'sms-templates', 'my-subscription', 'exits', 'settings'];
+        var apply = function () {
+            hide.forEach(function (id) {
+                document.querySelectorAll('.nav-item[data-id="' + id + '"]').forEach(function (nv) { nv.style.display = 'none'; });
+            });
+        };
+        apply(); setTimeout(apply, 900); setTimeout(apply, 2600);   // injected nav items arrive late
+        if (!document.getElementById('sp-demo-bar')) {
+            var bar = document.createElement('div');
+            bar.id = 'sp-demo-bar';
+            bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:8300;background:#0c1929;color:#e2e8f0;padding:7px 14px;text-align:center;font-size:12.5px';
+            bar.innerHTML = '<i class="fas fa-flask" style="color:#f97316"></i> You are exploring the LIVE DEMO — play freely; settings, logins and deletions are disabled here. <a href="/signup" style="color:#f97316;font-weight:700">Get your own workspace &rarr;</a> <i class="fas fa-xmark" onclick="this.parentNode.remove()" style="margin-left:10px;cursor:pointer;color:#94a3b8"></i>';
+            document.body.appendChild(bar);
+        }
+    }
+    // Floating restart button — demo workspace only.
+    function spTourFab() {
+        if (document.getElementById('sp-tour-fab')) { return; }
+        var b = document.createElement('button');
+        b.id = 'sp-tour-fab';
+        b.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:8400;background:#0c1929;color:#fff;border:none;border-radius:999px;padding:11px 18px;font-size:13.5px;font-weight:700;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.3)';
+        b.innerHTML = '<i class="fas fa-wand-magic-sparkles" style="color:#f97316"></i> Guided tour';
+        b.onclick = function () { spTourStart(); };
+        document.body.appendChild(b);
+    }
     // ---- Off-roll agent KYC (photo, documents, contact verification) ---------
     var OFFROLL_DOCS = [['id_proof', 'ID proof (Aadhaar / Govt ID)'], ['pan', 'PAN card'], ['address', 'Address proof'], ['dra', 'DRA certificate'], ['pcc', 'PCC (police clearance)'], ['agreement', 'Signed agreement']];
     function offrollModal(html) {

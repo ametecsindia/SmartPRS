@@ -63,15 +63,36 @@ class LeadController extends Controller
             'challenges' => 'nullable|string|max:2000',
         ]);
 
+        self::recordLead($v, 'landing');
+
+        return response()->json(['ok' => true, 'message' => 'Thank you! Our team will contact you shortly.']);
+    }
+
+    /**
+     * rev 97: shared lead recorder — used by the landing form AND the public
+     * Live Demo entry (and any future source). Inserts the lead + fires the
+     * email/WhatsApp alerts fail-soft. Returns the lead id.
+     */
+    public static function recordLead(array $v, string $source = 'landing'): int
+    {
         self::ensureLeads();
-        $id = DB::table('leads')->insertGetId(array_merge($v, [
+        $id = DB::table('leads')->insertGetId([
+            'name' => $v['name'] ?? '',
+            'company' => $v['company'] ?? null,
+            'designation' => $v['designation'] ?? null,
+            'city' => $v['city'] ?? null,
+            'mobile' => $v['mobile'] ?? null,
+            'email' => $v['email'] ?? null,
+            'employees' => $v['employees'] ?? null,
+            'challenges' => $v['challenges'] ?? null,
             'status' => 'new',
-            'source' => 'landing',
+            'source' => $source,
             'created_at' => now(),
             'updated_at' => now(),
-        ]));
+        ]);
 
-        $contact = $this->landingContact();
+        $contact = self::landingContact();
+        $what = $source === 'live_demo' ? 'is trying the LIVE DEMO right now' : 'has requested a demo';
 
         // Alert 1 — email to the configurable recipient (platform SMTP). Fail-soft.
         try {
@@ -81,17 +102,17 @@ class LeadController extends Controller
                     'tenant_id' => null,
                     'kind' => 'lead',
                     'to' => $to,
-                    'subject' => 'New SmartPRS demo request — '.$v['company'],
-                    'greeting' => 'New lead from the SmartPRS website',
-                    'intro' => $v['name'].' ('.($v['designation'] ?: 'designation not given').') of '.$v['company'].' has requested a demo.',
+                    'subject' => ($source === 'live_demo' ? 'LIVE DEMO visitor — ' : 'New SmartPRS demo request — ').($v['company'] ?? $v['name'] ?? ''),
+                    'heading' => 'New lead from the SmartPRS website',
+                    'intro' => ($v['name'] ?? 'Someone').(! empty($v['designation']) ? ' ('.$v['designation'].')' : '').(! empty($v['company']) ? ' of '.$v['company'] : '').' '.$what.'.',
                     'lines' => array_filter([
-                        'Company: '.$v['company'],
-                        'City: '.$v['city'],
-                        'Mobile: '.$v['mobile'],
-                        'Email: '.$v['email'],
-                        ($v['employees'] ?? '') !== '' ? 'Employees: '.$v['employees'] : null,
-                        ($v['challenges'] ?? '') !== '' ? 'Challenges: '.$v['challenges'] : null,
-                        'Lead #'.$id.' — work it at /admin/leads',
+                        ! empty($v['company']) ? 'Company: '.$v['company'] : null,
+                        ! empty($v['city']) ? 'City: '.$v['city'] : null,
+                        ! empty($v['mobile']) ? 'Mobile: '.$v['mobile'] : null,
+                        ! empty($v['email']) ? 'Email: '.$v['email'] : null,
+                        ! empty($v['employees']) ? 'Employees: '.$v['employees'] : null,
+                        ! empty($v['challenges']) ? 'Challenges: '.$v['challenges'] : null,
+                        'Lead #'.$id.' ('.$source.') — work it at /admin/leads',
                     ]),
                 ]);
             }
@@ -108,11 +129,11 @@ class LeadController extends Controller
                     'template' => WaService::templateNameFor('lead'),
                     'kind' => 'lead',
                     'bodyValues' => [
-                        $v['name'],
-                        $v['company'],
-                        $v['mobile'],
-                        $v['city'],
-                        ($v['employees'] ?? '') !== '' ? $v['employees'] : '-',
+                        $v['name'] ?? '-',
+                        ($v['company'] ?? '-').($source === 'live_demo' ? ' (LIVE DEMO)' : ''),
+                        $v['mobile'] ?? '-',
+                        $v['city'] ?? '-',
+                        ! empty($v['employees']) ? $v['employees'] : '-',
                     ],
                 ]);
             }
@@ -120,7 +141,7 @@ class LeadController extends Controller
             Log::warning('Lead WhatsApp alert failed: '.$e->getMessage());
         }
 
-        return response()->json(['ok' => true, 'message' => 'Thank you! Our team will contact you shortly.']);
+        return $id;
     }
 
     /** SUPER ADMIN: GET /admin/leads — the lead work-list. */
@@ -161,7 +182,7 @@ class LeadController extends Controller
     }
 
     /** The landing 'contact' block (CMS-saved values win over defaults). */
-    private function landingContact(): array
+    private static function landingContact(): array
     {
         try {
             $c = (new LandingController)->content();
