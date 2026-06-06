@@ -13,8 +13,7 @@
 <div id="login-page">
     <div class="login-left">
         <div class="login-brand">
-            <div class="login-logo"><i class="fas fa-bolt"></i></div>
-            <h1>Smart<span>PRS</span></h1>
+            <img src="{{ asset('images/logo.png') }}" alt="SmartPRS — Reputation | Relationships | Results" style="width:240px;max-width:80%;height:auto;display:block;margin:0 auto 10px;">
             <p>HRM · Payroll · Workforce Compliance</p>
         </div>
     </div>

@@ -65,7 +65,7 @@ input.fi:focus,select.fi:focus{outline:none;border-color:var(--accent)}
 </style>
 </head>
 <body>
-<div class="top"><div class="wrap"><a href="{{ url('/') }}" style="text-decoration:none;color:#fff"><div class="brand"><div class="bolt"><i class="fas fa-bolt"></i></div><div>Smart<span style="color:var(--accent)">PRS</span><small>by Ametecs</small></div></div></a></div></div>
+<div class="top"><div class="wrap"><a href="{{ url('/') }}" style="text-decoration:none;color:#fff"><div class="brand"><img src="{{ asset('images/logo.png') }}" alt="SmartPRS by Ametecs" style="height:38px;width:auto;display:block;"></div></a></div></div>
 <div class="hero"><div class="wrap"><h1>Start your SmartPRS workspace</h1><p>All 16 modules in every plan · pay only for headcount · GST invoice emailed instantly</p></div></div>
 
 <div class="wrap shell">
@@ -81,6 +81,24 @@ input.fi:focus,select.fi:focus{outline:none;border-color:var(--accent)}
         <input class="fi" id="f_email" type="email" placeholder="you@company.com">
         <label class="fl">Mobile</label>
         <input class="fi" id="f_mobile" placeholder="10-digit mobile">
+        {{-- rev 90: buyer GST profile — state decides CGST+SGST vs IGST on the tax invoice --}}
+        <label class="fl">State (for GST on your invoice)</label>
+        <select class="fi" id="f_state">
+          <option value="">Select your state…</option>
+          @foreach ([
+            'Andaman & Nicobar Islands (35)','Andhra Pradesh (37)','Arunachal Pradesh (12)','Assam (18)','Bihar (10)',
+            'Chandigarh (04)','Chhattisgarh (22)','Dadra & Nagar Haveli and Daman & Diu (26)','Delhi (07)','Goa (30)',
+            'Gujarat (24)','Haryana (06)','Himachal Pradesh (02)','Jammu & Kashmir (01)','Jharkhand (20)','Karnataka (29)',
+            'Kerala (32)','Ladakh (38)','Lakshadweep (31)','Madhya Pradesh (23)','Maharashtra (27)','Manipur (14)',
+            'Meghalaya (17)','Mizoram (15)','Nagaland (13)','Odisha (21)','Puducherry (34)','Punjab (03)','Rajasthan (08)',
+            'Sikkim (11)','Tamil Nadu (33)','Telangana (36)','Tripura (16)','Uttar Pradesh (09)','Uttarakhand (05)','West Bengal (19)',
+          ] as $st)
+            <option value="{{ $st }}">{{ $st }}</option>
+          @endforeach
+        </select>
+        <label class="fl">GSTIN (optional — printed on your tax invoice)</label>
+        <input class="fi" id="f_gstin" placeholder="e.g. 36AAHCT0971F1ZB" maxlength="15" style="text-transform:uppercase">
+        <div class="inc" style="margin-top:-4px;margin-bottom:10px">Telangana businesses are billed CGST 9% + SGST 9%; other states IGST 18% — same total either way.</div>
         <label class="fl">Total employees you will manage</label>
         <input class="fi" id="f_seats" type="number" min="1" value="25">
         <label class="fl">Companies in your group</label>
@@ -102,7 +120,10 @@ input.fi:focus,select.fi:focus{outline:none;border-color:var(--accent)}
           <span>I have read and accept the <a onclick="openTerms()">Terms &amp; Conditions and Refund Policy</a> of SmartPRS by Ametecs India Pvt. Ltd.</span>
         </div>
         <button class="btn" id="paybtn" onclick="startCheckout()"><i class="fas fa-lock"></i> Pay securely &amp; create workspace</button>
+        <button class="btn" id="quotebtn" onclick="sendQuote()" style="background:#fff;color:var(--accent);border:1.5px solid var(--accent);margin-top:10px"><i class="fas fa-file-invoice"></i> Send me a Quotation</button>
+        <div class="fine" style="margin-top:8px">Need approval from your finance team first? Get a quotation PDF emailed to you with a secure payment link — pay anytime to create the workspace.</div>
         <div class="err" id="err"></div>
+        <div class="ok2" id="quoteok" style="display:none;background:#dcfce7;color:#166534;border:1px solid #bbf7d0;border-radius:9px;padding:12px 14px;margin-top:12px;font-size:14px"></div>
         <div class="fine">Payments are processed by Razorpay. Minimum billing period is 3 months.<br>Prices exclude GST (18%), shown above before you pay.</div>
       </div>
     </div>
@@ -216,10 +237,13 @@ function startCheckout(){
     admin_name: document.getElementById('f_name').value.trim(),
     admin_email: document.getElementById('f_email').value.trim(),
     mobile: document.getElementById('f_mobile').value.trim(),
+    state: document.getElementById('f_state').value,
+    gstin: document.getElementById('f_gstin').value.trim().toUpperCase(),
     plan_id: state.plan, seats: parseInt(document.getElementById('f_seats').value, 10) || 0,
     companies: Math.max(1, parseInt(document.getElementById('f_companies').value, 10) || 1), cycle: state.cycle
   };
   if (!body.company || !body.admin_name || !body.admin_email) { showErr('Please fill the company name, your name and your email.'); b.disabled = false; return; }
+  if (!body.state) { showErr('Please select your state — it decides how GST appears on your tax invoice.'); b.disabled = false; return; }
   if (!document.getElementById('f_terms').checked) {
     showErr('Please read and accept the Terms & Conditions and Refund Policy to continue.');
     b.disabled = false; openTerms(); return;
@@ -259,6 +283,34 @@ function startCheckout(){
     });
     rz.open();
   }).catch(function(){ showErr('Network error — please retry.'); b.disabled = false; });
+}
+function collectForm(){
+  return {
+    company: document.getElementById('f_company').value.trim(),
+    admin_name: document.getElementById('f_name').value.trim(),
+    admin_email: document.getElementById('f_email').value.trim(),
+    mobile: document.getElementById('f_mobile').value.trim(),
+    state: document.getElementById('f_state').value,
+    gstin: document.getElementById('f_gstin').value.trim().toUpperCase(),
+    plan_id: state.plan, seats: parseInt(document.getElementById('f_seats').value, 10) || 0,
+    companies: Math.max(1, parseInt(document.getElementById('f_companies').value, 10) || 1), cycle: state.cycle
+  };
+}
+function sendQuote(){
+  document.getElementById('err').style.display = 'none';
+  document.getElementById('quoteok').style.display = 'none';
+  var body = collectForm();
+  if (!body.company || !body.admin_name || !body.admin_email) { showErr('Please fill the company name, your name and your email — the quotation is sent to that email.'); return; }
+  if (!body.state) { showErr('Please select your state so the quotation shows the correct GST.'); return; }
+  var b = document.getElementById('quotebtn'); b.disabled = true; var old = b.innerHTML; b.innerHTML = 'Sending…';
+  post('{{ url('/signup/quote') }}', body).then(function(j){
+    b.disabled = false; b.innerHTML = old;
+    if (!j.ok) { showErr(j.error || 'Could not send the quotation.'); return; }
+    var ok = document.getElementById('quoteok');
+    ok.innerHTML = '<i class="fas fa-circle-check"></i> ' + (j.message || 'Quotation sent.') + (j.pdf ? ' &nbsp;<a href="' + j.pdf + '" target="_blank" style="color:#166534;font-weight:700">View the PDF</a>' : '');
+    ok.style.display = 'block';
+    window.scrollTo(0, document.body.scrollHeight);
+  }).catch(function(){ b.disabled = false; b.innerHTML = old; showErr('Network error — please retry.'); });
 }
 (function init(){
   var def = PLANS.filter(function(p){ return p.name === PICK; });

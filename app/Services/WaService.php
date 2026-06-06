@@ -47,6 +47,9 @@ class WaService
                 $row = DB::table('wa_settings')
                     ->whereRaw("LOWER(COALESCE(provider,'')) LIKE '%interakt%'")
                     ->whereRaw("LOWER(COALESCE(status,'active')) NOT IN ('inactive','disabled')")
+                    // rev 91c: the PLATFORM row (super admin, tenant NULL/0) wins —
+                    // a tenant's own row must never hijack platform sends.
+                    ->orderByRaw('CASE WHEN tenant_id IS NULL OR tenant_id = 0 THEN 0 ELSE 1 END')
                     ->orderBy('id')->first();
                 if ($row && $row->api_key) {
                     return ['key' => $row->api_key, 'url' => $row->api_url ?: 'https://api.interakt.ai/v1/public/message/'];
@@ -60,6 +63,42 @@ class WaService
         }
 
         return null;
+    }
+
+    /**
+     * rev 92: resolve the template NAME for a purpose (welcome|payment|renewal|lead)
+     * from the wa_templates registry — the tenant's own APPROVED row wins, then the
+     * platform's APPROVED row, then env/default names. Renaming a template in the
+     * WhatsApp Templates module is all it takes for the flows to use it.
+     */
+    public static function templateNameFor(string $purpose, ?int $tenantId = null): string
+    {
+        $defaults = [
+            'welcome' => env('INTERAKT_TEMPLATE_WELCOME') ?: 'smartprs_welcome',
+            'payment' => env('INTERAKT_TEMPLATE_PAYMENT') ?: 'smartprs_payment',
+            'renewal' => env('INTERAKT_TEMPLATE_RENEWAL') ?: 'smartprs_renewal',
+            'lead' => env('INTERAKT_TEMPLATE_LEAD') ?: 'smartprs_lead',
+        ];
+        try {
+            if (Schema::hasTable('wa_templates')) {
+                $q = DB::table('wa_templates')->where('purpose', $purpose)->where('status', 'approved');
+                if ($tenantId) {
+                    $q->where(function ($w) use ($tenantId) {
+                        $w->where('tenant_id', $tenantId)->orWhereNull('tenant_id');
+                    })->orderByRaw('CASE WHEN tenant_id IS NULL THEN 1 ELSE 0 END');
+                } else {
+                    $q->whereNull('tenant_id');
+                }
+                $name = $q->orderBy('id')->value('name');
+                if ($name) {
+                    return $name;
+                }
+            }
+        } catch (\Throwable $e) {
+            // fall through to defaults
+        }
+
+        return $defaults[$purpose] ?? $purpose;
     }
 
     /**

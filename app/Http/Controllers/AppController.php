@@ -150,6 +150,7 @@ class AppController extends Controller
             'deviceBase' => url('/app/device'),                     // biometric device in-app sync
             'recruitmentBase' => url('/app/recruitment'),          // ATS pipeline
             'offrollAgentBase' => url('/app/offroll-agent'),        // off-roll agent KYC
+            'waTplBase' => url('/app/wa-templates'),                // rev 92: WhatsApp template registry
             'billingBase' => url('/app/billing'),                   // SaaS billing (super admin)
             'dashboardStatsUrl' => url('/app/dashboard/stats'),     // live dashboard widgets
             'searchUrl' => url('/app/search'),                      // global top-bar search
@@ -176,16 +177,38 @@ class AppController extends Controller
         $style = <<<CSS
 <style>
 #login-page{display:none!important}
-#smartprs-burger{display:none}
+#smartprs-burger{display:inline-flex}
 #smartprs-mlogo{display:none}
 #smartprs-ov{display:none}
+/* rev 88: the burger now ALSO works on desktop — it hides/expands the whole
+   sidebar (body.nav-hidden) so tables get the full screen width. Remembered
+   per browser (localStorage sp_navhide). Mobile keeps the slide-in drawer. */
+@media (min-width: 901px){
+  body.nav-hidden .sidebar{display:none}
+  body.nav-hidden .main-wrap{margin-left:0 !important}
+}
 /* Topbar layout: keep the page title on one line (it renders at 24px and was
    wrapping into the Punch button), and give the title block room while the
    action icons keep their own space on the right. */
 .topbar > div:first-child{flex:0 1 auto;min-width:0;margin-right:8px}
 .topbar .page-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
 .topbar .breadcrumb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.topbar-actions{flex:0 0 auto;flex-wrap:nowrap}
+/* rev 88 (Ejaz live check): on smaller desktop widths / 125% Windows scaling the
+   avatar + logout were pushed OFF-SCREEN. The wide topbar members (company
+   switcher + both searches) must SHRINK instead — icons keep their size and the
+   right edge always stays visible. */
+.topbar-actions{flex:1 1 auto;flex-wrap:nowrap;min-width:0;justify-content:flex-end}
+.topbar-actions .company{min-width:120px;flex:0 1 220px}
+.topbar-actions .company .cname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar-actions .topbar-search{min-width:90px;flex:0 1 220px}
+.topbar-actions .topbar-btn,.topbar-actions .topbar-avatar{flex:0 0 auto}
+#sp-search{min-width:80px}
+@media (max-width: 1350px) and (min-width: 901px){
+  .topbar{padding:0 14px;gap:10px}
+  .topbar-actions{gap:8px}
+  #sp-search{width:130px !important}
+  .topbar-actions .csub{display:none}
+}
 @media (max-width: 900px){
   .sidebar{transform:translateX(-100%);transition:transform .25s ease;z-index:120}
   body.nav-open .sidebar{transform:translateX(0)}
@@ -243,6 +266,7 @@ html{scroll-behavior:smooth}
    table cards — automatically overrides this (inline styles win). --- */
 .card{padding:18px 22px}
 </style>
+<link rel="icon" type="image/png" href="/images/logo-icon.png">
 CSS;
         if (($h = strpos($html, '</head>')) !== false) {
             $html = substr($html, 0, $h).$style.substr($html, $h);
@@ -315,7 +339,10 @@ CSS;
         safe(function () { injectAdminLinks(cfg); });
         safe(function () { injectMySubNav(cfg); });
         safe(function () { injectTransfersNav(); });
-        safe(function () { injectLiveSalaryNav(); });
+        safe(function () { injectLiveSalaryNav(cfg); });
+        safe(function () { injectPayLedgerNav(); });
+        safe(function () { injectWaTplNav(); });
+        safe(function () { wireSidebarLogo(); });
         safe(function () { wireUserCard(cfg); });
         safe(function () { wireSubBanner(cfg); });
         safe(function () { wireResponsive(); });
@@ -396,7 +423,7 @@ CSS;
         employees: ['emp-list', 'emp-add', 'idcard', 'teams', 'onboarding-board', 'recruitment', 'bgv', 'documents', 'roster', 'offroll-agents', 'transfers'],
         attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'geofence', 'geofence-list', 'late-policy'],
         leave: ['leave-apply', 'leave-types', 'holidays'],
-        payroll: ['pay-cycle', 'salary-schedules', 'salary-setup', 'salary-gen', 'salary-approval', 'payslip', 'deductions', 'payout-recon', 'live-salary'],
+        payroll: ['pay-cycle', 'salary-schedules', 'salary-setup', 'salary-gen', 'salary-approval', 'payslip', 'deductions', 'payout-recon', 'live-salary', 'pay-ledger'],
         commissions: ['commissions', 'incentive-schemes', 'clawbacks', 'bonus-enc'],
         expenses: ['expenses', 'advance'],
         loans: ['loans'],
@@ -406,7 +433,7 @@ CSS;
         kb: ['kb', 'faqs', 'training-programs', 'training-records', 'training-content', 'code-of-conduct', 'helpdesk', 'letters-offer', 'letters-increment', 'letters-warning', 'letters-relieving', 'letters-templates', 'notice', 'messages', 'send-message'],
         reports: ['reports', 'activity-logs'],
         assets: ['assets'],
-        settings: ['companies', 'departments', 'designations', 'branches', 'banks', 'users', 'roles', 'settings', 'fin-year', 'my-subscription', 'branding', 'company-emails', 'wa-settings', 'sms-settings', 'sms-templates', 'approvals-inbox'],
+        settings: ['companies', 'departments', 'designations', 'branches', 'banks', 'users', 'roles', 'settings', 'fin-year', 'my-subscription', 'branding', 'company-emails', 'wa-settings', 'wa-templates', 'sms-settings', 'sms-templates', 'approvals-inbox'],
         saas: ['tenants', 'plans', 'subscriptions', 'invoices', 'payments', 'gateways', 'feature-flags']
     };
     // Resolve the current login's saved perms object from DB.roles (match by the
@@ -614,12 +641,25 @@ CSS;
         b.id = 'smartprs-burger'; b.className = 'topbar-btn';
         b.style.cssText = 'margin-right:8px;align-items:center;justify-content:center';
         b.innerHTML = '<i class="fas fa-bars"></i>';
-        b.onclick = function (e) { e.stopPropagation(); document.body.classList.toggle('nav-open'); };
+        b.title = 'Hide / show the menu';
+        // rev 88: desktop click = hide/expand the sidebar (full-width content),
+        // remembered per browser; mobile click = the slide-in drawer (as before).
+        b.onclick = function (e) {
+            e.stopPropagation();
+            if (window.innerWidth > 900) {
+                document.body.classList.toggle('nav-hidden');
+                try { localStorage.setItem('sp_navhide', document.body.classList.contains('nav-hidden') ? '1' : '0'); } catch (e2) {}
+            } else {
+                document.body.classList.toggle('nav-open');
+            }
+        };
         bar.insertBefore(b, bar.firstChild);
+        try { if (localStorage.getItem('sp_navhide') === '1') { document.body.classList.add('nav-hidden'); } } catch (e3) {}
         // Compact brand logo (mobile only — the sidebar logo is off-canvas).
         var brand = document.createElement('div');
         brand.id = 'smartprs-mlogo';
-        brand.innerHTML = '<span style="width:28px;height:28px;border-radius:8px;background:var(--accent);display:inline-flex;align-items:center;justify-content:center;color:#fff"><i class="fas fa-bolt"></i></span>'
+        // rev 91: real logo mark (works on the white topbar; full logo text is white).
+        brand.innerHTML = '<img src="/images/logo-icon.png" alt="" style="width:28px;height:28px;object-fit:contain">'
             + '<b style="font-size:15px;color:var(--navy)">Smart<span style="color:var(--accent)">PRS</span></b>';
         brand.style.cursor = 'pointer';
         brand.onclick = function () { try { go(cfg.role === 'Super Admin' ? 'platform-dashboard' : 'dashboard'); } catch (e) {} };
@@ -650,7 +690,23 @@ CSS;
         pm.innerHTML = '<i class="fas fa-envelope-circle-check"></i> Platform Email (SMTP)';
         pm.onclick = function () { try { go('company-emails', pm); } catch (e) {} };
         sec.appendChild(pm);
+        // rev 91c (Ejaz): the Interakt key for PLATFORM sends (signup welcome /
+        // payment, renewal alerts, website lead alerts) is pasted here — the
+        // WhatsApp API screen was only in tenant Administration before.
+        var wa = document.createElement('div');
+        wa.className = 'nav-item';
+        wa.innerHTML = '<i class="fab fa-whatsapp"></i> WhatsApp API (Interakt)';
+        wa.onclick = function () { try { go('wa-settings', wa); } catch (e) {} };
+        sec.appendChild(wa);
+        // rev 92: platform template registry (create → submit in Interakt → test).
+        var wt = document.createElement('div');
+        wt.className = 'nav-item';
+        wt.innerHTML = '<i class="fas fa-message"></i> WhatsApp Templates';
+        wt.onclick = function () { try { go('wa-templates', wt); } catch (e) {} };
+        sec.appendChild(wt);
         sec.appendChild(mk('/admin/landing', 'fa-globe', 'Landing Page (CMS)'));
+        sec.appendChild(mk('/admin/leads', 'fa-bullseye', 'Leads (Demo Requests)'));
+        sec.appendChild(mk('/admin/quotations', 'fa-file-invoice', 'Quotations'));
         sec.appendChild(mk('/admin/staff', 'fa-user-shield', 'Platform Staff'));
         sec.__adminLinks = true;
     }
@@ -684,6 +740,24 @@ CSS;
         anchor.parentNode.insertBefore(d, anchor.nextSibling);
         anchor.parentNode.__transfersNav = true;
     }
+    // rev 91: REAL Ametecs logo in the sidebar (Ejaz's file, public/images/logo.png).
+    // Done in boot JS (not app.html) — the prototype file is replaced wholesale on
+    // deploys and this keeps the swap in one reviewable place. The old bolt+text
+    // brand is hidden, not removed, so per-company applyBranding still works.
+    function wireSidebarLogo() {
+        var host = document.querySelector('.sidebar .brand');
+        if (!host || host.__realLogo) { return; }
+        var icon = host.querySelector('.brand-icon');
+        if (icon) { icon.style.display = 'none'; }
+        var txt = host.querySelector('.brand-text');
+        if (txt) { txt.style.display = 'none'; }
+        var img = document.createElement('img');
+        img.src = '/images/logo.png';
+        img.alt = 'SmartPRS - Reputation | Relationships | Results';
+        img.style.cssText = 'height:38px;width:auto;display:block;max-width:200px;object-fit:contain';
+        host.appendChild(img);
+        host.__realLogo = true;
+    }
     // rev 81 (team test #5): the sidebar user-card is STATIC prototype text
     // ("Ejaz Hussain · Managing Director") — show the real logged-in person.
     function wireUserCard(cfg) {
@@ -705,7 +779,14 @@ CSS;
     }
     // rev 79c (Ejaz): Live Salary belongs in MAIN, right under Dashboard —
     // moved out of Payroll (his explicit choice: "remove from payroll, your wish").
-    function injectLiveSalaryNav() {
+    function injectLiveSalaryNav(cfg) {
+        // rev 88 (Ejaz live check): the platform owner is not an employee — the
+        // Super Admin login gets NO Live Salary item (it was listing tenant /
+        // demo employees in the SaaS panel). Punch In stays (his choice).
+        if (cfg && cfg.role === 'Super Admin') {
+            document.querySelectorAll('.nav-item[data-id="live-salary"]').forEach(function (nv) { nv.style.display = 'none'; });
+            return;
+        }
         var dash = document.querySelector('.nav-item[data-id="dashboard"]');
         if (!dash || !dash.parentNode || dash.parentNode.__lsNav) { return; }
         document.querySelectorAll('.nav-item[data-id="live-salary"]').forEach(function (nv) { nv.style.display = 'none'; });
@@ -716,6 +797,22 @@ CSS;
         d.textContent = 'Live Salary';
         dash.parentNode.insertBefore(d, dash.nextSibling);
         dash.parentNode.__lsNav = true;
+    }
+    // rev 88 (Ejaz): the rev-87 money ledger (All / Salary / Commissions) gets
+    // its OWN nav item under Payroll — it was reachable only via a button
+    // inside Commission Entries and he could not find it. Placed after Payslips.
+    function injectPayLedgerNav() {
+        var anchor = document.querySelector('.nav-item[data-id="payslip"]')
+            || document.querySelector('.nav-item[data-id="salary-gen"]')
+            || document.querySelector('.nav-item[data-id="commissions"]');
+        if (!anchor || !anchor.parentNode || anchor.parentNode.__payLedgerNav) { return; }
+        var d = document.createElement('div');
+        d.className = 'nav-item';
+        d.setAttribute('data-id', 'pay-ledger');
+        d.setAttribute('onclick', "go('pay-ledger',this)");
+        d.textContent = 'Salary & Commission Ledger';
+        anchor.parentNode.insertBefore(d, anchor.nextSibling);
+        anchor.parentNode.__payLedgerNav = true;
     }
     // Subscription banner + lock-out UI (rev 75). States from the server:
     //   grace  → bottom warning bar (admin only), app fully usable
@@ -960,6 +1057,8 @@ CSS;
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['fin-year']) { SCREENS['fin-year'] = { title: 'Financial Year', type: 'custom' }; } } catch (e) {}
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['my-subscription']) { SCREENS['my-subscription'] = { title: 'My Subscription', type: 'custom' }; } } catch (e) {}
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['transfers']) { SCREENS['transfers'] = { title: 'Employee Transfers', type: 'custom' }; } } catch (e) {}
+        try { if (typeof SCREENS !== 'undefined' && !SCREENS['pay-ledger']) { SCREENS['pay-ledger'] = { title: 'Salary & Commission Ledger', type: 'custom' }; } } catch (e) {}
+        try { if (typeof SCREENS !== 'undefined' && !SCREENS['wa-templates']) { SCREENS['wa-templates'] = { title: 'WhatsApp Templates', type: 'custom' }; } } catch (e) {}
         // Money/HR request modules → real DB + hierarchy approval (generic engine).
         try {
             var RQ = { 'expenses': 'Expense Claims', 'advance': 'Salary Advance', 'loans': 'Loans & Advances', 'commissions': 'Commission Entries', 'clawbacks': 'Clawbacks / Reversals', 'increments': 'Increment / Appraisal', 'exits': 'Exit & FnF', 'bonus-enc': 'Bonus & Encashment' };
@@ -987,6 +1086,8 @@ CSS;
             if (id === 'fin-year') { return finYearScreen(); }
             if (id === 'my-subscription') { return mySubScreen(); }
             if (id === 'att-manual') { return attManualScreen(); }
+            if (id === 'pay-ledger') { return payLedgerScreen(); }
+            if (id === 'wa-templates') { return waTplScreen(); }
             if (MASTER_MAP[id]) { return masterScreen(id); }
             if (id === 'payslip') { return payslipHistoryScreen(); }
             if (id === 'kb') { return kbScreen(); }
@@ -1873,6 +1974,168 @@ CSS;
                 commLedgerLoad();
             }).catch(function () { if (typeof toast === 'function') { toast('Could not record'); } });
     };
+    // ---- rev 88 (Ejaz): the ledger as its OWN screen under Payroll -----------
+    // Same engine as the Commission Entries "Ledger" button (clBody + clRender);
+    // managers/HR pick any employee, everyone else opens straight on their own
+    // passbook (the server enforces self-only regardless of what is asked).
+    function payLedgerScreen() {
+        var d = window.__REQ && window.__REQ['commissions'];
+        var canPick = d ? (d.isManager !== false)
+            : (cfg.role === 'Admin' || cfg.role === 'Super Admin' || String(cfg.role || '').indexOf('HR') >= 0);
+        var picker = '';
+        if (canPick) {
+            var eopts = ((typeof DB !== 'undefined' && DB.employees) || []).map(function (e2) { return '<option value="' + String(e2.name || '').replace(/"/g, '&quot;') + '">' + (e2.id || '') + '</option>'; }).join('');
+            picker = '<div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap"><input id="cl_emp" list="cl_empdl" placeholder="Type to pick an employee…" autocomplete="off" style="flex:1;min-width:220px;max-width:420px;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc"><datalist id="cl_empdl">' + eopts + '</datalist><button class="btn btn-primary btn-sm" onclick="commLedgerLoad()"><i class="fas fa-book"></i> Open ledger</button></div>';
+        }
+        setTimeout(function () { if (!canPick) { commLedgerLoad(); } }, 30);
+        return pghead('Salary & Commission Ledger', 'Complete money passbook per employee — salary months, commission entries, payments and running balance', '')
+            + '<div class="card">' + picker
+            + '<div id="clBody" style="font-size:13px;color:var(--text3)">' + (canPick ? 'Pick an employee to see their passbook.' : 'Loading your ledger…') + '</div></div>';
+    }
+    // ---- rev 92: WhatsApp Templates module (registry + approval workflow) ----
+    // Interakt has NO public create-template API — templates are created and
+    // approved in their dashboard. This screen is the single registry + status
+    // tracker: Draft → copy into Interakt + submit there → Submitted →
+    // [Send test] (a successful send PROVES approval → auto-marks Approved).
+    window.__WATPL = null;
+    function waTplLoad() {
+        fetch(cfg.waTplBase, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__WATPL = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__WATPL = { ok: false, error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    var WATPL_ST = { draft: ['Draft', '#64748b', '#f1f5f9'], submitted: ['Submitted', '#a16207', '#fef3c7'], approved: ['Approved', '#15803d', '#dcfce7'], rejected: ['Rejected', '#b91c1c', '#fee2e2'] };
+    var WATPL_PURP = { welcome: 'Signup welcome', payment: 'Payment confirmation', renewal: 'Renewal reminder', lead: 'Website lead alert', custom: 'Custom' };
+    // rev 93: the server sends the role-correct purpose list (platform purposes
+    // for the super admin, the full HR lifecycle list for tenant admins).
+    function waTplPurpMap() { return (window.__WATPL && window.__WATPL.purposes) || WATPL_PURP; }
+    function waTplChip(st) { var c = WATPL_ST[st] || WATPL_ST.draft; return '<span style="background:' + c[2] + ';color:' + c[1] + ';font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;text-transform:uppercase;letter-spacing:.3px">' + c[0] + '</span>'; }
+    function waTplEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function waTplScreen() {
+        var d = window.__WATPL;
+        if (!d) { setTimeout(function () { if (!window.__WATPL) { waTplLoad(); } }, 10); return pghead('WhatsApp Templates', 'Loading…', '') + '<div class="card"><div style="padding:30px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (!d.ok) { return pghead('WhatsApp Templates', 'Error', '') + '<div class="card"><div style="padding:22px;color:var(--red)">' + waTplEsc(d.error || 'Could not load') + '</div></div>'; }
+        var warn = d.configured ? '' : '<div style="background:#fef3c7;border:1px solid #fde68a;color:#92400e;border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:13px"><i class="fas fa-triangle-exclamation"></i> Interakt is not connected yet — add the API key in <b>WhatsApp API (Interakt)</b> first. You can still prepare templates here.</div>';
+        var steps = '<div style="font-size:12.5px;color:var(--text2);background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:11px 14px;margin-bottom:14px;line-height:1.7">'
+            + '<b>How approval works:</b> 1) Create/edit the template here &middot; 2) <b>Copy</b> it, open the <a href="' + (d.dashUrl || 'https://app.interakt.ai/templates/list') + '" target="_blank" rel="noopener" style="color:var(--accent)">Interakt dashboard <i class="fas fa-up-right-from-square" style="font-size:10px"></i></a>, create the SAME name/language/category there and submit &middot; 3) Mark it <b>Submitted</b> here &middot; 4) Once Interakt shows approved (minutes&ndash;hours), hit <b>Send test</b> — a delivered test auto-marks it <b>Approved</b> and the flows start using it.'
+            + '</div>';
+        var rows = (d.rows || []).map(function (t) {
+            var acts = '<a onclick="waTplEdit(' + t.id + ')" title="Edit" style="cursor:pointer;margin-right:10px"><i class="fas fa-pen"></i></a>'
+                + '<a onclick="waTplCopy(' + t.id + ')" title="Copy body for Interakt" style="cursor:pointer;margin-right:10px"><i class="fas fa-copy"></i></a>'
+                + (t.status === 'draft' ? '<a onclick="waTplStatus(' + t.id + ',&#39;submitted&#39;)" title="I have submitted it in Interakt" style="cursor:pointer;margin-right:10px;color:#a16207"><i class="fas fa-paper-plane"></i></a>' : '')
+                + '<a onclick="waTplTest(' + t.id + ')" title="Send test (proves approval)" style="cursor:pointer;margin-right:10px;color:#15803d"><i class="fas fa-vial"></i></a>'
+                + '<a onclick="waTplDel(' + t.id + ')" title="Delete" style="cursor:pointer;color:var(--red)"><i class="fas fa-trash"></i></a>';
+            var err = t.lastError ? '<div style="font-size:11px;color:#b91c1c;margin-top:3px;max-width:380px;white-space:normal">' + waTplEsc(String(t.lastError).slice(0, 220)) + '</div>' : '';
+            return '<tr>'
+                + '<td style="white-space:nowrap">' + (waTplPurpMap()[t.purpose] || t.purpose) + '</td>'
+                + '<td><code style="font-size:12.5px">' + waTplEsc(t.name) + '</code>' + err + '</td>'
+                + '<td>' + waTplEsc(t.language) + '</td>'
+                + '<td>' + waTplEsc(t.category) + '</td>'
+                + '<td style="text-align:center">' + t.varCount + '</td>'
+                + '<td>' + waTplChip(t.status) + (t.lastTestAt ? '<div style="font-size:10.5px;color:var(--text3);margin-top:2px">tested ' + t.lastTestAt + '</div>' : '') + '</td>'
+                + '<td style="white-space:nowrap">' + acts + '</td></tr>';
+        }).join('');
+        return pghead('WhatsApp Templates', d.isPlatform ? 'Platform templates — used by signup welcome/payment, renewal alerts and website lead alerts' : 'Your WhatsApp message templates (Interakt)', '')
+            + warn + steps
+            + '<div class="card" style="padding:0">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)"><b>' + (d.rows || []).length + ' template(s)</b>'
+            + '<div><a href="' + cfg.waTplBase + '/export" class="btn btn-outline btn-sm" style="margin-right:8px"><i class="fas fa-file-csv"></i> Export CSV</a>'
+            + '<a href="' + (d.dashUrl || '#') + '" target="_blank" rel="noopener" class="btn btn-outline btn-sm" style="margin-right:8px"><i class="fas fa-up-right-from-square"></i> Interakt dashboard</a>'
+            + '<button class="btn btn-primary btn-sm" onclick="waTplEdit(0)"><i class="fas fa-plus"></i> New Template</button></div></div>'
+            + '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>'
+            + ['Purpose', 'Template name', 'Lang', 'Category', 'Vars', 'Status', 'Actions'].map(function (h) { return '<th style="text-align:left;padding:10px 14px;font-size:11px;text-transform:uppercase;color:var(--text3);border-bottom:1px solid var(--border)">' + h + '</th>'; }).join('')
+            + '</tr></thead><tbody>'
+            + (rows || '<tr><td colspan="7" style="padding:26px;text-align:center;color:var(--text3)">No templates yet — click New Template.</td></tr>')
+            + '</tbody></table></div></div>';
+    }
+    window.waTplEdit = function (id) {
+        var d = window.__WATPL || {};
+        var t = (d.rows || []).find(function (x) { return x.id === id; }) || { purpose: 'custom', name: '', language: 'en', category: 'utility', body: '', sampleValues: '' };
+        var inp7 = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var lbl7 = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var pm = waTplPurpMap();
+        var purpOpts = Object.keys(pm).map(function (k) { return '<option value="' + k + '"' + (t.purpose === k ? ' selected' : '') + '>' + pm[k] + '</option>'; }).join('');
+        var catOpts = ['utility', 'marketing', 'authentication'].map(function (k) { return '<option value="' + k + '"' + (t.category === k ? ' selected' : '') + '>' + k + '</option>'; }).join('');
+        commModal('<div class="card" style="max-width:660px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:16px"><i class="fab fa-whatsapp" style="color:#25d366"></i> ' + (id ? 'Edit' : 'New') + ' WhatsApp Template</h3><button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:20px 22px;display:grid;grid-template-columns:1fr 1fr;gap:13px">'
+            + '<div><label style="' + lbl7 + '">Purpose</label><select id="wt_purpose" style="' + inp7 + '">' + purpOpts + '</select></div>'
+            + '<div><label style="' + lbl7 + '">Template name (exact Interakt name)</label><input id="wt_name" style="' + inp7 + '" value="' + waTplEsc(t.name) + '" placeholder="smartprs_welcome"></div>'
+            + '<div><label style="' + lbl7 + '">Language code</label><input id="wt_lang" style="' + inp7 + '" value="' + waTplEsc(t.language) + '" placeholder="en"></div>'
+            + '<div><label style="' + lbl7 + '">Category</label><select id="wt_cat" style="' + inp7 + '">' + catOpts + '</select></div>'
+            + '<div style="grid-column:1/-1"><label style="' + lbl7 + '">Message body — variables as {{1}}, {{2}}, &hellip; (must not start or end with a variable)</label><textarea id="wt_body" rows="7" style="' + inp7 + ';resize:vertical" oninput="waTplVarHint()">' + waTplEsc(t.body) + '</textarea><div id="wt_varhint" style="font-size:11px;color:var(--text3);margin-top:3px"></div></div>'
+            + '<div style="grid-column:1/-1"><label style="' + lbl7 + '">Sample values (comma-separated, in variable order — used for approval samples and the test send)</label><input id="wt_samples" style="' + inp7 + '" value="' + waTplEsc(t.sampleValues) + '" placeholder="Ravi Kumar, Apex Collections, ..."></div>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 22px 20px"><button class="btn btn-outline" onclick="commModalClose()">Cancel</button><button class="btn btn-primary" onclick="waTplSave(' + (id || 0) + ')"><i class="fas fa-check"></i> Save</button></div></div>');
+        setTimeout(function () { try { waTplVarHint(); } catch (e) {} }, 30);
+    };
+    window.waTplVarHint = function () {
+        var b = (document.getElementById('wt_body') || {}).value || '';
+        var n = b.split('{{').length - 1;
+        var el = document.getElementById('wt_varhint');
+        if (el) { el.textContent = n + ' variable(s) detected. Sample values below must have the same count.'; }
+    };
+    window.waTplSave = function (id) {
+        var g7 = function (x) { var el = document.getElementById(x); return el ? el.value : ''; };
+        var payload = { id: id || null, purpose: g7('wt_purpose'), name: g7('wt_name').trim().toLowerCase(), language: g7('wt_lang').trim() || 'en', category: g7('wt_cat'), body: g7('wt_body'), sample_values: g7('wt_samples') };
+        if (!payload.name || !payload.body) { if (typeof toast === 'function') { toast('Template name and body are required'); } return; }
+        fetch(cfg.waTplBase, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not save'); } return; }
+                if (typeof toast === 'function') { toast(j.message || 'Saved'); }
+                commModalClose(); window.__WATPL = null; waTplLoad();
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not save'); } });
+    };
+    window.waTplDel = function (id) {
+        if (!confirm('Delete this template entry? (This does NOT delete it inside Interakt.)')) { return; }
+        fetch(cfg.waTplBase + '/' + id + '/delete', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (typeof toast === 'function') { toast((j && j.message) || 'Deleted'); }
+                window.__WATPL = null; waTplLoad();
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not delete'); } });
+    };
+    window.waTplStatus = function (id, st) {
+        fetch(cfg.waTplBase + '/' + id + '/status', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ status: st }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (typeof toast === 'function') { toast((j && j.message) || 'Updated'); }
+                window.__WATPL = null; waTplLoad();
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not update'); } });
+    };
+    window.waTplCopy = function (id) {
+        var d = window.__WATPL || {}; var t = (d.rows || []).find(function (x) { return x.id === id; });
+        if (!t) { return; }
+        var txt = t.body || '';
+        var done = function () { if (typeof toast === 'function') { toast('Body copied — paste it into the Interakt template editor (name: ' + t.name + ', language: ' + t.language + ', category: ' + t.category + ')'); } };
+        try { navigator.clipboard.writeText(txt).then(done); } catch (e) {
+            var ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy'); } catch (e2) {}
+            ta.remove(); done();
+        }
+    };
+    window.waTplTest = function (id) {
+        var mob = window.prompt('Send the test WhatsApp to which mobile? (10 digits, must be a real WhatsApp number)');
+        if (!mob) { return; }
+        if (typeof toast === 'function') { toast('Sending test…'); }
+        fetch(cfg.waTplBase + '/' + id + '/test', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ mobile: mob }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Test sent — template approved!'); } }
+                else { alert((j && j.error) || 'Test failed.'); }
+                window.__WATPL = null; waTplLoad();
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not send the test'); } });
+    };
+    // Tenant nav: "WhatsApp Templates" under Administration, next to WhatsApp API.
+    function injectWaTplNav() {
+        var anchor = document.querySelector('.nav-item[data-id="wa-settings"]')
+            || document.querySelector('.nav-item[data-id="sms-templates"]');
+        if (!anchor || !anchor.parentNode || anchor.parentNode.__waTplNav) { return; }
+        var d = document.createElement('div');
+        d.className = 'nav-item';
+        d.setAttribute('data-id', 'wa-templates');
+        d.setAttribute('onclick', "go('wa-templates',this)");
+        d.textContent = 'WhatsApp Templates';
+        anchor.parentNode.insertBefore(d, anchor.nextSibling);
+        anchor.parentNode.__waTplNav = true;
+    }
     // Self-claims: a non-manager opening the New Commission Entry dialog gets
     // the employee selector FIXED to themself (server enforces it too).
     (function () {
@@ -2583,8 +2846,12 @@ CSS;
             + '<div style="display:flex;gap:10px;margin-bottom:12px"><div style="flex:1"><label style="' + lab + '">Plan</label><select id="te_plan" class="filter-select" style="width:100%">' + planOpts + '</select></div>'
             + '<div style="width:120px"><label style="' + lab + '">Seats</label><input id="te_seats" type="number" min="0" class="filter-select" style="width:100%" value="' + (t.seatsLicensed || '') + '"></div></div>'
             + '<div style="margin-bottom:12px"><label style="' + lab + '">Subdomain <span style="color:var(--text3)">(login portal path / vanity)</span></label><input id="te_sub" class="filter-select" style="width:100%" value="' + esc(t.subdomain) + '" placeholder="acme"></div>'
-            + '<div style="margin-bottom:4px"><label style="' + lab + '">Custom domain <span style="color:var(--text3)">(e.g. hr.acme.com)</span></label><input id="te_domain" class="filter-select" style="width:100%" value="' + esc(t.customDomain) + '" placeholder="hr.acme.com"></div>'
-            + '<div style="font-size:11px;color:var(--text3);margin-top:4px">Point the domain\'s DNS at this server for the tenant\'s branded login to work.</div>'
+            + '<div style="margin-bottom:12px"><label style="' + lab + '">Custom domain <span style="color:var(--text3)">(e.g. hr.acme.com)</span></label><input id="te_domain" class="filter-select" style="width:100%" value="' + esc(t.customDomain) + '" placeholder="hr.acme.com"></div>'
+            + '<div style="display:flex;gap:10px;margin-bottom:4px">'
+            + '<div style="flex:1"><label style="' + lab + '">State (GST) <span style="color:var(--text3)">Telangana = CGST+SGST</span></label><input id="te_state" class="filter-select" style="width:100%" list="te_state_dl" value="' + esc(t.state) + '" placeholder="Telangana (36)"><datalist id="te_state_dl">' + ['Andhra Pradesh (37)', 'Delhi (07)', 'Gujarat (24)', 'Karnataka (29)', 'Kerala (32)', 'Madhya Pradesh (23)', 'Maharashtra (27)', 'Odisha (21)', 'Punjab (03)', 'Rajasthan (08)', 'Tamil Nadu (33)', 'Telangana (36)', 'Uttar Pradesh (09)', 'West Bengal (19)'].map(function (s2) { return '<option value="' + s2 + '">'; }).join('') + '</datalist></div>'
+            + '<div style="flex:1"><label style="' + lab + '">GSTIN <span style="color:var(--text3)">(printed on invoices)</span></label><input id="te_gstin" class="filter-select" style="width:100%;text-transform:uppercase" maxlength="15" value="' + esc(t.gstin) + '" placeholder="36AAHCT0971F1ZB"></div>'
+            + '</div>'
+            + '<div style="font-size:11px;color:var(--text3);margin-top:4px">Point the domain\'s DNS at this server for the tenant\'s branded login to work. GST: invoices split CGST+SGST when the buyer state code matches ours (36), else IGST.</div>'
             + '</div>'
             + '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px">'
             + '<button class="btn btn-outline" onclick="document.getElementById(\'tenant-ov\').remove()">Cancel</button>'
@@ -2593,7 +2860,7 @@ CSS;
     };
     window.tenantUpdate = function (id) {
         var g = function (i) { var e = document.getElementById(i); return e ? e.value : ''; };
-        var payload = { name: g('te_name'), owner_email: g('te_email'), plan_id: g('te_plan') ? Number(g('te_plan')) : null, seats_licensed: g('te_seats') ? Number(g('te_seats')) : null, subdomain: g('te_sub'), custom_domain: g('te_domain') };
+        var payload = { name: g('te_name'), owner_email: g('te_email'), plan_id: g('te_plan') ? Number(g('te_plan')) : null, seats_licensed: g('te_seats') ? Number(g('te_seats')) : null, subdomain: g('te_sub'), custom_domain: g('te_domain'), state: g('te_state'), gstin: g('te_gstin').toUpperCase() };
         if (!payload.name.trim()) { if (typeof toast === 'function') { toast('Tenant name is required'); } return; }
         fetch(cfg.saasTenantsUrl + '/' + id, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
             .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
@@ -3693,7 +3960,7 @@ CSS;
     window.recruitSetTab = function (t) { window.__RECRUIT_TAB = t; if (typeof render === 'function') { render(); } };
     function recruitTabBar(tab, d) {
         var s = d.stats || {};
-        var tabs = [['pipeline', 'Pipeline', s.candidates || 0], ['requisitions', 'Requisitions', (d.jobs || []).length], ['pool', 'Talent Pool', s.poolCount || 0]];
+        var tabs = [['pipeline', 'Pipeline', s.candidates || 0], ['requisitions', 'Requisitions', (d.jobs || []).length], ['pool', 'Talent Pool', s.poolCount || 0], ['drives', 'Hiring Drives', ''], ['campaigns', 'WhatsApp Campaigns', '']];
         var html = tabs.map(function (t) {
             var on = (t[0] === tab);
             return '<span onclick="recruitSetTab(' + "'" + t[0] + "'" + ')" style="cursor:pointer;padding:9px 16px;font-size:14px;font-weight:600;border-bottom:2.5px solid ' + (on ? 'var(--accent)' : 'transparent') + ';color:' + (on ? 'var(--text1)' : 'var(--text3)') + '">' + t[1] + ' <span style="font-size:12px;color:var(--text3)">' + t[2] + '</span></span>';
@@ -3708,6 +3975,7 @@ CSS;
         var tab = window.__RECRUIT_TAB || 'pipeline';
         var addBtns = '<a href="' + cfg.recruitmentBase + '/template" class="btn btn-outline btn-sm" style="text-decoration:none" title="Download CSV template"><i class="fas fa-file-csv"></i> Template</a> '
             + '<label class="btn btn-outline btn-sm" style="cursor:pointer" title="Import applicants from a job-portal export (Excel .xlsx or CSV) straight into the Talent Pool"><i class="fas fa-file-import"></i> Import from Portal<input type="file" accept=".xlsx,.xls,.csv,text/csv" style="display:none" onchange="recruitImportFile(this)"></label> '
+            + '<label class="btn btn-sm" style="cursor:pointer;background:#25d366;color:#fff" title="Upload a portal export (needs Name + Mobile columns) and WhatsApp them directly"><i class="fab fa-whatsapp"></i> Bulk WhatsApp from file<input type="file" accept=".xlsx,.xls,.csv,text/csv" style="display:none" onchange="recruitMsgFile(this)"></label> '
             + '<button class="btn btn-outline btn-sm" onclick="recruitReq(null)"><i class="fas fa-clipboard-list"></i> Raise Requisition</button> '
             + '<button class="btn btn-primary btn-sm" onclick="recruitCand(null)"><i class="fas fa-user-plus"></i> Add Candidate</button>';
         var jcs = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border)';
@@ -3717,7 +3985,8 @@ CSS;
             var pr = RPRIO[j.priority] || ['—', '#64748b'];
             var sc = j.status === 'open' ? '#16a34a' : (j.status === 'closed' ? '#dc2626' : '#f59e0b');
             var fillTxt = j.filled + ' / ' + j.openings + (j.remaining ? '' : ' ✓');
-            var act = '<i class="fas fa-pen" title="Edit" onclick="recruitReq(' + j.id + ')" style="cursor:pointer;color:var(--text2);margin-right:12px"></i>';
+            var act = '<i class="fab fa-whatsapp" title="WhatsApp everyone in this requisition pipeline" onclick="recruitMsgOpen(&#39;pipeline&#39;,' + j.id + ',&#39;' + rqA(j.title).replace(/&#39;/g, '') + '&#39;)" style="cursor:pointer;color:#25d366;margin-right:12px"></i>'
+                + '<i class="fas fa-pen" title="Edit" onclick="recruitReq(' + j.id + ')" style="cursor:pointer;color:var(--text2);margin-right:12px"></i>';
             if (canAppr && j.approval_status === 'pending') {
                 act += '<i class="fas fa-check" title="Approve" onclick="recruitApprove(' + j.id + ')" style="cursor:pointer;color:#16a34a;margin-right:12px"></i>';
                 act += '<i class="fas fa-ban" title="Reject" onclick="recruitRejectReq(' + j.id + ')" style="cursor:pointer;color:#f59e0b;margin-right:12px"></i>';
@@ -3737,7 +4006,7 @@ CSS;
         var jth = ['Req', 'Position', 'Dept / Location', 'CTC Band', 'Filled', 'Priority', 'Approval', 'Status', ''].map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
         var jobsSection = ((canAppr && s.pendingReqs) ? '<div style="font-size:12px;color:#f59e0b;margin-bottom:10px"><i class="fas fa-clock"></i> ' + s.pendingReqs + ' requisition(s) awaiting your approval.</div>' : '')
             + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + jth + '</tr></thead><tbody>' + (jobs || '<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--text3)">No requisitions yet — click “Raise Requisition”.</td></tr>') + '</tbody></table></div>';
-        var content = tab === 'requisitions' ? jobsSection : (tab === 'pool' ? recruitPoolSection(d) : recruitPipelineSection(d));
+        var content = tab === 'requisitions' ? jobsSection : (tab === 'pool' ? recruitPoolSection(d) : (tab === 'campaigns' ? recruitCampaignsSection() : (tab === 'drives' ? driveSection() : recruitPipelineSection(d))));
         return pghead('Recruitment', 'Pipeline, requisitions and talent pool', addBtns) + recruitTabBar(tab, d) + content;
     }
     function recruitInp() { return 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc'; }
@@ -3905,6 +4174,7 @@ CSS;
             + '<div style="flex:1;min-width:120px"><label style="' + lbl + '">Location</label><input id="rploc" value="' + rqA(f.loc) + '" style="' + inp + '"></div>'
             + '<button class="btn btn-primary btn-sm" onclick="recruitPoolLoad()"><i class="fas fa-magnifying-glass"></i> Search</button>'
             + (f.q || f.loc || f.exp || f.ctc ? '<button class="btn btn-outline btn-sm" onclick="recruitPoolClear()">Clear</button>' : '')
+            + ((st.loaded && (st.list || []).length) ? '<button class="btn btn-sm" style="background:#25d366;color:#fff" onclick="recruitMsgOpen(&#39;pool&#39;)" title="WhatsApp every candidate currently shown"><i class="fab fa-whatsapp"></i> Message all ' + (st.list || []).length + '</button>' : '')
             + '</div>';
         if (!st.loaded) { setTimeout(function () { if (!window.__RECRUIT_POOL.loaded) { recruitPoolLoad(); } }, 30); }
         return '<div><div class="card" style="padding:16px">'
@@ -3915,7 +4185,7 @@ CSS;
         var sl = window.__RECRUIT_SHORTLIST || {}; var ids = Object.keys(sl); var n = ids.length;
         var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
             + '<div style="font-weight:700;font-size:14px"><i class="fas fa-square-check" style="color:#16a34a"></i> Shortlist <span style="color:var(--text3);font-weight:600">' + n + '</span></div>'
-            + (n ? '<div><button class="btn btn-primary btn-sm" onclick="recruitPoolAssignBulk()"><i class="fas fa-arrow-right-to-bracket"></i> Assign to requisition</button> <button class="btn btn-outline btn-sm" onclick="recruitPoolClearSel()">Clear</button></div>' : '')
+            + (n ? '<div><button class="btn btn-sm" style="background:#25d366;color:#fff" onclick="recruitMsgOpen(&#39;shortlist&#39;)"><i class="fab fa-whatsapp"></i> WhatsApp ' + n + '</button> <button class="btn btn-primary btn-sm" onclick="recruitPoolAssignBulk()"><i class="fas fa-arrow-right-to-bracket"></i> Assign to requisition</button> <button class="btn btn-outline btn-sm" onclick="recruitPoolClearSel()">Clear</button></div>' : '')
             + '</div>';
         var body;
         if (!n) {
@@ -4154,6 +4424,451 @@ CSS;
                 if (j && j.ok) { if (cb) { cb(j); } } else if (typeof toast === 'function') { toast((j && j.error) || 'Failed'); }
             }).catch(function () { if (typeof toast === 'function') { toast('Request failed'); } });
     }
+    // ======================================================================
+    // rev 94: BULK WhatsApp for recruitment (Ejaz). Sources: shortlist, pool
+    // results, a requisition pipeline, or a CSV upload. {{1}}=candidate name
+    // (auto, per-row); {{2}}.. are shared values the recruiter fills once.
+    // ======================================================================
+    window.__RECRUIT_MSG = window.__RECRUIT_MSG || { tpls: null, source: null, ids: [], rows: [], jobId: null, label: '' };
+    var RECRUIT_RESP = { '': ['—', 'var(--text3)'], interested: ['Interested', '#15803d'], will_attend: ['Will attend', '#0369a1'], attended: ['Attended', '#7c3aed'], hired: ['Hired', '#16a34a'], not_interested: ['Not interested', '#92400e'], declined: ['Declined', '#b91c1c'] };
+    var RECRUIT_DLV = { queued: ['Queued', '#64748b', '#f1f5f9'], sent: ['Sent', '#a16207', '#fef3c7'], failed: ['Failed', '#b91c1c', '#fee2e2'], delivered: ['Delivered', '#0369a1', '#e0f2fe'], read: ['Read', '#15803d', '#dcfce7'] };
+    function recruitMsgChip(map, key) { var c = map[key] || map[''] || ['—', '#64748b', '#f1f5f9']; return '<span style="background:' + (c[2] || '#f1f5f9') + ';color:' + c[1] + ';font-size:10px;font-weight:800;padding:2px 8px;border-radius:99px;text-transform:uppercase;letter-spacing:.3px">' + c[0] + '</span>'; }
+    // Open the campaign composer for a given source.
+    window.recruitMsgOpen = function (source, jobId, label, driveId) {
+        var st = window.__RECRUIT_MSG; st.source = source; st.jobId = jobId || null; st.label = label || '';
+        st.driveId = driveId || null;
+        st.ids = []; st.rows = (source === 'csv') ? (st.rows || []) : [];
+        if (source === 'shortlist') { st.ids = Object.keys(window.__RECRUIT_SHORTLIST || {}).map(function (x) { return parseInt(x, 10); }); }
+        else if (source === 'pool') { st.ids = ((window.__RECRUIT_POOL && window.__RECRUIT_POOL.list) || []).map(function (c) { return c.id; }); }
+        var n = source === 'pipeline' ? null : (source === 'csv' ? (st.rows || []).length : st.ids.length);
+        if (source !== 'pipeline' && !n) { if (typeof toast === 'function') { toast('No recipients selected.'); } return; }
+        recruitModal('<div id="rmsg-body"><div style="padding:30px;text-align:center;color:var(--text3)">Loading your WhatsApp templates…</div></div>', true);
+        // Fetch the tenant's templates (the WhatsApp Templates module list).
+        fetch(cfg.waTplBase, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                window.__RECRUIT_MSG.tpls = (j && j.rows) || [];
+                window.__RECRUIT_MSG.waReady = !!(j && j.configured);
+                recruitMsgRender();
+            }).catch(function () { window.__RECRUIT_MSG.tpls = []; recruitMsgRender(); });
+    };
+    function recruitMsgRecipientCount() {
+        var st = window.__RECRUIT_MSG;
+        if (st.source === 'pipeline') { return 'everyone in the "' + rqT(st.label) + '" pipeline'; }
+        if (st.source === 'csv') { return (st.rows || []).length + ' candidate(s) from the file'; }
+        return st.ids.length + ' candidate(s)';
+    }
+    function recruitMsgRender() {
+        var st = window.__RECRUIT_MSG; var tpls = st.tpls || [];
+        var inp = recruitInp(), lbl = recruitLbl();
+        // Recruitment-relevant templates first (interview / walk-in), approved on top.
+        var pref = { walkin_invite: 0, interview_schedule: 1 };
+        tpls = tpls.slice().sort(function (a, b) {
+            var ap = (pref[a.purpose] != null ? pref[a.purpose] : 5), bp = (pref[b.purpose] != null ? pref[b.purpose] : 5);
+            if (a.status === 'approved' && b.status !== 'approved') { return -1; }
+            if (b.status === 'approved' && a.status !== 'approved') { return 1; }
+            return ap - bp;
+        });
+        var warn = st.waReady ? '' : '<div style="background:#fef3c7;border:1px solid #fde68a;color:#92400e;border-radius:9px;padding:10px 12px;margin-bottom:12px;font-size:12.5px"><i class="fas fa-triangle-exclamation"></i> WhatsApp is not connected yet — add the Interakt API key in WhatsApp API, and approve the Walk-in / Interview templates, before sending.</div>';
+        var opts = tpls.length
+            ? tpls.map(function (t) { return '<option value="' + t.id + '">' + waTplPurpMapSafe(t.purpose) + ' · ' + rqA(t.name) + (t.status === 'approved' ? ' ✓ approved' : ' (' + t.status + ')') + '</option>'; }).join('')
+            : '<option value="">No templates yet — create them in WhatsApp Templates</option>';
+        recruitMsgSetBody(
+            '<h3 style="margin:0 0 4px"><i class="fab fa-whatsapp" style="color:#25d366"></i> Bulk WhatsApp</h3>'
+            + '<div style="font-size:12.5px;color:var(--text3);margin-bottom:14px">Sending to <b>' + recruitMsgRecipientCount() + '</b>. Each message is personalised with the candidate&#39;s name; you fill the shared details once below.</div>'
+            + warn
+            + '<label style="' + lbl + '">Template</label><select id="rmsg_tpl" style="' + inp + '" onchange="recruitMsgPick()">' + opts + '</select>'
+            + '<div id="rmsg_vars" style="margin-top:14px"></div>'
+            + '<div id="rmsg_preview" style="margin-top:14px"></div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px"><button class="btn btn-outline" onclick="recruitClose()">Cancel</button><button class="btn btn-sm" style="background:#25d366;color:#fff;padding:9px 18px" onclick="recruitMsgSend()"><i class="fas fa-paper-plane"></i> Send WhatsApp</button></div>'
+        );
+        if (tpls.length) {
+            // rev 95: from a Hiring Drive, pre-select the matching template.
+            var st2 = window.__RECRUIT_MSG;
+            if (st2.driveId && window.__DRIVE_CTX) {
+                var want = (window.__DRIVE_CTX.type === 'walkin') ? 'walkin_invite' : 'interview_schedule';
+                var match = tpls.filter(function (t) { return t.purpose === want; })[0] || tpls[0];
+                setTimeout(function () { var sel = document.getElementById('rmsg_tpl'); if (sel && match) { sel.value = match.id; } recruitMsgPick(); }, 20);
+            } else { setTimeout(recruitMsgPick, 20); }
+        }
+    }
+    // Compose the shared {{2}}.. values from a drive for a given template.
+    function driveComposeVars(dr, t) {
+        var vals = {};
+        var dateStr = (dr.date || '');
+        if (dr.dateTo && dr.dateTo !== dr.date) { dateStr += ' to ' + dr.dateTo; }
+        if (dr.timeFrom || dr.timeTo) { dateStr += ' (' + (dr.timeFrom || '') + (dr.timeTo ? ' - ' + dr.timeTo : '') + ')'; }
+        var venue = (dr.venue || '');
+        if (dr.locationLink) { venue += (venue ? ' - ' : '') + dr.locationLink; }
+        if (dr.coordinatorName || dr.coordinatorPhone) { venue += ' - Contact: ' + (dr.coordinatorName || '') + (dr.coordinatorPhone ? ', ' + dr.coordinatorPhone : ''); }
+        var modeMap = { walkin: 'Walk-in', scheduled: 'In-person interview', telephonic: 'Telephonic / video' };
+        if (t.purpose === 'walkin_invite') { vals = { 2: dr.company || '', 3: dr.position || '', 4: dateStr, 5: venue }; }
+        else { vals = { 2: dr.company || '', 3: dr.position || '', 4: dateStr, 5: (modeMap[dr.type] || 'Interview') + (venue ? ' - ' + venue : '') }; }
+        return vals;
+    }
+    function waTplPurpMapSafe(p) { var m = waTplPurpMap(); return m[p] || p || 'Custom'; }
+    function recruitMsgSetBody(html) { var b = document.getElementById('rmsg-body'); if (b) { b.innerHTML = html; } }
+    function recruitMsgCurrentTpl() {
+        var el = document.getElementById('rmsg_tpl'); if (!el) { return null; }
+        var id = parseInt(el.value, 10);
+        return (window.__RECRUIT_MSG.tpls || []).filter(function (t) { return t.id === id; })[0] || null;
+    }
+    window.recruitMsgPick = function () {
+        var t = recruitMsgCurrentTpl(); var box = document.getElementById('rmsg_vars'); var inp = recruitInp(), lbl = recruitLbl();
+        if (!t || !box) { return; }
+        var samples = String(t.sampleValues || '').split(',').map(function (s) { return s.trim(); });
+        var html = '';
+        // Variable 1 is always the candidate name (auto). Ask for {{2}}..{{n}}.
+        for (var i = 2; i <= (t.varCount || 0); i++) {
+            var ph = samples[i - 1] || '';
+            html += '<div style="margin-bottom:10px"><label style="' + lbl + '">Value for {{' + i + '}}</label><input id="rmsg_v' + i + '" data-vi="' + i + '" value="' + rqA(ph) + '" placeholder="' + rqA(ph) + '" style="' + inp + '" oninput="recruitMsgPreview()"></div>';
+        }
+        if (!(t.varCount > 1)) { html = '<div style="font-size:12px;color:var(--text3)">This template has no extra variables — only the candidate name is inserted.</div>'; }
+        box.innerHTML = '<div style="font-weight:700;font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">Shared details' + (window.__RECRUIT_MSG.driveId ? ' <span style="color:#16a34a;font-weight:600;text-transform:none">· pre-filled from the drive</span>' : '') + '</div>' + html;
+        // rev 95: pre-fill the shared values from the linked drive.
+        if (window.__RECRUIT_MSG.driveId && window.__DRIVE_CTX) {
+            var dv = driveComposeVars(window.__DRIVE_CTX, t);
+            for (var vi in dv) { var el = document.getElementById('rmsg_v' + vi); if (el && dv[vi]) { el.value = dv[vi]; } }
+        }
+        recruitMsgPreview();
+    };
+    window.recruitMsgPreview = function () {
+        var t = recruitMsgCurrentTpl(); var box = document.getElementById('rmsg_preview'); if (!t || !box) { return; }
+        var body = String(t.body || '');
+        // Substitute {{1}} with a sample name + the filled shared values.
+        var vals = ['Ravi Kumar'];
+        var inputs = document.querySelectorAll('#rmsg_vars [data-vi]');
+        for (var k = 0; k < inputs.length; k++) { vals[parseInt(inputs[k].getAttribute('data-vi'), 10) - 1] = inputs[k].value || ('{{' + inputs[k].getAttribute('data-vi') + '}}'); }
+        for (var i = 1; i <= (t.varCount || 0); i++) { body = body.split('{{' + i + '}}').join(vals[i - 1] != null ? vals[i - 1] : ('{{' + i + '}}')); }
+        var nl = String.fromCharCode(10);
+        box.innerHTML = '<div style="font-weight:700;font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Preview (sample name)</div>'
+            + '<div style="background:#dcf8c6;border-radius:10px;padding:11px 13px;font-size:13.5px;color:#111;max-width:430px;line-height:1.5;white-space:pre-wrap">' + recruitMsgEsc(body).split(nl).join('<br>') + '</div>';
+    };
+    function recruitMsgEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    window.recruitMsgSend = function () {
+        var st = window.__RECRUIT_MSG; var t = recruitMsgCurrentTpl();
+        if (!t) { if (typeof toast === 'function') { toast('Pick a template first'); } return; }
+        if (t.status !== 'approved') { if (!window.confirm('This template is not marked Approved yet. WhatsApp will reject unapproved templates. Send anyway (to test)?')) { return; } }
+        var vars = [];
+        var inputs = document.querySelectorAll('#rmsg_vars [data-vi]');
+        for (var k = 0; k < inputs.length; k++) { vars.push(inputs[k].value || ''); }
+        var payload = { template: t.name, purpose: t.purpose, title: waTplPurpMapSafe(t.purpose) + ' — ' + new Date().toLocaleDateString(), vars: vars };
+        if (st.driveId) { payload.drive_id = st.driveId; }
+        if (st.source === 'pipeline') { payload.job_id = st.jobId; }
+        else if (st.source === 'csv') { payload.rows = st.rows; }
+        else { payload.candidate_ids = st.ids; }
+        if (typeof toast === 'function') { toast('Sending WhatsApp messages…'); }
+        var driveId = st.driveId;
+        recruitPost('/messages/send', payload, function (j) {
+            recruitClose();
+            if (typeof toast === 'function') { toast((j && j.message) || 'Sent'); }
+            window.__RECRUIT_SHORTLIST = {}; window.__RECRUIT_MSG.rows = [];
+            window.__RECRUIT_CAMP = null;
+            if (driveId) { setTimeout(function () { driveOpen(driveId); }, 200); }
+            else { window.__RECRUIT_TAB = 'campaigns'; if (typeof render === 'function') { render(); } }
+        });
+    };
+    // CSV / Excel upload → message directly (needs Name + Mobile columns).
+    window.recruitMsgFile = function (input) {
+        if (!input.files || !input.files[0]) { return; }
+        var file = input.files[0]; input.value = '';
+        if (typeof toast === 'function') { toast('Reading ' + file.name + '…'); }
+        recruitParseFile(file, function (rows, err) {
+            if (err === 'lib') { if (typeof toast === 'function') { toast('Could not load the Excel reader (no internet?). Save the file as CSV and try again.'); } return; }
+            if (err || !rows || !rows.length) { if (typeof toast === 'function') { toast('Could not read the file, or it has no rows.'); } return; }
+            var out = [];
+            rows.forEach(function (r) {
+                var name = '', mob = '';
+                for (var key in r) {
+                    var lk = String(key).toLowerCase();
+                    if (!name && (lk.indexOf('name') >= 0)) { name = r[key]; }
+                    if (!mob && (lk.indexOf('mobile') >= 0 || lk.indexOf('phone') >= 0 || lk.indexOf('contact') >= 0 || lk.indexOf('whatsapp') >= 0)) { mob = r[key]; }
+                }
+                if (mob) { out.push({ name: name || 'Candidate', mobile: String(mob) }); }
+            });
+            if (!out.length) { if (typeof toast === 'function') { toast('No Mobile column found. The file needs a Name and a Mobile/Phone column.'); } return; }
+            window.__RECRUIT_MSG.rows = out;
+            recruitMsgOpen('csv');
+        });
+    };
+    // ---- Campaigns tab: list + per-candidate tracking --------------------
+    window.__RECRUIT_CAMP = window.__RECRUIT_CAMP || null;   // {rows} list
+    function recruitCampaignsSection() {
+        if (!window.__RECRUIT_CAMP) {
+            setTimeout(function () { if (!window.__RECRUIT_CAMP) { recruitCampLoad(); } }, 20);
+            return '<div class="card"><div style="padding:30px;text-align:center;color:var(--text3)">Loading campaigns…</div></div>';
+        }
+        var list = (window.__RECRUIT_CAMP.rows) || [];
+        if (!list.length) {
+            return '<div class="card"><div style="padding:30px;text-align:center;color:var(--text3)">No campaigns yet. Go to the Talent Pool, shortlist candidates and hit <b style="color:#25d366">WhatsApp</b>, or use “Bulk WhatsApp from file”.</div></div>';
+        }
+        var cs = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+        var rows = list.map(function (c) {
+            var f = c.funnel || {};
+            var funnelBits = [];
+            if (f.interested) { funnelBits.push('<span style="color:#15803d;font-weight:700">' + f.interested + ' interested</span>'); }
+            if (f.will_attend) { funnelBits.push('<span style="color:#0369a1;font-weight:700">' + f.will_attend + ' will attend</span>'); }
+            if (f.attended) { funnelBits.push('<span style="color:#7c3aed;font-weight:700">' + f.attended + ' attended</span>'); }
+            if (f.hired) { funnelBits.push('<span style="color:#16a34a;font-weight:700">' + f.hired + ' hired</span>'); }
+            var dl = c.delivery || {};
+            var dlBits = (dl.read ? (dl.read + ' read') : '') + (dl.delivered ? ((dl.read ? ' · ' : '') + dl.delivered + ' delivered') : '');
+            return '<tr style="cursor:pointer" onclick="recruitCampOpen(' + c.id + ')">'
+                + '<td style="' + cs + ';font-weight:600">' + rqT(c.title) + '<div style="font-size:10.5px;color:var(--text3)">' + rqT(c.when) + (c.createdBy ? ' · ' + rqT(c.createdBy) : '') + '</div></td>'
+                + '<td style="' + cs + '"><code style="font-size:12px">' + rqT(c.template) + '</code></td>'
+                + '<td style="' + cs + ';text-align:center;font-weight:700">' + c.total + '</td>'
+                + '<td style="' + cs + ';text-align:center;color:#15803d;font-weight:700">' + c.sent + '</td>'
+                + '<td style="' + cs + ';text-align:center;color:#b91c1c;font-weight:700">' + (c.failed || '') + '</td>'
+                + '<td style="' + cs + ';font-size:11.5px;color:var(--text3)">' + (dlBits || '—') + '</td>'
+                + '<td style="' + cs + ';font-size:11.5px">' + (funnelBits.join(' · ') || '<span style="color:var(--text3)">no responses yet</span>') + '</td></tr>';
+        }).join('');
+        var th = ['Campaign', 'Template', 'Total', 'Sent', 'Failed', 'Delivery', 'Responses'].map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
+        return '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>' + rows + '</tbody></table></div><div style="font-size:11.5px;color:var(--text3);margin-top:8px">Tap a campaign to see every candidate, mark responses, and export.</div>';
+    }
+    window.recruitCampLoad = function () {
+        fetch(cfg.recruitmentBase + '/campaigns', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                window.__RECRUIT_CAMP = { rows: (j && j.rows) || [] };
+                if (typeof render === 'function') { render(); }
+            }).catch(function () { window.__RECRUIT_CAMP = { rows: [] }; if (typeof render === 'function') { render(); } });
+    };
+    window.recruitCampOpen = function (id) {
+        recruitModal('<div id="rcamp-body"><div style="padding:30px;text-align:center;color:var(--text3)">Loading…</div></div>', true);
+        fetch(cfg.recruitmentBase + '/campaign/' + id, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { var b = document.getElementById('rcamp-body'); if (b) { b.innerHTML = '<div style="color:var(--red);padding:20px">' + ((j && j.error) || 'Could not load') + '</div>'; } return; }
+                recruitCampRender(j);
+            }).catch(function () { var b = document.getElementById('rcamp-body'); if (b) { b.innerHTML = '<div style="color:var(--red);padding:20px">Could not load.</div>'; } });
+    };
+    function recruitCampRender(j) {
+        var c = j.campaign || {};
+        var respOpts = function (sel) { return Object.keys(RECRUIT_RESP).map(function (k) { return '<option value="' + k + '"' + (k === (sel || '') ? ' selected' : '') + '>' + RECRUIT_RESP[k][0] + '</option>'; }).join(''); };
+        var cs = 'padding:7px 10px;font-size:13px;border-top:1px solid var(--border)';
+        var rows = (j.rows || []).map(function (m) {
+            var err = m.error ? '<div style="font-size:10.5px;color:#b91c1c;white-space:normal;max-width:230px">' + recruitMsgEsc(String(m.error).slice(0, 160)) + '</div>' : '';
+            return '<tr><td style="' + cs + ';font-weight:600">' + rqT(m.name) + '</td>'
+                + '<td style="' + cs + '">' + rqT(m.mobile) + '</td>'
+                + '<td style="' + cs + '">' + recruitMsgChip(RECRUIT_DLV, m.status) + err + '</td>'
+                + '<td style="' + cs + '"><select onchange="recruitMsgResponse(' + m.id + ', this.value)" style="padding:5px 8px;font-size:12.5px;border:1px solid var(--border);border-radius:7px">' + respOpts(m.response) + '</select></td></tr>';
+        }).join('');
+        recruitMsgSetCampBody(
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:12px">'
+            + '<div><h3 style="margin:0">' + rqT(c.title) + '</h3><div style="font-size:12px;color:var(--text3)">' + c.total + ' recipients · ' + c.sent + ' sent · ' + (c.failed || 0) + ' failed</div></div>'
+            + '<div><a href="' + cfg.recruitmentBase + '/campaign/' + c.id + '/export" class="btn btn-outline btn-sm"><i class="fas fa-file-csv"></i> Export</a> <button class="btn btn-outline btn-sm" onclick="recruitClose()">Close</button></div></div>'
+            + '<div style="overflow:auto;max-height:60vh"><table style="width:100%;border-collapse:collapse"><thead><tr>'
+            + ['Candidate', 'Mobile', 'WhatsApp', 'Response'].map(function (h) { return '<th style="padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3);background:#f8fafc;position:sticky;top:0">' + h + '</th>'; }).join('')
+            + '</tr></thead><tbody>' + (rows || '<tr><td colspan="4" style="padding:20px;text-align:center;color:var(--text3)">No recipients.</td></tr>') + '</tbody></table></div>'
+        );
+    }
+    function recruitMsgSetCampBody(html) { var b = document.getElementById('rcamp-body'); if (b) { b.innerHTML = html; } }
+    window.recruitMsgResponse = function (id, val) {
+        recruitPost('/message/' + id + '/response', { response: val }, function () { window.__RECRUIT_CAMP = null; });
+    };
+    // ======================================================================
+    // rev 95: HIRING DRIVES — plan a hiring event (panel + venue + map link),
+    // bulk-invite (pre-filled from the drive) and track the funnel.
+    // ======================================================================
+    window.__DRIVES = window.__DRIVES || null;
+    window.__DRIVE_CTX = window.__DRIVE_CTX || null;   // open drive (for invite pre-fill)
+    var DRIVE_TYPE = { walkin: 'Walk-in', scheduled: 'Scheduled interviews', telephonic: 'Telephonic / video' };
+    var DRIVE_STAT = { planned: ['Planned', '#64748b', '#f1f5f9'], open: ['Open', '#a16207', '#fef3c7'], completed: ['Completed', '#15803d', '#dcfce7'], cancelled: ['Cancelled', '#b91c1c', '#fee2e2'] };
+    var DRIVE_REC = { '': '—', strong_hire: 'Strong hire', hire: 'Hire', hold: 'Hold', no_hire: 'No hire' };
+    var DRIVE_OUT = { pending: ['Pending', '#64748b'], selected: ['Selected', '#16a34a'], hold: ['Hold', '#a16207'], rejected: ['Rejected', '#b91c1c'] };
+    function driveChip(map, key) { var c = map[key] || ['—', '#64748b', '#f1f5f9']; return '<span style="background:' + (c[2] || '#f1f5f9') + ';color:' + c[1] + ';font-size:10px;font-weight:800;padding:2px 9px;border-radius:99px;text-transform:uppercase;letter-spacing:.3px">' + c[0] + '</span>'; }
+    function driveSection() {
+        if (!window.__DRIVES) { setTimeout(function () { if (!window.__DRIVES) { driveLoad(); } }, 20); return '<div class="card"><div style="padding:30px;text-align:center;color:var(--text3)">Loading hiring drives…</div></div>'; }
+        var list = (window.__DRIVES.rows) || [];
+        var head = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px"><div style="font-size:12.5px;color:var(--text3)">Plan a hiring event — panel, venue with map link and timing — then bulk-invite candidates and track who attends.</div><button class="btn btn-primary btn-sm" onclick="driveForm(0)"><i class="fas fa-calendar-plus"></i> New Drive</button></div>';
+        if (!list.length) { return head + '<div class="card"><div style="padding:30px;text-align:center;color:var(--text3)">No hiring drives yet. Click <b>New Drive</b> to plan one.</div></div>'; }
+        var cs = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border)';
+        var rows = list.map(function (dr) {
+            var f = dr.funnel || {};
+            var dstr = (dr.date || '—') + (dr.dateTo && dr.dateTo !== dr.date ? ' → ' + dr.dateTo : '') + (dr.timeFrom ? ' · ' + dr.timeFrom + (dr.timeTo ? '-' + dr.timeTo : '') : '');
+            var fun = '<span title="Invited">' + (f.invited || 0) + ' inv</span> · <span style="color:#0369a1" title="Will attend">' + (f.willAttend || 0) + '</span> · <span style="color:#7c3aed" title="Attended">' + (f.attended || 0) + ' att</span> · <span style="color:#16a34a" title="Selected">' + (f.selected || 0) + ' sel</span>';
+            return '<tr style="cursor:pointer" onclick="driveOpen(' + dr.id + ')">'
+                + '<td style="' + cs + ';font-weight:600">' + rqT(dr.title) + '<div style="font-size:10.5px;color:var(--text3)">' + rqT(dr.position || '') + (dr.company ? ' · ' + rqT(dr.company) : '') + '</div></td>'
+                + '<td style="' + cs + '">' + (DRIVE_TYPE[dr.type] || dr.type) + '</td>'
+                + '<td style="' + cs + ';white-space:nowrap">' + rqT(dstr) + '</td>'
+                + '<td style="' + cs + ';font-size:11.5px">' + fun + '</td>'
+                + '<td style="' + cs + '">' + driveChip(DRIVE_STAT, dr.status) + '</td></tr>';
+        }).join('');
+        var th = ['Drive', 'Type', 'When', 'Funnel', 'Status'].map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('');
+        return head + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+    window.driveLoad = function () {
+        fetch(cfg.recruitmentBase + '/drives', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) { window.__DRIVES = { rows: (j && j.rows) || [] }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__DRIVES = { rows: [] }; if (typeof render === 'function') { render(); } });
+    };
+    // ---- Create / edit a drive -------------------------------------------
+    window.__DRIVE_EDIT = null;
+    window.driveForm = function (id) {
+        if (!id) { window.__DRIVE_EDIT = { type: 'walkin', status: 'planned', panel: [{ name: '', designation: '', phone: '', round: '' }] }; driveFormRender(); return; }
+        fetch(cfg.recruitmentBase + '/drive/' + id, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast('Could not load drive'); } return; }
+                var d = j.drive; if (!d.panel || !d.panel.length) { d.panel = [{ name: '', designation: '', phone: '', round: '' }]; }
+                window.__DRIVE_EDIT = d; driveFormRender();
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not load drive'); } });
+    };
+    function driveFormRender() {
+        var d = window.__DRIVE_EDIT || {}; var inp = recruitInp(), lbl = recruitLbl();
+        var rd = window.__RECRUIT || {};
+        var typeOpts = Object.keys(DRIVE_TYPE).map(function (k) { return '<option value="' + k + '"' + (d.type === k ? ' selected' : '') + '>' + DRIVE_TYPE[k] + '</option>'; }).join('');
+        var reqOpts = '<option value="">— link a requisition (optional) —</option>' + (rd.jobs || []).map(function (j) { return '<option value="' + j.id + '"' + (String(d.jobId) === String(j.id) ? ' selected' : '') + '>' + (j.req_code ? j.req_code + ' · ' : '') + rqT(j.title) + '</option>'; }).join('');
+        var half = 'display:grid;grid-template-columns:1fr 1fr;gap:12px';
+        var html = '<h3 style="margin:0 0 14px"><i class="fas fa-calendar-check" style="color:var(--accent)"></i> ' + (d.id ? 'Edit' : 'New') + ' Hiring Drive</h3>'
+            + '<div style="' + half + '">'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Drive title</label><input id="drv_title" value="' + rqA(d.title) + '" placeholder="e.g. Recovery Officers Walk-in — Kondapur, June" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Type</label><select id="drv_type" onchange="driveTypeToggle()" style="' + inp + '">' + typeOpts + '</select></div>'
+            + '<div><label style="' + lbl + '">Requisition</label><select id="drv_job" onchange="driveReqAutofill()" style="' + inp + '">' + reqOpts + '</select></div>'
+            + '<div><label style="' + lbl + '">Position / role</label><input id="drv_position" value="' + rqA(d.position) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Company</label><input id="drv_company" value="' + rqA(d.company) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Date</label><input id="drv_date" type="date" value="' + rqA(d.date) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">To date (optional, multi-day)</label><input id="drv_date_to" type="date" value="' + rqA(d.dateTo) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Time from</label><input id="drv_time_from" value="' + rqA(d.timeFrom) + '" placeholder="10:00 AM" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Time to</label><input id="drv_time_to" value="' + rqA(d.timeTo) + '" placeholder="2:00 PM" style="' + inp + '"></div>'
+            + '<div id="drv_venue_wrap" style="grid-column:1 / -1"><label style="' + lbl + '">Venue</label><input id="drv_venue" value="' + rqA(d.venue) + '" placeholder="Office name, area, city" style="' + inp + '"></div>'
+            + '<div id="drv_link_wrap" style="grid-column:1 / -1"><label style="' + lbl + '">Google Maps location link <span style="color:var(--text3);text-transform:none">(Maps → Share → Copy link)</span></label><input id="drv_link" value="' + rqA(d.locationLink) + '" placeholder="https://maps.app.goo.gl/…" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Coordinator name</label><input id="drv_coord_name" value="' + rqA(d.coordinatorName) + '" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Coordinator phone</label><input id="drv_coord_phone" value="' + rqA(d.coordinatorPhone) + '" style="' + inp + '"></div>'
+            + '<div style="grid-column:1 / -1"><label style="' + lbl + '">Candidate instructions</label><textarea id="drv_instr" rows="2" style="' + inp + '">' + rqA(d.instructions) + '</textarea></div>'
+            + '</div>'
+            + '<div style="margin-top:16px"><div style="font-weight:700;font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">Interview panel <span style="color:var(--text3);text-transform:none">— who takes the interview</span></div><div id="drv_panel"></div><button class="btn btn-outline btn-sm" onclick="driveAddPanel()"><i class="fas fa-user-plus"></i> Add interviewer</button></div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px"><button class="btn btn-outline" onclick="recruitClose()">Cancel</button><button class="btn btn-primary" onclick="driveSave(' + (d.id || 0) + ')"><i class="fas fa-check"></i> Save drive</button></div>';
+        recruitModal(html, true);
+        drivePanelRender();
+    }
+    function drivePanelRender() {
+        var d = window.__DRIVE_EDIT || {}; var box = document.getElementById('drv_panel'); if (!box) { return; }
+        var inp = 'width:100%;padding:7px 9px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;background:#f8fafc';
+        var rows = (d.panel || []).map(function (p, i) {
+            return '<div style="display:grid;grid-template-columns:1.3fr 1.1fr 1fr 1fr 28px;gap:8px;margin-bottom:7px;align-items:center">'
+                + '<input data-pp="name" data-pi="' + i + '" value="' + rqA(p.name) + '" placeholder="Name" style="' + inp + '">'
+                + '<input data-pp="designation" data-pi="' + i + '" value="' + rqA(p.designation) + '" placeholder="Designation" style="' + inp + '">'
+                + '<input data-pp="phone" data-pi="' + i + '" value="' + rqA(p.phone) + '" placeholder="Phone" style="' + inp + '">'
+                + '<input data-pp="round" data-pi="' + i + '" value="' + rqA(p.round) + '" placeholder="Round (HR/Tech…)" style="' + inp + '">'
+                + '<i class="fas fa-xmark" title="Remove" onclick="driveDelPanel(' + i + ')" style="cursor:pointer;color:var(--red);text-align:center"></i></div>';
+        }).join('');
+        box.innerHTML = rows;
+    }
+    function driveCollectPanel() {
+        var d = window.__DRIVE_EDIT || {}; var arr = (d.panel || []).map(function () { return { name: '', designation: '', phone: '', round: '' }; });
+        document.querySelectorAll('#drv_panel [data-pi]').forEach(function (el) { var i = parseInt(el.getAttribute('data-pi'), 10); if (arr[i]) { arr[i][el.getAttribute('data-pp')] = el.value; } });
+        window.__DRIVE_EDIT.panel = arr;
+    }
+    window.driveAddPanel = function () { driveCollectPanel(); window.__DRIVE_EDIT.panel.push({ name: '', designation: '', phone: '', round: '' }); drivePanelRender(); };
+    window.driveDelPanel = function (i) { driveCollectPanel(); window.__DRIVE_EDIT.panel.splice(i, 1); if (!window.__DRIVE_EDIT.panel.length) { window.__DRIVE_EDIT.panel = [{ name: '', designation: '', phone: '', round: '' }]; } drivePanelRender(); };
+    window.driveTypeToggle = function () {
+        var t = (document.getElementById('drv_type') || {}).value;
+        var vw = document.getElementById('drv_venue_wrap'), lw = document.getElementById('drv_link_wrap');
+        var tel = (t === 'telephonic');
+        if (vw) { vw.style.opacity = tel ? '.5' : '1'; }
+        if (lw) { lw.style.opacity = tel ? '.5' : '1'; }
+    };
+    window.driveReqAutofill = function () {
+        var jid = (document.getElementById('drv_job') || {}).value; var rd = window.__RECRUIT || {};
+        var j = (rd.jobs || []).filter(function (x) { return String(x.id) === String(jid); })[0];
+        if (!j) { return; }
+        var p = document.getElementById('drv_position'); if (p && !p.value) { p.value = j.title || ''; }
+        var c = document.getElementById('drv_company'); if (c && !c.value && j.company) { c.value = j.company; }
+    };
+    window.driveSave = function (id) {
+        driveCollectPanel();
+        var g = function (x) { var e = document.getElementById(x); return e ? e.value : ''; };
+        var payload = {
+            id: id || null, title: g('drv_title'), type: g('drv_type'), job_id: g('drv_job') ? parseInt(g('drv_job'), 10) : null,
+            position: g('drv_position'), company: g('drv_company'), drive_date: g('drv_date'), date_to: g('drv_date_to'),
+            time_from: g('drv_time_from'), time_to: g('drv_time_to'), venue: g('drv_venue'), location_link: g('drv_link'),
+            coordinator_name: g('drv_coord_name'), coordinator_phone: g('drv_coord_phone'), instructions: g('drv_instr'),
+            panel: (window.__DRIVE_EDIT || {}).panel || []
+        };
+        if (!payload.title.trim()) { if (typeof toast === 'function') { toast('Give the drive a title'); } return; }
+        recruitPost('/drive', payload, function (j) {
+            recruitClose(); if (typeof toast === 'function') { toast((j && j.message) || 'Saved'); }
+            window.__DRIVES = null; if (typeof render === 'function') { render(); }
+            if (j && j.id) { setTimeout(function () { driveOpen(j.id); }, 150); }
+        });
+    };
+    // ---- Open a drive: details + funnel + roster -------------------------
+    window.driveOpen = function (id) {
+        recruitModal('<div id="drv-body"><div style="padding:30px;text-align:center;color:var(--text3)">Loading…</div></div>', true);
+        fetch(cfg.recruitmentBase + '/drive/' + id, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (!j || !j.ok) { var b = document.getElementById('drv-body'); if (b) { b.innerHTML = '<div style="color:var(--red);padding:20px">' + ((j && j.error) || 'Could not load') + '</div>'; } return; }
+                window.__DRIVE_CTX = j.drive; driveRender(j);
+            }).catch(function () { var b = document.getElementById('drv-body'); if (b) { b.innerHTML = '<div style="color:var(--red);padding:20px">Could not load.</div>'; } });
+    };
+    function driveRender(j) {
+        var d = j.drive; var roster = j.roster || []; var dl = j.delivery || {};
+        var att = roster.filter(function (r) { return r.attended; }).length;
+        var willA = roster.filter(function (r) { return r.response === 'will_attend' || r.response === 'interested'; }).length;
+        var sel = roster.filter(function (r) { return r.outcome === 'selected'; }).length;
+        var ivd = roster.filter(function (r) { return r.score != null && r.score !== ''; }).length;
+        var stat = function (n, l, col) { return '<div style="flex:1;min-width:78px;background:#f8fafc;border:1px solid var(--border);border-radius:9px;padding:8px 10px;text-align:center"><div style="font-size:19px;font-weight:800;color:' + col + '">' + n + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.3px">' + l + '</div></div>'; };
+        var panel = (d.panel || []).map(function (p) { return '<div style="font-size:12.5px;margin-bottom:3px"><b>' + rqT(p.name) + '</b>' + (p.designation ? ' · ' + rqT(p.designation) : '') + (p.round ? ' <span style="color:var(--text3)">(' + rqT(p.round) + ')</span>' : '') + (p.phone ? ' · <a href="tel:' + rqA(p.phone) + '" style="color:#3b82f6">' + rqT(p.phone) + '</a>' : '') + '</div>'; }).join('') || '<div style="color:var(--text3);font-size:12px">No panel added.</div>';
+        var dstr = (d.date || '—') + (d.dateTo && d.dateTo !== d.date ? ' → ' + d.dateTo : '') + (d.timeFrom ? ' · ' + d.timeFrom + (d.timeTo ? '-' + d.timeTo : '') : '');
+        var mapBtn = d.locationLink ? ' · <a href="' + rqA(d.locationLink) + '" target="_blank" rel="noopener" style="color:#3b82f6"><i class="fas fa-location-dot"></i> Map</a>' : '';
+        var statusOpts = Object.keys(DRIVE_STAT).map(function (k) { return '<option value="' + k + '"' + (d.status === k ? ' selected' : '') + '>' + DRIVE_STAT[k][0] + '</option>'; }).join('');
+        var cs = 'padding:6px 9px;font-size:12.5px;border-top:1px solid var(--border)';
+        var recOpts = function (sel2) { return Object.keys(DRIVE_REC).map(function (k) { return '<option value="' + k + '"' + (k === (sel2 || '') ? ' selected' : '') + '>' + DRIVE_REC[k] + '</option>'; }).join(''); };
+        var outOpts = function (sel2) { return Object.keys(DRIVE_OUT).map(function (k) { return '<option value="' + k + '"' + (k === (sel2 || 'pending') ? ' selected' : '') + '>' + DRIVE_OUT[k][0] + '</option>'; }).join(''); };
+        var respOpts2 = function (sel2) { return Object.keys(RECRUIT_RESP).map(function (k) { return '<option value="' + k + '"' + (k === (sel2 || '') ? ' selected' : '') + '>' + RECRUIT_RESP[k][0] + '</option>'; }).join(''); };
+        var rrows = roster.map(function (r) {
+            return '<tr><td style="' + cs + ';font-weight:600">' + rqT(r.name) + '</td><td style="' + cs + '">' + rqT(r.mobile) + '</td>'
+                + '<td style="' + cs + ';text-align:center"><input type="checkbox" ' + (r.attended ? 'checked' : '') + ' onclick="driveCand(' + d.id + ',' + r.id + ',{attended:this.checked?1:0})"></td>'
+                + '<td style="' + cs + '"><select onchange="driveCand(' + d.id + ',' + r.id + ',{response:this.value})" style="padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:6px">' + respOpts2(r.response) + '</select></td>'
+                + '<td style="' + cs + ';text-align:center"><input type="number" min="0" max="10" value="' + (r.score != null ? r.score : '') + '" onchange="driveCand(' + d.id + ',' + r.id + ',{score:this.value})" style="width:48px;padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:6px;text-align:center"></td>'
+                + '<td style="' + cs + '"><select onchange="driveCand(' + d.id + ',' + r.id + ',{recommendation:this.value})" style="padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:6px">' + recOpts(r.recommendation) + '</select></td>'
+                + '<td style="' + cs + '"><select onchange="driveCand(' + d.id + ',' + r.id + ',{outcome:this.value})" style="padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:6px">' + outOpts(r.outcome) + '</select></td></tr>';
+        }).join('');
+        var rth = ['Candidate', 'Mobile', 'Attended', 'Response', 'Score', 'Recommendation', 'Outcome'].map(function (h) { return '<th style="padding:7px 9px;text-align:left;font-size:10.5px;text-transform:uppercase;color:var(--text3);background:#f8fafc;position:sticky;top:0">' + h + '</th>'; }).join('');
+        var body = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:6px">'
+            + '<div><h3 style="margin:0">' + rqT(d.title) + '</h3><div style="font-size:12.5px;color:var(--text3)">' + (DRIVE_TYPE[d.type] || d.type) + ' · ' + rqT(d.position || '') + (d.company ? ' · ' + rqT(d.company) : '') + '</div></div>'
+            + '<div style="display:flex;gap:8px;align-items:center"><select onchange="driveStatus(' + d.id + ',this.value)" style="padding:6px 10px;font-size:12.5px;border:1px solid var(--border);border-radius:8px">' + statusOpts + '</select>'
+            + '<button class="btn btn-outline btn-sm" onclick="driveForm(' + d.id + ')"><i class="fas fa-pen"></i></button>'
+            + '<button class="btn btn-outline btn-sm" onclick="recruitClose()"><i class="fas fa-xmark"></i></button></div></div>'
+            + '<div style="font-size:13px;color:var(--text2);margin-bottom:12px"><i class="fas fa-clock"></i> ' + rqT(dstr) + (d.venue ? ' · <i class="fas fa-location-dot"></i> ' + rqT(d.venue) : '') + mapBtn + (d.coordinatorName ? ' · <i class="fas fa-headset"></i> ' + rqT(d.coordinatorName) + (d.coordinatorPhone ? ' (' + rqT(d.coordinatorPhone) + ')' : '') : '') + '</div>'
+            + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">' + stat(roster.length, 'Invited', 'var(--text1)') + stat(dl.sent || 0, 'Sent', '#15803d') + stat(willA, 'Will attend', '#0369a1') + stat(att, 'Attended', '#7c3aed') + stat(ivd, 'Interviewed', '#a16207') + stat(sel, 'Selected', '#16a34a') + '</div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">'
+            + '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:11px 13px"><div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:6px">Interview panel</div>' + panel + '</div>'
+            + '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:11px 13px"><div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:6px">Candidate instructions</div><div style="font-size:12.5px;color:var(--text2);white-space:pre-wrap">' + recruitMsgEsc(d.instructions || '') + '</div></div>'
+            + '</div>'
+            + '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap"><button class="btn btn-sm" style="background:#25d366;color:#fff" onclick="driveInvite(' + d.id + ')"><i class="fab fa-whatsapp"></i> Send / add invites</button>'
+            + '<a href="' + cfg.recruitmentBase + '/drive/' + d.id + '/export" class="btn btn-outline btn-sm"><i class="fas fa-file-csv"></i> Export roster</a></div>'
+            + '<div style="overflow:auto;max-height:48vh"><table style="width:100%;border-collapse:collapse"><thead><tr>' + rth + '</tr></thead><tbody>' + (rrows || '<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--text3)">No candidates invited yet — click “Send / add invites”.</td></tr>') + '</tbody></table></div>';
+        var b = document.getElementById('drv-body'); if (b) { b.innerHTML = body; }
+    }
+    window.driveCand = function (driveId, cid, patch) {
+        recruitPost('/drive/' + driveId + '/candidate/' + cid, patch, function () { /* live; refresh on close */ });
+    };
+    window.driveStatus = function (id, st) { recruitPost('/drive/' + id + '/status', { status: st }, function () { window.__DRIVES = null; }); };
+    // Invite chooser: pick the audience, then open the pre-filled composer.
+    window.driveInvite = function (id) {
+        var sl = Object.keys(window.__RECRUIT_SHORTLIST || {}).length;
+        var pl = ((window.__RECRUIT_POOL && window.__RECRUIT_POOL.list) || []).length;
+        var rd = window.__RECRUIT || {};
+        var jobOpts = '<option value="">— a requisition pipeline —</option>' + (rd.jobs || []).map(function (j) { return '<option value="' + j.id + '">' + (j.req_code ? j.req_code + ' · ' : '') + rqT(j.title) + '</option>'; }).join('');
+        recruitModal('<h3 style="margin:0 0 6px"><i class="fab fa-whatsapp" style="color:#25d366"></i> Who to invite to this drive?</h3>'
+            + '<div style="font-size:12.5px;color:var(--text3);margin-bottom:14px">The message is pre-filled from the drive (date, venue, map link, coordinator). Pick the audience:</div>'
+            + '<div style="display:flex;flex-direction:column;gap:8px">'
+            + '<button class="btn btn-outline" onclick="driveInviteGo(' + id + ',&#39;shortlist&#39;)"' + (sl ? '' : ' disabled') + '><i class="fas fa-square-check"></i> Talent-pool shortlist (' + sl + ')</button>'
+            + '<button class="btn btn-outline" onclick="driveInviteGo(' + id + ',&#39;pool&#39;)"' + (pl ? '' : ' disabled') + '><i class="fas fa-database"></i> All current pool results (' + pl + ')</button>'
+            + '<div style="display:flex;gap:8px"><select id="drv_inv_job" style="' + recruitInp() + '">' + jobOpts + '</select><button class="btn btn-outline" onclick="driveInvitePipeline(' + id + ')">Go</button></div>'
+            + '<label class="btn btn-outline" style="cursor:pointer"><i class="fas fa-file-arrow-up"></i> Upload a file &amp; invite<input type="file" accept=".xlsx,.xls,.csv,text/csv" style="display:none" onchange="driveInviteFile(' + id + ', this)"></label>'
+            + '</div><div style="text-align:right;margin-top:14px"><button class="btn btn-outline" onclick="driveOpen(' + id + ')">Back</button></div>');
+    };
+    window.driveInviteGo = function (id, source) { recruitMsgOpen(source, null, '', id); };
+    window.driveInvitePipeline = function (id) { var jid = (document.getElementById('drv_inv_job') || {}).value; if (!jid) { if (typeof toast === 'function') { toast('Pick a requisition'); } return; } var rd = window.__RECRUIT || {}; var j = (rd.jobs || []).filter(function (x) { return String(x.id) === String(jid); })[0]; recruitMsgOpen('pipeline', parseInt(jid, 10), j ? j.title : '', id); };
+    window.driveInviteFile = function (id, input) {
+        if (!input.files || !input.files[0]) { return; }
+        var file = input.files[0]; input.value = '';
+        recruitParseFile(file, function (rows, err) {
+            if (err || !rows || !rows.length) { if (typeof toast === 'function') { toast('Could not read the file.'); } return; }
+            var out = [];
+            rows.forEach(function (r) { var name = '', mob = ''; for (var key in r) { var lk = String(key).toLowerCase(); if (!name && lk.indexOf('name') >= 0) { name = r[key]; } if (!mob && (lk.indexOf('mobile') >= 0 || lk.indexOf('phone') >= 0 || lk.indexOf('contact') >= 0)) { mob = r[key]; } } if (mob) { out.push({ name: name || 'Candidate', mobile: String(mob) }); } });
+            if (!out.length) { if (typeof toast === 'function') { toast('No Mobile column found.'); } return; }
+            window.__RECRUIT_MSG.rows = out; recruitMsgOpen('csv', null, '', id);
+        });
+    };
     // ---- Off-roll agent KYC (photo, documents, contact verification) ---------
     var OFFROLL_DOCS = [['id_proof', 'ID proof (Aadhaar / Govt ID)'], ['pan', 'PAN card'], ['address', 'Address proof'], ['dra', 'DRA certificate'], ['pcc', 'PCC (police clearance)'], ['agreement', 'Signed agreement']];
     function offrollModal(html) {
@@ -5443,8 +6158,8 @@ CSS;
             { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'test', l: 'Test (exact name)' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'passed', 'failed'], optLabels: ['Pending', 'Passed', 'Failed'] }, { k: 'score', l: 'Score', type: 'number' }, { k: 'attempted_on', l: 'Attempted On', type: 'date' }] },
         'pay-cycle': { type: 'pay-cycle', title: 'Pay Cycle', sub: 'Pay cycles & cut-offs', fields: [
             { k: 'name', l: 'Cycle Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'cycle', l: 'Cycle', type: 'select', opts: ['monthly', 'fortnightly', 'weekly'], optLabels: ['Monthly', 'Fortnightly', 'Weekly'] }, { k: 'cutoff_day', l: 'Cut-off Day', type: 'number' }, { k: 'pay_day', l: 'Pay Day', type: 'number' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
-        'wa-settings': { type: 'wa-settings', title: 'WhatsApp Settings', sub: 'WhatsApp provider config — Interakt is LIVE for signup welcome messages (provider "interakt" + API key, status active)', fields: [
-            { k: 'company_name', l: 'Company', src: 'company' }, { k: 'provider', l: 'Provider (Gupshup/Meta)' }, { k: 'api_url', l: 'API URL' }, { k: 'api_key', l: 'API Key' }, { k: 'sender_number', l: 'Sender Number' }, { k: 'waba_id', l: 'WABA ID' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+        'wa-settings': { type: 'wa-settings', title: 'WhatsApp Settings', sub: 'WhatsApp provider config — Interakt is LIVE (provider "interakt" + API key, status active). Leave API URL blank for the Interakt default.', fields: [
+            { k: 'company_name', l: 'Company', src: 'company' }, { k: 'provider', l: 'Provider (type: interakt)' }, { k: 'api_url', l: 'API URL (leave blank for Interakt)' }, { k: 'api_key', l: 'API Key (Interakt Secret Key)' }, { k: 'sender_number', l: 'Sender Number' }, { k: 'waba_id', l: 'WABA ID (optional)' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
         'sms-settings': { type: 'sms-settings', title: 'SMS Settings', sub: 'SMS provider config (sending wired later)', fields: [
             { k: 'company_name', l: 'Company', src: 'company' }, { k: 'provider', l: 'Provider (MSG91/Twilio)' }, { k: 'api_url', l: 'API URL' }, { k: 'api_key', l: 'API Key' }, { k: 'sender_id', l: 'Sender ID' }, { k: 'dlt_entity_id', l: 'DLT Entity ID' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
         'sms-templates': { type: 'sms-templates', title: 'SMS Templates', sub: 'DLT-approved SMS templates', fields: [
@@ -5453,6 +6168,17 @@ CSS;
             { k: 'emp_name', l: 'Employee (type to search)', src: 'emp' }, { k: 'log_date', l: 'Date', type: 'date' }, { k: 'punch_at', l: 'Punch Time', type: 'datetime' }, { k: 'direction', l: 'Direction', type: 'select', opts: ['in', 'out'], optLabels: ['In', 'Out'] }] },
         'att-zkteco': { type: 'biometric-devices', title: 'ZKTeco Devices', sub: 'Registered ZKTeco devices. Set IP + port, then Sync to pull punches into attendance.', rowPost: { label: 'Sync', cfg: 'deviceBase', suffix: '/sync', icon: 'fa-rotate' }, fields: DEVICE_FIELDS }
     };
+    // rev 91d (Ejaz: "why so many companies?"): for the SUPER ADMIN the WhatsApp
+    // key is PLATFORM-WIDE — the Company dropdown (which would list every
+    // company of every tenant) is meaningless and confusing, so drop it and
+    // explain what the platform key is used for. Tenant admins keep the field.
+    try {
+        if (cfg.role === 'Super Admin' && MASTER_MAP['wa-settings']) {
+            MASTER_MAP['wa-settings'].fields = MASTER_MAP['wa-settings'].fields.filter(function (f) { return f.k !== 'company_name'; });
+            MASTER_MAP['wa-settings'].title = 'WhatsApp API (Interakt)';
+            MASTER_MAP['wa-settings'].sub = 'PLATFORM key — used for signup welcome + payment confirmations, renewal alerts and website lead alerts. Provider "interakt", paste the Interakt Secret Key, status active. Leave API URL blank.';
+        }
+    } catch (e) {}
     window.__MASTER = {};
     // Alias screens (e.g. geofence-list -> geofence, att-zkteco -> biometric-devices) keep
     // their own nav key for local state, but the backend def is keyed by mc.type. Always hit
@@ -6144,7 +6870,11 @@ CSS;
         var m = entry.mail || {};
         var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
         var fld = function (label, id, val, type, ph) {
-            return '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">' + label + '</label><input id="' + id + '" type="' + (type || 'text') + '" value="' + (val != null ? String(val).replace(/"/g, '&quot;') : '') + '"' + (ph ? ' placeholder="' + ph + '"' : '') + ' style="' + inp + '"></div>';
+            // rev 88: autocomplete guards — Chrome was AUTOFILLING the login
+            // email/password into the SMTP username/password fields (live check
+            // 6 Jun 2026); an accidental Save would store wrong credentials.
+            var ac = (type === 'password') ? 'new-password' : 'off';
+            return '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">' + label + '</label><input id="' + id + '" type="' + (type || 'text') + '" autocomplete="' + ac + '" value="' + (val != null ? String(val).replace(/"/g, '&quot;') : '') + '"' + (ph ? ' placeholder="' + ph + '"' : '') + ' style="' + inp + '"></div>';
         };
         var enc = m.encryption || 'tls';
         var encSel = '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Encryption</label><select id="m_enc" style="' + inp + '">'

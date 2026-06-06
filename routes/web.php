@@ -19,6 +19,10 @@ use Illuminate\Support\Facades\Route;
 // Public marketing landing page.
 Route::get('/', [LandingController::class, 'show'])->name('landing');
 
+// rev 89: public demo-request (lead) form on the landing page. Throttled.
+Route::post('/lead', [App\Http\Controllers\LeadController::class, 'store'])
+    ->middleware('throttle:10,1')->name('lead.store');
+
 // Public offer-acceptance page (candidate, no login — secured by the token).
 Route::get('/offer/{token}', [App\Http\Controllers\OfferAcceptController::class, 'show'])->name('offer.show');
 Route::post('/offer/{token}/accept', [App\Http\Controllers\OfferAcceptController::class, 'accept'])->name('offer.accept');
@@ -38,12 +42,24 @@ Route::get('/signup', [App\Http\Controllers\SignupController::class, 'show'])->n
 Route::post('/signup/order', [App\Http\Controllers\SignupController::class, 'createOrder'])->name('signup.order');
 Route::post('/signup/complete', [App\Http\Controllers\SignupController::class, 'complete'])->name('signup.complete');
 
+// rev 96: quotation flow — "Send a Quotation" + public pay link.
+Route::post('/signup/quote', [App\Http\Controllers\SignupController::class, 'quote'])->middleware('throttle:10,1')->name('signup.quote');
+Route::get('/quote/{token}', [App\Http\Controllers\SignupController::class, 'showQuote'])->name('quote.show');
+Route::get('/quote/{token}/pdf', [App\Http\Controllers\SignupController::class, 'quotePdf'])->name('quote.pdf');
+Route::post('/quote/{token}/order', [App\Http\Controllers\SignupController::class, 'quoteOrder'])->middleware('throttle:20,1')->name('quote.order');
+Route::post('/quote/{token}/complete', [App\Http\Controllers\SignupController::class, 'quoteComplete'])->name('quote.complete');
+
 // Razorpay payment webhook (public, server-to-server). CSRF-exempt at the route
 // level — the source tree has no bootstrap/app.php to register exceptions in.
 // Security is the X-Razorpay-Signature HMAC check inside the controller.
 Route::post('/webhooks/razorpay', [App\Http\Controllers\BillingController::class, 'razorpayWebhook'])
     ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
     ->name('webhooks.razorpay');
+
+// rev 94: Interakt WhatsApp delivery/read status webhook (public; CSRF-exempt).
+Route::post('/webhooks/interakt', [App\Http\Controllers\RecruitMessagingController::class, 'interaktWebhook'])
+    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+    ->name('webhooks.interakt');
 
 Route::middleware('guest')->group(function () {
     Route::get('/login', [AuthController::class, 'show'])->name('login');
@@ -65,6 +81,17 @@ Route::middleware(['auth', App\Http\Middleware\EnsureSubscriptionActive::class])
     // Super-admin admin panel (landing CMS + platform staff).
     Route::get('/admin/landing', [LandingController::class, 'editor'])->name('landing.editor');
     Route::post('/admin/landing', [LandingController::class, 'save'])->name('landing.save');
+    // rev 92: WhatsApp template registry (platform + tenant scoped inside the controller).
+    Route::get('/app/wa-templates', [App\Http\Controllers\WaTemplateController::class, 'index']);
+    Route::get('/app/wa-templates/export', [App\Http\Controllers\WaTemplateController::class, 'export']);
+    Route::post('/app/wa-templates', [App\Http\Controllers\WaTemplateController::class, 'save']);
+    Route::post('/app/wa-templates/{id}/delete', [App\Http\Controllers\WaTemplateController::class, 'destroy']);
+    Route::post('/app/wa-templates/{id}/status', [App\Http\Controllers\WaTemplateController::class, 'setStatus']);
+    Route::post('/app/wa-templates/{id}/test', [App\Http\Controllers\WaTemplateController::class, 'testSend']);
+
+    Route::get('/admin/quotations', [App\Http\Controllers\SignupController::class, 'quotations'])->name('admin.quotations');
+    Route::get('/admin/leads', [App\Http\Controllers\LeadController::class, 'index'])->name('admin.leads');
+    Route::post('/admin/leads/{id}', [App\Http\Controllers\LeadController::class, 'update'])->name('admin.leads.update');
     Route::get('/admin/staff', [StaffController::class, 'index'])->name('admin.staff');
     Route::post('/admin/staff', [StaffController::class, 'store'])->name('admin.staff.store');
     Route::put('/admin/staff/{user}', [StaffController::class, 'update'])->name('admin.staff.update');
@@ -275,6 +302,22 @@ Route::middleware(['auth', App\Http\Middleware\EnsureSubscriptionActive::class])
     Route::post('/app/recruitment/job/{id}/reject', [App\Http\Controllers\RecruitmentController::class, 'rejectJob'])->name('app.recruit.job.reject');
     Route::post('/app/recruitment/job/{id}/delete', [App\Http\Controllers\RecruitmentController::class, 'deleteJob'])->name('app.recruit.job.del');
     // Interviews — schedule, feedback, scorecards (per candidate).
+    // rev 95: Hiring Drives (interview events: panel + venue + map + funnel).
+    Route::get('/app/recruitment/drives', [App\Http\Controllers\HiringDriveController::class, 'index'])->name('app.drives');
+    Route::post('/app/recruitment/drive', [App\Http\Controllers\HiringDriveController::class, 'save'])->name('app.drive.save');
+    Route::get('/app/recruitment/drive/{id}', [App\Http\Controllers\HiringDriveController::class, 'show'])->name('app.drive.show');
+    Route::post('/app/recruitment/drive/{id}/delete', [App\Http\Controllers\HiringDriveController::class, 'destroy'])->name('app.drive.del');
+    Route::post('/app/recruitment/drive/{id}/status', [App\Http\Controllers\HiringDriveController::class, 'setStatus'])->name('app.drive.status');
+    Route::post('/app/recruitment/drive/{id}/candidate/{cid}', [App\Http\Controllers\HiringDriveController::class, 'updateCandidate'])->name('app.drive.cand');
+    Route::get('/app/recruitment/drive/{id}/export', [App\Http\Controllers\HiringDriveController::class, 'export'])->name('app.drive.export');
+
+    // rev 94: bulk WhatsApp campaigns for recruitment + tracking.
+    Route::post('/app/recruitment/messages/send', [App\Http\Controllers\RecruitMessagingController::class, 'send'])->name('app.recruit.msg.send');
+    Route::get('/app/recruitment/campaigns', [App\Http\Controllers\RecruitMessagingController::class, 'campaigns'])->name('app.recruit.campaigns');
+    Route::get('/app/recruitment/campaign/{id}', [App\Http\Controllers\RecruitMessagingController::class, 'campaign'])->name('app.recruit.campaign');
+    Route::get('/app/recruitment/campaign/{id}/export', [App\Http\Controllers\RecruitMessagingController::class, 'export'])->name('app.recruit.campaign.export');
+    Route::post('/app/recruitment/message/{id}/response', [App\Http\Controllers\RecruitMessagingController::class, 'setResponse'])->name('app.recruit.msg.response');
+
     Route::get('/app/recruitment/candidate/{id}/interviews', [App\Http\Controllers\RecruitmentController::class, 'interviews'])->name('app.recruit.iv.list');
     Route::post('/app/recruitment/interview', [App\Http\Controllers\RecruitmentController::class, 'saveInterview'])->name('app.recruit.iv.save');
     Route::post('/app/recruitment/interview/{id}/delete', [App\Http\Controllers\RecruitmentController::class, 'deleteInterview'])->name('app.recruit.iv.del');

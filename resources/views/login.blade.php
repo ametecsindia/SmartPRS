@@ -8,13 +8,14 @@
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="stylesheet" href="/css/smartprs.css">
+    <link rel="icon" type="image/png" href="{{ asset('images/logo-icon.png') }}">
 </head>
 <body>
 <div id="login-page">
     <div class="login-left">
         <div class="login-brand">
-            <div class="login-logo"><i class="fas fa-bolt"></i></div>
-            <h1>Smart<span>PRS</span></h1>
+            {{-- rev 91: real Ametecs logo (transparent PNG, white text — for dark panels) --}}
+            <img src="{{ asset('images/logo.png') }}" alt="SmartPRS — Reputation | Relationships | Results" style="width:240px;max-width:80%;height:auto;display:block;margin:0 auto 10px;">
             <p>HRM · Payroll · Workforce Compliance</p>
         </div>
         <div class="login-features">
@@ -86,9 +87,13 @@
                 <button class="btn-login" type="submit">Sign in <i class="fas fa-arrow-right"></i></button>
             </form>
 
+            {{-- Demo-credentials hint: LOCAL/DEMO ONLY. Never shown in production
+                 (rev 88 — Ejaz live check 6 Jun 2026: this was visible on smartprs.com). --}}
+            @if (config('app.env') !== 'production' && filter_var(env('SMARTPRS_DEMO_DATA', false), FILTER_VALIDATE_BOOLEAN))
             <div class="login-footer">
                 Demo: <a href="#">admin@smartprs.local</a> · password: <strong style="color:var(--text2);">password</strong>
             </div>
+            @endif
         </div>
     </div>
 </div>

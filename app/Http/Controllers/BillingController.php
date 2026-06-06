@@ -634,16 +634,24 @@ class BillingController extends Controller
 
     // ---- Invoice PDF + email ----------------------------------------------
 
-    /** Platform seller profile for the tax invoice (configure via env on the VPS). */
+    /** rev 96: public accessor so the quotation PDF can reuse the seller block. */
+    public function publicSellerProfile(): array
+    {
+        return $this->sellerProfile();
+    }
+
+    /** Platform seller profile for the tax invoice (env overrides; rev 89:
+     *  real Ametecs registered details as code defaults — Ejaz 6 Jun 2026 —
+     *  so the GST invoice is compliant even before the VPS .env is filled). */
     private function sellerProfile(): array
     {
         return [
-            'name' => env('BILLING_SELLER_NAME', 'Ametecs India'),
-            'gstin' => env('BILLING_SELLER_GSTIN', ''),
-            'address' => env('BILLING_SELLER_ADDRESS', ''),
-            'email' => env('BILLING_SELLER_EMAIL', env('MAIL_FROM_ADDRESS', '')),
-            'phone' => env('BILLING_SELLER_PHONE', ''),
-            'state' => env('BILLING_SELLER_STATE', ''),
+            'name' => env('BILLING_SELLER_NAME', 'Ametecs India Private Limited'),
+            'gstin' => env('BILLING_SELLER_GSTIN', '36AAHCT0971F1ZB'),
+            'address' => env('BILLING_SELLER_ADDRESS', 'Modern Profound Techpark, Ground Floor, Hive Space, opp. Google, Whitefields, Kondapur, Hyderabad, Telangana, India 500084'),
+            'email' => env('BILLING_SELLER_EMAIL', env('MAIL_FROM_ADDRESS', 'sales@ametecsindia.com')),
+            'phone' => env('BILLING_SELLER_PHONE', '+91 96666 12424'),
+            'state' => env('BILLING_SELLER_STATE', 'Telangana (36)'),
             'sac' => env('BILLING_SAC_CODE', '998314'),   // IT software services (SAC)
             // 'intra' → CGST+SGST (same state); else IGST. Default inter-state (IGST).
             'gstMode' => env('BILLING_GST_MODE', 'inter'),
@@ -669,7 +677,9 @@ class BillingController extends Controller
         $seller = $this->sellerProfile();
         $amount = (float) $inv->amount;
         $tax = (float) $inv->tax;
-        $intra = $seller['gstMode'] === 'intra';
+        // rev 90 (Ejaz): tax split decided PER CUSTOMER from their GSTIN/state —
+        // Telangana buyer (same state as Ametecs) → CGST+SGST, else IGST.
+        $intra = self::buyerIsIntraState($tenant, $seller);
 
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('invoice-pdf', [
             'inv' => $inv,
@@ -694,6 +704,34 @@ class BillingController extends Controller
             'to' => $tenant->owner_email ?? null,
             'file' => $inv->number.'.pdf',
         ];
+    }
+
+    /**
+     * rev 90: is this buyer in the SAME state as the seller (→ CGST+SGST)?
+     * Priority: buyer GSTIN's first-2-digit state code → saved state name →
+     * env BILLING_GST_MODE fallback (default inter/IGST). Seller code comes
+     * from the "(NN)" in BILLING_SELLER_STATE, default 36 = Telangana.
+     */
+    public static function buyerIsIntraState($tenant, ?array $seller = null): bool
+    {
+        try {
+            $sellerState = (string) ($seller['state'] ?? env('BILLING_SELLER_STATE', 'Telangana (36)'));
+            $sellerCode = preg_match('/(\d{2})/', $sellerState, $m) ? $m[1] : '36';
+            $gstin = strtoupper(trim((string) ($tenant->gstin ?? '')));
+            if (preg_match('/^(\d{2})/', $gstin, $g)) {
+                return $g[1] === $sellerCode;
+            }
+            $state = strtolower(trim((string) ($tenant->state ?? '')));
+            if ($state !== '') {
+                $sellerName = strtolower(preg_replace('/[^a-z ]/i', '', $sellerState));
+
+                return trim($sellerName) !== '' && str_contains($state, trim(explode(' ', trim($sellerName))[0]));
+            }
+        } catch (\Throwable $e) {
+            // fall through to the env default
+        }
+
+        return env('BILLING_GST_MODE', 'inter') === 'intra';
     }
 
     /** Stream the invoice PDF inline (super-admin preview / download). */

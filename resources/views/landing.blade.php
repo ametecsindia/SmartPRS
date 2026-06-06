@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="icon" type="image/png" href="{{ asset('images/logo-icon.png') }}">
     <style>
         :root{
             --navy:#0a1628;--navy2:#102744;--accent:#f97316;--accent2:#fb923c;
@@ -180,7 +181,7 @@
 <body>
     <nav>
         <div class="wrap">
-            <a href="/" class="logo"><span class="mark"><i class="fas fa-bolt" style="color:#fff"></i></span> Smart<b>PRS</b></a>
+            <a href="/" class="logo"><img src="{{ asset('images/logo.png') }}" alt="SmartPRS — Reputation | Relationships | Results" style="height:40px;width:auto;display:block;"></a>
             <div class="navlinks">
                 <a href="#features">Features</a>
                 <a href="#how">How it works</a>
@@ -367,25 +368,148 @@
         </div>
     </section>
 
-    <section id="contact">
+    {{-- rev 89 (Ejaz): lead-generation demo form, modelled on smartdcm.app.
+         WhatsApp number + alert recipients are edited in /admin/landing (CMS). --}}
+    <section id="contact" style="background:#f1f5f9;">
         <div class="wrap">
-            <div class="band">
-                <h2>Ready to see it in action?</h2>
-                <p>Talk to us about onboarding your companies — SaaS or on-premise.</p>
-                <div class="row">
-                    <a href="mailto:{{ $c['contact']['email'] }}" class="btn btn-light"><i class="fas fa-envelope"></i> {{ $c['contact']['email'] }}</a>
-                    <a href="{{ route('login') }}" class="btn btn-ghost" style="border-color:rgba(255,255,255,.5)"><i class="fas fa-right-to-bracket"></i> Sign in</a>
+            <div class="sec-head">
+                <div class="eyebrow">Book a live demo</div>
+                <h2 style="color:var(--navy);">See SmartPRS in action for your companies</h2>
+                <p class="lead" style="color:#475569;">Share a few details and our team will schedule a personalised walkthrough for your collections &amp; recovery business — SaaS or on-premise.</p>
+            </div>
+            <div style="display:grid;grid-template-columns:1.25fr 1fr;gap:26px;align-items:start;" class="lead-grid">
+                <div style="background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:26px 28px;box-shadow:0 10px 28px rgba(15,29,51,.07);">
+                    <form id="leadForm" onsubmit="return spLeadSubmit(event)">
+                        <input type="text" name="website" value="" style="display:none" tabindex="-1" autocomplete="off">
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;" class="lead-fields">
+                            <div class="lf"><label>Full Name*</label><input name="name" required maxlength="120"></div>
+                            <div class="lf"><label>Company Name*</label><input name="company" required maxlength="160"></div>
+                            <div class="lf"><label>Designation</label><input name="designation" maxlength="120"></div>
+                            <div class="lf"><label>City / Location*</label><input name="city" required maxlength="120"></div>
+                            <div class="lf"><label>Mobile Number*</label><input name="mobile" required maxlength="20" inputmode="tel"></div>
+                            <div class="lf"><label>Official Email ID*</label><input name="email" type="email" required maxlength="160"></div>
+                            <div class="lf" style="grid-column:1/-1;"><label>Number of Employees</label>
+                                <select name="employees">
+                                    <option value="">Select</option>
+                                    <option>1 - 25</option>
+                                    <option>26 - 75</option>
+                                    <option>76 - 150</option>
+                                    <option>More than 150</option>
+                                </select>
+                            </div>
+                            <div class="lf" style="grid-column:1/-1;"><label>What challenges are you facing today?</label>
+                                <textarea name="challenges" rows="3" maxlength="2000" placeholder="Example: payroll taking days, attendance fraud, DRA/PCC expiries slipping, incentive disputes, multiple companies on spreadsheets…"></textarea>
+                            </div>
+                        </div>
+                        <p style="font-size:12px;color:#64748b;margin:12px 0 16px;">By submitting this form, you agree to be contacted by Ametecs India for a SmartPRS demo and related communication.</p>
+                        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                            <button type="submit" class="btn btn-accent" id="leadBtn"><i class="fas fa-calendar-check"></i> Schedule My Demo</button>
+                            <a href="https://wa.me/{{ preg_replace('/\D+/', '', $c['contact']['whatsapp'] ?? '') }}?text={{ urlencode('Hi! I would like a SmartPRS demo for my company.') }}" onclick="return spLeadWa(this)" target="_blank" rel="noopener" class="btn" style="background:#25d366;color:#fff;justify-content:center;"><i class="fab fa-whatsapp"></i> Chat on WhatsApp</a>
+                        </div>
+                        <div id="leadMsg" style="display:none;margin-top:14px;padding:12px 14px;border-radius:10px;font-size:14px;"></div>
+                    </form>
                 </div>
-                <div class="meta">{{ $c['contact']['phone'] }} &nbsp;·&nbsp; {{ $c['contact']['address'] }}</div>
+                <div style="background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:26px 28px;">
+                    <h3 style="margin:0 0 14px;color:var(--navy);font-size:19px;">What happens after you submit?</h3>
+                    <ol style="margin:0;padding-left:20px;color:#334155;font-size:14.5px;line-height:1.7;">
+                        <li>Our team validates your requirement and team size.</li>
+                        <li>We schedule a live SmartPRS demo over Zoom or Google Meet.</li>
+                        <li>We map your companies, attendance and payroll flow into SmartPRS and show sample payslips and reports.</li>
+                        <li>Commercials and deployment options (SaaS or on-premise) are shared after the demo.</li>
+                    </ol>
+                    <p style="font-size:13px;color:#64748b;margin:14px 0 0;">No obligations. No lock-in. The goal of the demo is to show how SmartPRS fits your collections &amp; recovery operation.</p>
+                    <hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0;">
+                    <div style="font-size:14px;color:#334155;line-height:1.9;">
+                        <div><i class="fas fa-envelope" style="color:var(--accent);width:20px;"></i> <a href="mailto:{{ $c['contact']['email'] }}" style="color:#334155;">{{ $c['contact']['email'] }}</a></div>
+                        <div><i class="fas fa-phone" style="color:var(--accent);width:20px;"></i> {{ $c['contact']['phone'] }}</div>
+                        <div><i class="fas fa-location-dot" style="color:var(--accent);width:20px;"></i> {{ $c['contact']['address'] }}</div>
+                    </div>
+                </div>
             </div>
         </div>
+        <style>
+            .lf label{display:block;font-size:12px;font-weight:700;color:#334155;margin-bottom:5px;}
+            .lf input,.lf select,.lf textarea{width:100%;padding:10px 12px;border:1.5px solid #cbd5e1;border-radius:9px;font-size:14px;font-family:inherit;background:#f8fafc;}
+            .lf input:focus,.lf select:focus,.lf textarea:focus{outline:none;border-color:var(--accent);background:#fff;}
+            @media (max-width:920px){.lead-grid{grid-template-columns:1fr !important;}.lead-fields{grid-template-columns:1fr !important;}}
+        </style>
+        <script>
+            // rev 91b (Ejaz): the WhatsApp button must CARRY the filled form details
+            // into the chat, not just a fixed greeting. It also quietly saves the
+            // lead to the database when the required fields are complete.
+            function spLeadWa(a) {
+                try {
+                    var f = document.getElementById('leadForm');
+                    var d = {};
+                    new FormData(f).forEach(function (v, k) { d[k] = String(v || '').trim(); });
+                    var lines = ['Hi! I would like a SmartPRS demo for my company.'];
+                    if (d.name) lines.push('Name: ' + d.name + (d.designation ? ' (' + d.designation + ')' : ''));
+                    if (d.company) lines.push('Company: ' + d.company);
+                    if (d.city) lines.push('City: ' + d.city);
+                    if (d.mobile) lines.push('Mobile: ' + d.mobile);
+                    if (d.email) lines.push('Email: ' + d.email);
+                    if (d.employees) lines.push('Employees: ' + d.employees);
+                    if (d.challenges) lines.push('Challenges: ' + d.challenges);
+                    var base = a.href.split('?')[0];
+                    var url = base + '?text=' + encodeURIComponent(lines.join('\n'));
+                    // Best-effort: also record the lead (once) when the form is complete.
+                    if (!window.__leadSaved && d.name && d.company && d.city && d.mobile && d.email) {
+                        window.__leadSaved = true;
+                        fetch('{{ route('lead.store') }}', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}', 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+                            body: JSON.stringify(d)
+                        }).catch(function () {});
+                    }
+                    window.open(url, '_blank', 'noopener');
+                    return false;   // we opened it ourselves with the composed text
+                } catch (e) {
+                    return true;    // fall back to the plain href
+                }
+            }
+            function spLeadSubmit(ev) {
+                ev.preventDefault();
+                var f = document.getElementById('leadForm');
+                var btn = document.getElementById('leadBtn');
+                var msg = document.getElementById('leadMsg');
+                var data = {};
+                new FormData(f).forEach(function (v, k) { data[k] = v; });
+                btn.disabled = true; btn.style.opacity = '.6';
+                var ok9 = 'background:#dcfce7;color:#166534;border:1px solid #bbf7d0;';
+                var bad9 = 'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;';
+                var base9 = 'display:block;margin-top:14px;padding:12px 14px;border-radius:10px;font-size:14px;';
+                fetch('{{ route('lead.store') }}', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}', 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+                    body: JSON.stringify(data)
+                }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; }); })
+                .then(function (res) {
+                    btn.disabled = false; btn.style.opacity = '1';
+                    if (res.s === 200 && res.j && res.j.ok) {
+                        window.__leadSaved = true;   // a later WhatsApp click must not save a duplicate
+                        msg.style.cssText = base9 + ok9;
+                        msg.innerHTML = '<i class="fas fa-circle-check"></i> ' + (res.j.message || 'Thank you! Our team will contact you shortly.');
+                        f.reset();
+                    } else {
+                        var errs = res.j && res.j.errors ? Object.values(res.j.errors).map(function (a) { return a[0]; }).join(' ') : 'Please check the required fields and try again.';
+                        msg.style.cssText = base9 + bad9;
+                        msg.innerHTML = '<i class="fas fa-circle-exclamation"></i> ' + errs;
+                    }
+                }).catch(function () {
+                    btn.disabled = false; btn.style.opacity = '1';
+                    msg.style.cssText = base9 + bad9;
+                    msg.innerHTML = 'Could not submit right now — please use the WhatsApp button instead.';
+                });
+                return false;
+            }
+        </script>
     </section>
 
     <footer>
         <div class="wrap">
             <div class="cols">
                 <div>
-                    <div class="logo"><span class="mark"><i class="fas fa-bolt" style="color:#fff"></i></span> Smart<b>PRS</b></div>
+                    <div class="logo"><img src="{{ asset('images/logo.png') }}" alt="SmartPRS — Reputation | Relationships | Results" style="height:42px;width:auto;display:block;"></div>
                     <p class="blurb">{{ $c['brand'] }} {{ $c['tagline'] }} — the complete workforce platform for India's collections &amp; recovery industry.</p>
                 </div>
                 <div>

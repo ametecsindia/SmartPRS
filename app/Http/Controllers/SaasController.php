@@ -77,6 +77,8 @@ class SaasController extends Controller
                 'deployment' => $t->deployment,
                 'subdomain' => $t->subdomain ?? '',
                 'customDomain' => $hasDomain ? ($t->custom_domain ?? '') : '',
+                'gstin' => $t->gstin ?? '',
+                'state' => $t->state ?? '',
                 'created' => $t->created_at ? \Illuminate\Support\Carbon::parse($t->created_at)->format('d M Y') : '',
             ])->values();
 
@@ -135,7 +137,9 @@ class SaasController extends Controller
             }
 
             $now = now();
-            // 1) Tenant
+            // 1) Tenant (rev 90: gstin/state captured at signup drive the
+            //    CGST+SGST vs IGST split on every invoice for this tenant).
+            self::ensureGstCols();
             $tenantId = DB::table('tenants')->insertGetId(ApprovalService::safeRow('tenants', [
                 'uuid' => (string) Str::uuid(),
                 'name' => $v['name'],
@@ -147,6 +151,8 @@ class SaasController extends Controller
                 'deployment' => $v['deployment'] ?? 'saas',
                 'owner_email' => $email,
                 'subdomain' => self::uniqueSubdomain($v['name']),
+                'gstin' => strtoupper(trim((string) ($v['gstin'] ?? ''))) ?: null,
+                'state' => trim((string) ($v['state'] ?? '')) ?: null,
                 'created_at' => $now,
                 'updated_at' => $now,
             ]));
@@ -239,6 +245,22 @@ class SaasController extends Controller
         } catch (\Throwable $e) {
             // non-fatal
         }
+        self::ensureGstCols();
+    }
+
+    /** rev 90: buyer GST profile on the tenant (GSTIN + state → CGST/SGST vs IGST). */
+    public static function ensureGstCols(): void
+    {
+        try {
+            if (Schema::hasTable('tenants') && ! Schema::hasColumn('tenants', 'gstin')) {
+                Schema::table('tenants', fn (\Illuminate\Database\Schema\Blueprint $t) => $t->string('gstin', 20)->nullable());
+            }
+            if (Schema::hasTable('tenants') && ! Schema::hasColumn('tenants', 'state')) {
+                Schema::table('tenants', fn (\Illuminate\Database\Schema\Blueprint $t) => $t->string('state', 60)->nullable());
+            }
+        } catch (\Throwable $e) {
+            // non-fatal
+        }
     }
 
     /**
@@ -262,6 +284,8 @@ class SaasController extends Controller
                 'seats_licensed' => ['nullable', 'integer', 'min:0'],
                 'subdomain' => ['nullable', 'string', 'max:80'],
                 'custom_domain' => ['nullable', 'string', 'max:191'],
+                'gstin' => ['nullable', 'string', 'max:20'],
+                'state' => ['nullable', 'string', 'max:60'],
             ]);
 
             // Normalise + uniqueness for subdomain / custom domain (ignore self).
@@ -297,6 +321,9 @@ class SaasController extends Controller
                 $upd['subdomain'] = $sub;
             }
             $upd['custom_domain'] = $domain;   // null clears it
+            // rev 90: buyer GST profile (drives CGST+SGST vs IGST on invoices).
+            $upd['gstin'] = strtoupper(trim((string) ($v['gstin'] ?? ''))) ?: null;
+            $upd['state'] = trim((string) ($v['state'] ?? '')) ?: null;
 
             DB::table('tenants')->where('id', $id)->update(ApprovalService::safeRow('tenants', $upd));
 

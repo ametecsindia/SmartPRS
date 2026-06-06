@@ -116,7 +116,7 @@ class SubscriptionAlerts extends Command
                             'tenant_id' => $tid,
                             'mobile' => $contact['mobile'],
                             'kind' => 'subscription.renewal',
-                            'template' => env('INTERAKT_TEMPLATE_RENEWAL') ?: 'smartprs_renewal',
+                            'template' => WaService::templateNameFor('renewal'),
                             'bodyValues' => [
                                 $contact['name'] ?: 'there',             // {{1}} company/name
                                 $planName,                               // {{2}} plan

@@ -50,9 +50,11 @@
 </head>
 <body>
     <header>
-        <div class="logo"><span class="mark"><i class="fas fa-bolt"></i></span> Smart<span>PRS</span> Admin</div>
+        <div class="logo"><img src="{{ asset('images/logo.png') }}" alt="SmartPRS" style="height:34px;width:auto;display:block;"> <span style="color:rgba(255,255,255,.75);font-weight:600;font-size:13px;margin-left:8px;">Admin</span></div>
         <nav>
             <a href="{{ route('landing.editor') }}" class="@yield('nav_landing')">Landing CMS</a>
+            <a href="{{ route('admin.leads') }}" class="@yield('nav_leads')">Leads</a>
+            <a href="{{ route('admin.quotations') }}" class="@yield('nav_quotes')">Quotations</a>
             <a href="{{ route('admin.staff') }}" class="@yield('nav_staff')">Platform Staff</a>
             <a href="{{ route('app') }}">← Back to app</a>
             <form method="POST" action="{{ route('logout') }}" style="display:inline;">@csrf<button class="lo">Sign out</button></form>

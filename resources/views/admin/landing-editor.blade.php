@@ -62,9 +62,16 @@
             </div>
             <div class="grid c3" style="margin-top:10px;">
                 <div class="fg"><label>Contact email</label><input name="content[contact][email]" value="{{ $c['contact']['email'] }}"></div>
-                <div class="fg"><label>Phone</label><input name="content[contact][phone]" value="{{ $c['contact']['phone'] }}"></div>
+                <div class="fg"><label>Phone (shown on page)</label><input name="content[contact][phone]" value="{{ $c['contact']['phone'] }}"></div>
                 <div class="fg"><label>Address</label><input name="content[contact][address]" value="{{ $c['contact']['address'] }}"></div>
             </div>
+            {{-- rev 89: lead-generation settings (demo form + WhatsApp button) --}}
+            <div class="grid c3" style="margin-top:10px;">
+                <div class="fg"><label>WhatsApp number (Chat button, digits with country code)</label><input name="content[contact][whatsapp]" value="{{ $c['contact']['whatsapp'] ?? '' }}" placeholder="919666612424"></div>
+                <div class="fg"><label>Lead alerts — email to</label><input name="content[contact][lead_email]" value="{{ $c['contact']['lead_email'] ?? '' }}" placeholder="sales@ametecsindia.com"></div>
+                <div class="fg"><label>Lead alerts — WhatsApp to (Interakt)</label><input name="content[contact][lead_wa]" value="{{ $c['contact']['lead_wa'] ?? '' }}" placeholder="919666612424"></div>
+            </div>
+            <p class="sub" style="margin-top:6px;">Demo-form enquiries are saved under <a href="{{ route('admin.leads') }}" style="color:var(--accent)">Leads</a>; each one is also emailed and WhatsApp-alerted to the addresses above (WhatsApp needs the approved Interakt template).</p>
             <div class="fg" style="margin-top:10px;"><label>Footer text</label><input name="content[footer]" value="{{ $c['footer'] }}"></div>
         </div>
 

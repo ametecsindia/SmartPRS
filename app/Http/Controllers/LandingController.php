@@ -66,7 +66,7 @@ class LandingController extends Controller
         });
     }
 
-    private function content(): array
+    public function content(): array
     {
         // Fail soft: a brand-new install (no settings row/table yet) must still
         // render the landing page from defaults rather than 500.
@@ -126,17 +126,25 @@ class LandingController extends Controller
                 ['icon' => 'building-user', 'title' => 'SaaS Platform', 'desc' => 'Run multiple companies from one tenant, with plans, billing and GST invoicing.'],
             ],
             'plans' => [
-                ['name' => 'Starter', 'price' => '₹1,000', 'period' => '/mo + GST', 'highlight' => '0', 'features' => 'Up to 25 employees, All 16 modules included, Extra employee ₹60/mo, Minimum 3 months advance'],
-                ['name' => 'Growth', 'price' => '₹2,500', 'period' => '/mo + GST', 'highlight' => '1', 'features' => 'Up to 75 employees, All 16 modules included, Extra employee ₹50/mo, Pay annually — 25% off'],
-                ['name' => 'Professional', 'price' => '₹5,000', 'period' => '/mo + GST', 'highlight' => '0', 'features' => 'Up to 150 employees, All 16 modules included, Extra employee ₹40/mo, Pay annually — 25% off'],
+                // NOTE: the blade splits this string on COMMAS — never write an
+                // amount like ₹1,000 inside a feature (it becomes two bullets).
+                ['name' => 'Starter', 'price' => '₹1,000', 'period' => '/mo + GST', 'highlight' => '0', 'features' => 'Up to 25 employees, All 16 modules included, Extra employee ₹60/mo, Extra company ₹1000/mo, Minimum 3 months advance — 0% discount, 6 months payment — 10% discount, 12 months payment — 25% discount'],
+                ['name' => 'Growth', 'price' => '₹2,500', 'period' => '/mo + GST', 'highlight' => '1', 'features' => 'Up to 75 employees, All 16 modules included, Extra employee ₹50/mo, Extra company ₹1000/mo, Minimum 3 months advance — 0% discount, 6 months payment — 10% discount, 12 months payment — 25% discount'],
+                ['name' => 'Professional', 'price' => '₹5,000', 'period' => '/mo + GST', 'highlight' => '0', 'features' => 'Up to 150 employees, All 16 modules included, Extra employee ₹40/mo, Extra company ₹1000/mo, Minimum 3 months advance — 0% discount, 6 months payment — 10% discount, 12 months payment — 25% discount'],
             ],
             'clients' => [
                 ['name' => 'Exon'], ['name' => 'Storm'], ['name' => 'Numero Uno'], ['name' => 'Vimal Enterprises'],
             ],
             'contact' => [
                 'email' => 'sales@ametecsindia.com',
-                'phone' => '+91 40 0000 0000',
-                'address' => 'Kondapur, Hyderabad, India',
+                // rev 89: real numbers (Ejaz 6 Jun 2026) — all editable in /admin/landing.
+                // NOTE: only 9000098877 has WhatsApp (9666612424 does NOT) — both
+                // the Chat button and the Interakt lead alert must use 9000098877.
+                'phone' => '+91 96666 12424',
+                'whatsapp' => '919000098877',           // Chat-on-WhatsApp button (wa.me)
+                'lead_email' => 'sales@ametecsindia.com', // every demo request emailed here
+                'lead_wa' => '919000098877',            // WhatsApp alert per lead (Interakt)
+                'address' => 'M/s. Ametecs India Private Limited · Modern Profound Techpark, Ground Floor, Hive Space, opp. Google, Whitefields, Kondapur, Hyderabad, Telangana, India 500084 · GST: 36AAHCT0971F1ZB',
             ],
             'footer' => '© '.date('Y').' Ametecs India Pvt. Ltd. All rights reserved.',
         ];

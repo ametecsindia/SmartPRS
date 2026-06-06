@@ -459,6 +459,21 @@ class MasterController extends Controller
             // some masters (banks/designations) may lack company_id — add nullable.
             $missing['company_id'] = 'company';
         }
+        // rev 92b (Ejaz live test): PLATFORM rows (super admin) carry NO company —
+        // but the original wa_settings migration made company_id NOT NULL, so the
+        // insert blew up with "Column 'company_id' cannot be null". Relax the
+        // legacy column once (same fresh-install-minefield family as the enum
+        // widenings in ApprovalService). MySQL only; idempotent via SHOW COLUMNS.
+        if ($table === 'wa_settings' && DB::getDriverName() === 'mysql') {
+            try {
+                $col = DB::selectOne("SHOW COLUMNS FROM `wa_settings` LIKE 'company_id'");
+                if ($col && strtoupper((string) ($col->Null ?? '')) === 'NO') {
+                    DB::statement('ALTER TABLE `wa_settings` MODIFY `company_id` BIGINT UNSIGNED NULL');
+                }
+            } catch (\Throwable $e) {
+                // non-fatal — tenant-admin saves (with a company) still work
+            }
+        }
         // Repair coord columns (lat/lng) that an earlier auto-create made decimal(12,2),
         // which would truncate coordinates to ~1km. Idempotent; MySQL only (sqlite tests skip).
         if (DB::getDriverName() === 'mysql') {

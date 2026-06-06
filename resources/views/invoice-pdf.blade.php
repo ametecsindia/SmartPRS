@@ -36,8 +36,13 @@
         <table>
             <tr>
                 <td>
-                    <div class="brand">{{ $seller['name'] ?: 'SmartPRS' }}</div>
-                    <div class="muted">SmartPRS &mdash; HRM &amp; Payroll SaaS</div>
+                    @php $logo = public_path('images/logo.png'); @endphp
+                    @if(is_file($logo))
+                        <img src="{{ $logo }}" alt="SmartPRS by Ametecs" style="height:38px;">
+                    @else
+                        <div class="brand">{{ $seller['name'] ?: 'SmartPRS' }}</div>
+                    @endif
+                    <div class="muted" style="margin-top:4px;">SmartPRS &mdash; HRM &amp; Payroll SaaS</div>
                 </td>
                 <td style="text-align:right;">
                     <div style="font-size:15px;font-weight:bold;">TAX INVOICE</div>
@@ -66,6 +71,8 @@
                     <div class="label">Bill To</div>
                     <div style="font-weight:bold;">{{ $tenant->name ?? '—' }}</div>
                     @if(!empty($tenant->owner_email))<div>{{ $tenant->owner_email }}</div>@endif
+                    @if(!empty($tenant->state))<div>State / Place of supply: {{ $tenant->state }}</div>@endif
+                    @if(!empty($tenant->gstin))<div><b>GSTIN:</b> {{ $tenant->gstin }}</div>@endif
                     <div style="margin-top:8px;">
                         <span class="label">Invoice date</span>
                         {{ $inv->issued_on ? \Illuminate\Support\Carbon::parse($inv->issued_on)->format('d M Y') : now()->format('d M Y') }}
