@@ -16,12 +16,31 @@ use App\Http\Controllers\StaffController;
 use App\Http\Controllers\TenantController;
 use Illuminate\Support\Facades\Route;
 
-// Public marketing landing page.
-Route::get('/', [LandingController::class, 'show'])->name('landing');
+// rev 103: on-premise editions (SmartPRS-L1/L2/L3 — SMARTPRS_EDITION in .env).
+// A client's own server has no SaaS marketing surface: the root goes straight
+// to the app, and signup/demo/quote/lead routes are simply not registered.
+$spOnPrem = \App\Services\Edition::isOnPrem();
+
+// Public marketing landing page (SaaS only).
+// rev 109: a tenant's CUSTOM DOMAIN never shows the marketing site — its root
+// goes straight to their branded login.
+if ($spOnPrem) {
+    Route::get('/', function () { return redirect('/app'); })->name('landing');
+} else {
+    Route::get('/', function (Illuminate\Http\Request $r) {
+        if (App\Http\Controllers\AuthController::tenantByHost($r->getHost())) {
+            return redirect('/login');
+        }
+
+        return app()->call([app(LandingController::class), 'show']);
+    })->name('landing');
+}
 
 // rev 89: public demo-request (lead) form on the landing page. Throttled.
-Route::post('/lead', [App\Http\Controllers\LeadController::class, 'store'])
-    ->middleware('throttle:10,1')->name('lead.store');
+if (! $spOnPrem) {
+    Route::post('/lead', [App\Http\Controllers\LeadController::class, 'store'])
+        ->middleware('throttle:10,1')->name('lead.store');
+}
 
 // Public offer-acceptance page (candidate, no login — secured by the token).
 Route::get('/offer/{token}', [App\Http\Controllers\OfferAcceptController::class, 'show'])->name('offer.show');
@@ -38,34 +57,76 @@ Route::get('/transfer/accept/{token}', [App\Http\Controllers\TransferController:
 
 // PUBLIC self-serve signup + Razorpay checkout (amounts computed server-side;
 // payment verified by HMAC signature; provisioning idempotent per signup).
-Route::get('/signup', [App\Http\Controllers\SignupController::class, 'show'])->name('signup.show');
-Route::post('/signup/order', [App\Http\Controllers\SignupController::class, 'createOrder'])->name('signup.order');
-Route::post('/signup/complete', [App\Http\Controllers\SignupController::class, 'complete'])->name('signup.complete');
+// rev 103: SaaS only — an on-prem licence box must never provision workspaces.
+if (! $spOnPrem) {
+    Route::get('/signup', [App\Http\Controllers\SignupController::class, 'show'])->name('signup.show');
+    Route::post('/signup/order', [App\Http\Controllers\SignupController::class, 'createOrder'])->name('signup.order');
+    Route::post('/signup/complete', [App\Http\Controllers\SignupController::class, 'complete'])->name('signup.complete');
 
-// rev 97: PUBLIC LIVE DEMO — lead-capture form → auto-login to the shared demo
-// workspace with the guided tour. Demo resets every 3 hours (routes/console.php).
-Route::get('/demo', [App\Http\Controllers\DemoAccessController::class, 'show'])->name('demo.show');
-Route::post('/demo/otp', [App\Http\Controllers\DemoAccessController::class, 'otp'])->middleware('throttle:8,1')->name('demo.otp');
-Route::post('/demo/start', [App\Http\Controllers\DemoAccessController::class, 'start'])->middleware('throttle:15,1')->name('demo.start');
+    // rev 97: PUBLIC LIVE DEMO — lead-capture form → auto-login to the shared demo
+    // workspace with the guided tour. Demo resets every 3 hours (routes/console.php).
+    Route::get('/demo', [App\Http\Controllers\DemoAccessController::class, 'show'])->name('demo.show');
+    Route::post('/demo/otp', [App\Http\Controllers\DemoAccessController::class, 'otp'])->middleware('throttle:8,1')->name('demo.otp');
+    Route::post('/demo/start', [App\Http\Controllers\DemoAccessController::class, 'start'])->middleware('throttle:15,1')->name('demo.start');
 
-// rev 96: quotation flow — "Send a Quotation" + public pay link.
-Route::post('/signup/quote', [App\Http\Controllers\SignupController::class, 'quote'])->middleware('throttle:10,1')->name('signup.quote');
-Route::get('/quote/{token}', [App\Http\Controllers\SignupController::class, 'showQuote'])->name('quote.show');
-Route::get('/quote/{token}/pdf', [App\Http\Controllers\SignupController::class, 'quotePdf'])->name('quote.pdf');
-Route::post('/quote/{token}/order', [App\Http\Controllers\SignupController::class, 'quoteOrder'])->middleware('throttle:20,1')->name('quote.order');
-Route::post('/quote/{token}/complete', [App\Http\Controllers\SignupController::class, 'quoteComplete'])->name('quote.complete');
+    // rev 104: EDITION DEMONSTRATIONS — /app1 (L1) /app2 (L2) /app3 (L3).
+    // One-click sales-team entries into the demo workspace under that licence
+    // (session edition override; see Edition::current). /demo stays OTP-gated.
+    Route::get('/app{n}', [App\Http\Controllers\DemoAccessController::class, 'editionShow'])
+        ->whereIn('n', ['1', '2', '3'])->name('demo.edition');
+    Route::post('/app{n}/start', [App\Http\Controllers\DemoAccessController::class, 'editionStart'])
+        ->whereIn('n', ['1', '2', '3'])->middleware('throttle:20,1')->name('demo.edition.start');
 
-// Razorpay payment webhook (public, server-to-server). CSRF-exempt at the route
-// level — the source tree has no bootstrap/app.php to register exceptions in.
-// Security is the X-Razorpay-Signature HMAC check inside the controller.
-Route::post('/webhooks/razorpay', [App\Http\Controllers\BillingController::class, 'razorpayWebhook'])
-    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
-    ->name('webhooks.razorpay');
+    // rev 105: /teamdemo — the COMPLETE platform, team-driven, unrestricted.
+    Route::get('/teamdemo', fn () => app(App\Http\Controllers\DemoAccessController::class)->editionShow('full'))->name('demo.team');
+    Route::post('/teamdemo/start', fn (Illuminate\Http\Request $r) => app(App\Http\Controllers\DemoAccessController::class)->editionStart($r, 'full'))
+        ->middleware('throttle:20,1')->name('demo.team.start');
+
+    // rev 96: quotation flow — "Send a Quotation" + public pay link.
+    Route::post('/signup/quote', [App\Http\Controllers\SignupController::class, 'quote'])->middleware('throttle:10,1')->name('signup.quote');
+    Route::get('/quote/{token}', [App\Http\Controllers\SignupController::class, 'showQuote'])->name('quote.show');
+    Route::get('/quote/{token}/pdf', [App\Http\Controllers\SignupController::class, 'quotePdf'])->name('quote.pdf');
+    Route::post('/quote/{token}/order', [App\Http\Controllers\SignupController::class, 'quoteOrder'])->middleware('throttle:20,1')->name('quote.order');
+    Route::post('/quote/{token}/complete', [App\Http\Controllers\SignupController::class, 'quoteComplete'])->name('quote.complete');
+
+    // Razorpay payment webhook (public, server-to-server). CSRF-exempt at the route
+    // level — the source tree has no bootstrap/app.php to register exceptions in.
+    // Security is the X-Razorpay-Signature HMAC check inside the controller.
+    Route::post('/webhooks/razorpay', [App\Http\Controllers\BillingController::class, 'razorpayWebhook'])
+        ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+        ->name('webhooks.razorpay');
+}
+
+// rev 107: THE UPDATE SERVER + licence authority (SaaS platform only; SRS FR-5).
+// Public server-to-server endpoints — CSRF-exempt, throttled, key-validated
+// inside the controller. On-prem installations call these from anywhere.
+if (! $spOnPrem) {
+    Route::post('/update/activate', [App\Http\Controllers\UpdateServerController::class, 'activate'])
+        ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+        ->middleware('throttle:10,1')->name('update.activate');
+    Route::post('/update/heartbeat', [App\Http\Controllers\UpdateServerController::class, 'heartbeat'])
+        ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+        ->middleware('throttle:30,1')->name('update.heartbeat');
+    Route::post('/update/check', [App\Http\Controllers\UpdateServerController::class, 'check'])
+        ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+        ->middleware('throttle:30,1')->name('update.check');
+    Route::get('/update/download/{version}', [App\Http\Controllers\UpdateServerController::class, 'download'])
+        ->middleware('throttle:10,1')->name('update.download');
+
+    // rev 107b: PUBLIC licence-invoice pay page (token-secured, Razorpay).
+    Route::get('/licence/{token}', [App\Http\Controllers\OnpremClientController::class, 'payShow'])->name('licence.pay');
+    Route::get('/licence/{token}/pdf', [App\Http\Controllers\OnpremClientController::class, 'invoicePdf'])->name('licence.pdf');
+    Route::post('/licence/{token}/order', [App\Http\Controllers\OnpremClientController::class, 'payOrder'])->middleware('throttle:20,1')->name('licence.order');
+    Route::post('/licence/{token}/complete', [App\Http\Controllers\OnpremClientController::class, 'payComplete'])->name('licence.complete');
+}
 
 // rev 94: Interakt WhatsApp delivery/read status webhook (public; CSRF-exempt).
-Route::post('/webhooks/interakt', [App\Http\Controllers\RecruitMessagingController::class, 'interaktWebhook'])
-    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
-    ->name('webhooks.interakt');
+// rev 103: needs the Volume Hiring module — registered for SaaS and L3 only.
+if (! $spOnPrem || \App\Services\Edition::level() >= 3) {
+    Route::post('/webhooks/interakt', [App\Http\Controllers\RecruitMessagingController::class, 'interaktWebhook'])
+        ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+        ->name('webhooks.interakt');
+}
 
 Route::middleware('guest')->group(function () {
     Route::get('/login', [AuthController::class, 'show'])->name('login');
@@ -83,7 +144,30 @@ Route::middleware('guest')->group(function () {
 
 Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
 
-Route::middleware(['auth', App\Http\Middleware\EnsureSubscriptionActive::class, App\Http\Middleware\DemoWriteGuard::class])->group(function () {
+Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Middleware\EnsureSubscriptionActive::class, App\Http\Middleware\DemoWriteGuard::class, App\Http\Middleware\EditionGuard::class])->group(function () {
+    // rev 107: ON-PREM activation + Administration → Updates (admin-guarded
+    // inside the controllers; LicenseGate forces unactivated installs here).
+    Route::get('/app/activate', [App\Http\Controllers\ClientUpdateController::class, 'activateShow'])->name('licence.activate');
+    Route::post('/app/activate', [App\Http\Controllers\ClientUpdateController::class, 'activatePost'])->middleware('throttle:10,1');
+    Route::get('/app/updates/status', [App\Http\Controllers\ClientUpdateController::class, 'status']);
+    Route::post('/app/updates/check', [App\Http\Controllers\ClientUpdateController::class, 'check'])->middleware('throttle:10,1');
+    Route::post('/app/updates/apply', [App\Http\Controllers\ClientUpdateController::class, 'apply'])->middleware('throttle:5,10');
+
+    // rev 107: SaaS panel — On-Prem Clients (sales desk) + Releases (updates).
+    Route::get('/admin/onprem', [App\Http\Controllers\OnpremClientController::class, 'index'])->name('admin.onprem');
+    Route::post('/admin/onprem', [App\Http\Controllers\OnpremClientController::class, 'save'])->name('admin.onprem.save');
+    Route::post('/admin/onprem/{id}/payment', [App\Http\Controllers\OnpremClientController::class, 'payment'])->name('admin.onprem.payment');
+    Route::post('/admin/onprem/{id}/invoice', [App\Http\Controllers\OnpremClientController::class, 'invoice'])->name('admin.onprem.invoice');
+    Route::post('/admin/onprem/{id}/partial', [App\Http\Controllers\OnpremClientController::class, 'partialToggle'])->name('admin.onprem.partial');
+    Route::post('/admin/onprem/{id}/key', [App\Http\Controllers\OnpremClientController::class, 'issueKey'])->name('admin.onprem.key');
+    Route::post('/admin/onprem/{id}/renew', [App\Http\Controllers\OnpremClientController::class, 'renewAmc'])->name('admin.onprem.renew');
+    Route::post('/admin/onprem/{id}/deactivate', [App\Http\Controllers\OnpremClientController::class, 'deactivate'])->name('admin.onprem.deactivate');
+    Route::post('/admin/onprem/{id}/revoke', [App\Http\Controllers\OnpremClientController::class, 'revoke'])->name('admin.onprem.revoke');
+    Route::get('/admin/releases', [App\Http\Controllers\ReleaseController::class, 'index'])->name('admin.releases');
+    Route::post('/admin/releases', [App\Http\Controllers\ReleaseController::class, 'upload'])->name('admin.releases.upload');
+    Route::post('/admin/releases/{id}/apply', [App\Http\Controllers\ReleaseController::class, 'applyPlatform'])->name('admin.releases.apply');
+    Route::post('/admin/releases/{id}/publish', [App\Http\Controllers\ReleaseController::class, 'publish'])->name('admin.releases.publish');
+
     // Super-admin admin panel (landing CMS + platform staff).
     Route::get('/admin/landing', [LandingController::class, 'editor'])->name('landing.editor');
     Route::post('/admin/landing', [LandingController::class, 'save'])->name('landing.save');
@@ -127,6 +211,9 @@ Route::middleware(['auth', App\Http\Middleware\EnsureSubscriptionActive::class, 
     Route::get('/app/fin-year', [App\Http\Controllers\FinYearController::class, 'index'])->name('app.finyear');
     Route::post('/app/fin-year/set', [App\Http\Controllers\FinYearController::class, 'setActive'])->name('app.finyear.set');
     // My Subscription (tenant admin): own plan/expiry/invoices + self-serve renew or upgrade via Razorpay.
+    // rev 100: per-screen help guide (the ⓘ popup) — content in ScreenHelpController.
+    Route::get('/app/help/{screen}', [App\Http\Controllers\ScreenHelpController::class, 'show'])->name('app.help');
+
     Route::get('/app/my-subscription', [App\Http\Controllers\TenantBillingController::class, 'index'])->name('app.mysub');
     Route::post('/app/my-subscription/quote', [App\Http\Controllers\TenantBillingController::class, 'quote'])->name('app.mysub.quote');
     Route::post('/app/my-subscription/renew/order', [App\Http\Controllers\TenantBillingController::class, 'renewOrder'])->name('app.mysub.renew.order');

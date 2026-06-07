@@ -99,6 +99,12 @@ input.fi:focus,select.fi:focus{outline:none;border-color:var(--accent)}
         <label class="fl">GSTIN (optional — printed on your tax invoice)</label>
         <input class="fi" id="f_gstin" placeholder="e.g. 36AAHCT0971F1ZB" maxlength="15" style="text-transform:uppercase">
         <div class="inc" style="margin-top:-4px;margin-bottom:10px">Telangana businesses are billed CGST 9% + SGST 9%; other states IGST 18% — same total either way.</div>
+        <label class="fl">Choose your SmartPRS web address (optional)</label>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:13px;color:#64748b;white-space:nowrap">smartprs.com/c/</span>
+          <input class="fi" id="f_slug" placeholder="e.g. abcrecover" maxlength="10" style="text-transform:lowercase;margin-bottom:0">
+        </div>
+        <div class="inc" style="margin-top:6px;margin-bottom:10px">3–10 letters/numbers, no spaces. This becomes your branded login page. Leave blank and we will create one from your company name.</div>
         <label class="fl">Total employees you will manage</label>
         <input class="fi" id="f_seats" type="number" min="1" value="25">
         <label class="fl">Companies in your group</label>
@@ -239,6 +245,7 @@ function startCheckout(){
     mobile: document.getElementById('f_mobile').value.trim(),
     state: document.getElementById('f_state').value,
     gstin: document.getElementById('f_gstin').value.trim().toUpperCase(),
+    subdomain: (document.getElementById('f_slug') ? document.getElementById('f_slug').value.trim().toLowerCase() : ''),
     plan_id: state.plan, seats: parseInt(document.getElementById('f_seats').value, 10) || 0,
     companies: Math.max(1, parseInt(document.getElementById('f_companies').value, 10) || 1), cycle: state.cycle
   };
@@ -292,6 +299,7 @@ function collectForm(){
     mobile: document.getElementById('f_mobile').value.trim(),
     state: document.getElementById('f_state').value,
     gstin: document.getElementById('f_gstin').value.trim().toUpperCase(),
+    subdomain: (document.getElementById('f_slug') ? document.getElementById('f_slug').value.trim().toLowerCase() : ''),
     plan_id: state.plan, seats: parseInt(document.getElementById('f_seats').value, 10) || 0,
     companies: Math.max(1, parseInt(document.getElementById('f_companies').value, 10) || 1), cycle: state.cycle
   };

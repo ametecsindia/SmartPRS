@@ -58,6 +58,75 @@ class DemoAccessController extends Controller
         return view('demo-entry', ['ready' => $ready]);
     }
 
+    /**
+     * rev 104 — EDITION DEMONSTRATIONS (Ejaz: "/app1 for level-1, /app2 for
+     * level-2, /app3 for level-3"). One-click, sales-team-driven entries into
+     * the SAME shared demo workspace, viewed through that edition's licence:
+     * the session carries edition_demo and Edition::current() honours it for
+     * demo-tenant users only. No OTP here — these URLs are for demos YOUR
+     * team conducts; the lead-capturing public demo stays at /demo.
+     */
+    public const EDITION_DEMOS = [
+        '1' => ['l1', 'SmartPRS-L1', 'Core HR', 'The complete, compliant HR & payroll system — people, GPS + selfie attendance, leave, full statutory payroll (PF · ESI · PT · TDS), notices and reports.'],
+        '2' => ['l2', 'SmartPRS-L2', 'Advanced', 'Everything in L1 plus the nine advanced modules — Recruitment & ATS, HR Letters, Compensation & Claims, Multi-Company, Performance, Learning, WhatsApp Suite, Analytics, Communication Plus.'],
+        '3' => ['l3', 'SmartPRS-L3', 'Collections DNA', 'The full platform — everything in L2 plus Live Salary, the Incentive & Earnings Engine, Field Force & Compliance and the Volume Hiring Machine.'],
+        // rev 105: the COMPLETE platform demo the team gives personally.
+        'full' => [null, 'SmartPRS', 'Complete Platform', 'The entire platform with nothing held back — all sixteen modules, every screen, settings included. The personal demonstration experience for your prospect, driven by the Ametecs team.'],
+    ];
+
+    /** rev 105: team PIN — unlocks the unrestricted personal demos. */
+    private static function teamPinOk(Request $request): bool
+    {
+        $pin = strtolower(trim((string) $request->input('pin', '')));
+        $real = strtolower(trim((string) config('smartprs.team_pin', 'ametecs')));
+
+        return $pin !== '' && hash_equals($real, $pin);
+    }
+
+    /** GET /app1 | /app2 | /app3 | /teamdemo — branded team entry page. */
+    public function editionShow(string $n)
+    {
+        $d = self::EDITION_DEMOS[$n] ?? null;
+        abort_unless($d, 404);
+
+        return view('edition-demo-entry', [
+            'n' => $n, 'edition' => $d[0], 'title' => $d[1], 'subtitle' => $d[2],
+            'blurb' => $d[3], 'ready' => $this->demoUser() !== null,
+            'action' => $n === 'full' ? url('/teamdemo/start') : url('/app'.$n.'/start'),
+        ]);
+    }
+
+    /**
+     * POST /app{n}/start | /teamdemo/start — TEAM demo login (rev 105):
+     * PIN-gated, UNRESTRICTED (demo_team session flag switches off the demo
+     * write-guard and the hidden-screens lockdown — the team shows everything
+     * personally; the 3-hour reset cleans up afterwards). Edition demos also
+     * carry the licence view; /teamdemo is the full platform.
+     */
+    public function editionStart(Request $request, string $n)
+    {
+        $d = self::EDITION_DEMOS[$n] ?? null;
+        abort_unless($d, 404);
+        $back = $n === 'full' ? '/teamdemo' : '/app'.$n;
+        if (! self::teamPinOk($request)) {
+            return redirect($back)->with('demo_err', 'Wrong team PIN — these personal-demo entries are for the Ametecs team. Visitors: please use the Live Demo at smartprs.com/demo.');
+        }
+        $u = $this->demoUser();
+        if (! $u) {
+            return redirect($back)->with('demo_err', 'The demo is being refreshed right now — please try again in a couple of minutes.');
+        }
+        Auth::loginUsingId($u->id);
+        $request->session()->regenerate();
+        if ($d[0]) {
+            $request->session()->put('edition_demo', $d[0]);
+        } else {
+            $request->session()->forget('edition_demo');
+        }
+        $request->session()->put('demo_team', 1);
+
+        return redirect($request->boolean('tour') ? '/app?tour=1' : '/app');
+    }
+
     /** The demo workspace's admin login (created by demo:reset). */
     private function demoUser()
     {
@@ -207,6 +276,11 @@ class DemoAccessController extends Controller
 
             Auth::loginUsingId($u->id);
             $request->session()->regenerate();
+            // rev 104: /demo always shows the FULL product — clear any edition
+            // override left from an /app1 /app2 /app3 demonstration.
+            // rev 105: and /demo is the PUBLIC demo — always restricted.
+            $request->session()->forget('edition_demo');
+            $request->session()->forget('demo_team');
 
             return response()->json(['ok' => true, 'redirect' => url('/app?tour=1')]);
         } catch (\Illuminate\Validation\ValidationException $e) {

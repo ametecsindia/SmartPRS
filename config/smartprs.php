@@ -11,6 +11,39 @@ return [
     */
     'deployment' => env('SMARTPRS_DEPLOYMENT', 'saas'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Edition (rev 103 — module licensing levels)
+    |--------------------------------------------------------------------------
+    | 'saas' => hosted, full app + SaaS Platform module
+    | 'l1'   => on-prem Core HR   | 'l2' => + Advanced | 'l3' => + DNA modules
+    | Read via App\Services\Edition (config-first, so config:cache is safe).
+    */
+    'edition' => env('SMARTPRS_EDITION', 'saas'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Team demo PIN (rev 105)
+    |--------------------------------------------------------------------------
+    | Unlocks the UNRESTRICTED personal demos at /teamdemo, /app1, /app2,
+    | /app3 (no demo write-guard, no hidden screens). Known to the Ametecs
+    | sales team only; the public /demo stays OTP-gated and restricted.
+    */
+    'team_pin' => env('SMARTPRS_TEAM_PIN', 'ametecs'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Version & update channel (rev 107 — Update & Licensing system)
+    |--------------------------------------------------------------------------
+    | 'version'    bumped on every release (BUILD-RELEASE.bat reads it).
+    | 'update_url' the platform update server every on-prem client calls;
+    |              baked-in default per the SRS, overridable for testing.
+    | 'licence_enforce' lets a dev/demo install skip the activation gate.
+    */
+    'version' => '2026.6.1',
+    'update_url' => env('SMARTPRS_UPDATE_URL', 'https://smartprs.com/update'),
+    'licence_enforce' => env('SMARTPRS_LICENCE_ENFORCE', true),
+
     'default_company_code' => env('SMARTPRS_DEFAULT_COMPANY_CODE', 'DEMO'),
 
     /*

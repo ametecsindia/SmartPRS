@@ -13,8 +13,64 @@ use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
-    public function show()
+    public function show(Request $request)
     {
+        // rev 109: a request arriving on a tenant's CUSTOM DOMAIN (their CNAME
+        // pointing at this server) gets THEIR branded login automatically.
+        $t = self::tenantByHost($request->getHost());
+        if ($t) {
+            return $this->brandedForTenant($t);
+        }
+
+        return view('login');
+    }
+
+    /** rev 109: tenant whose custom_domain equals the request host (per-request cache). */
+    public static function tenantByHost(?string $host): ?object
+    {
+        static $cache = [];
+        $host = strtolower(trim((string) $host));
+        if ($host === '' || str_starts_with($host, 'localhost') || str_starts_with($host, '127.')) {
+            return null;
+        }
+        if (array_key_exists($host, $cache)) {
+            return $cache[$host];
+        }
+        try {
+            if (! Schema::hasColumn('tenants', 'custom_domain')) {
+                return $cache[$host] = null;
+            }
+
+            return $cache[$host] = DB::table('tenants')->whereNull('deleted_at')
+                ->whereRaw('LOWER(custom_domain) = ?', [$host])->first();
+        } catch (\Throwable $e) {
+            return $cache[$host] = null;
+        }
+    }
+
+    /** Branded login for a tenant resolved by custom domain (master company brand). */
+    private function brandedForTenant(object $t)
+    {
+        try {
+            $q = DB::table('companies')->where('tenant_id', $t->id)->whereNull('deleted_at');
+            try {
+                $company = (clone $q)->orderByDesc('is_master')->orderBy('id')->first();
+            } catch (\Throwable $e) {
+                $company = $q->orderBy('id')->first();
+            }
+            if ($company) {
+                session(['portal_company_id' => $company->id]);
+
+                return view('login', [
+                    'portalCompany' => $company->name,
+                    'portalColor' => $company->color ?? null,
+                    'portalLogo' => $company->logo_path ?? null,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // fall through to the standard login
+        }
+
         return view('login');
     }
 

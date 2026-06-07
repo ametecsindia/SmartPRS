@@ -140,6 +140,7 @@ class SaasController extends Controller
             // 1) Tenant (rev 90: gstin/state captured at signup drive the
             //    CGST+SGST vs IGST split on every invoice for this tenant).
             self::ensureGstCols();
+            $slug = self::resolveSubdomain($v['subdomain'] ?? null, $v['name']);
             $tenantId = DB::table('tenants')->insertGetId(ApprovalService::safeRow('tenants', [
                 'uuid' => (string) Str::uuid(),
                 'name' => $v['name'],
@@ -150,7 +151,7 @@ class SaasController extends Controller
                 'mrr' => 0,
                 'deployment' => $v['deployment'] ?? 'saas',
                 'owner_email' => $email,
-                'subdomain' => self::uniqueSubdomain($v['name']),
+                'subdomain' => $slug,
                 'gstin' => strtoupper(trim((string) ($v['gstin'] ?? ''))) ?: null,
                 'state' => trim((string) ($v['state'] ?? '')) ?: null,
                 'created_at' => $now,
@@ -195,7 +196,9 @@ class SaasController extends Controller
             } catch (\Throwable $e) {
                 // role pivot best-effort
             }
-            self::sendAdminInvite($userId, $v['admin_name'], $email, $tenantId, $v['name'], $tempPassword, $v['extra_lines'] ?? []);
+            // rev 108: the welcome email teaches them their branded sign-in page.
+            self::sendAdminInvite($userId, $v['admin_name'], $email, $tenantId, $v['name'], $tempPassword,
+                array_merge($v['extra_lines'] ?? [], ['Your branded sign-in page: '.url('/c/'.$slug).' — bookmark it!']));
 
             // Auto-install the Collections & Recovery starter content (Training
             // Programs, Training Content, FAQs + global Knowledge Base / Code of
@@ -282,18 +285,22 @@ class SaasController extends Controller
                 'owner_email' => ['nullable', 'email', 'max:191'],
                 'plan_id' => ['nullable', 'integer'],
                 'seats_licensed' => ['nullable', 'integer', 'min:0'],
-                'subdomain' => ['nullable', 'string', 'max:80'],
+                'subdomain' => ['nullable', 'string', 'max:30'],
                 'custom_domain' => ['nullable', 'string', 'max:191'],
                 'gstin' => ['nullable', 'string', 'max:20'],
                 'state' => ['nullable', 'string', 'max:60'],
             ]);
 
             // Normalise + uniqueness for subdomain / custom domain (ignore self).
-            $sub = $v['subdomain'] !== null && $v['subdomain'] !== '' ? Str::slug($v['subdomain']) : null;
+            // rev 108 (Ejaz): slugs are lowercase letters/numbers, 3–10 chars.
+            $sub = $v['subdomain'] !== null && $v['subdomain'] !== '' ? strtolower(preg_replace('/[^a-z0-9]/i', '', $v['subdomain'])) : null;
             if ($sub) {
+                if (strlen($sub) < 3 || strlen($sub) > self::SLUG_MAX) {
+                    return response()->json(['ok' => false, 'error' => 'The web address must be 3 to '.self::SLUG_MAX.' letters/numbers (no spaces or symbols).'], 422);
+                }
                 $clash = DB::table('tenants')->where('subdomain', $sub)->where('id', '!=', $id)->exists();
                 if ($clash) {
-                    return response()->json(['ok' => false, 'error' => 'That subdomain is already in use.'], 422);
+                    return response()->json(['ok' => false, 'error' => 'That web address is already in use by another client.'], 422);
                 }
             }
             $domain = $v['custom_domain'] ?? null;
@@ -432,16 +439,38 @@ class SaasController extends Controller
 
     // ============================================================ helpers ===
 
+    /**
+     * rev 108 (Ejaz): slugs are SHORT — 10 characters maximum. The client may
+     * request one at signup; otherwise we derive it from the company name.
+     */
+    public const SLUG_MAX = 10;
+
     private static function uniqueSubdomain(string $name): string
     {
-        $base = Str::slug($name) ?: ('tenant-'.Str::random(5));
+        $base = substr(Str::slug($name, ''), 0, self::SLUG_MAX) ?: ('t'.Str::lower(Str::random(6)));
         $slug = $base;
         $i = 1;
         while (DB::table('tenants')->where('subdomain', $slug)->exists()) {
-            $slug = $base.'-'.(++$i);
+            $i++;
+            $slug = substr($base, 0, self::SLUG_MAX - strlen((string) $i)).$i;
         }
 
         return $slug;
+    }
+
+    /**
+     * Resolve a CLIENT-REQUESTED slug: lowercase letters/numbers only, 3–10
+     * characters, unique — else fall back to the auto slug from the name.
+     */
+    public static function resolveSubdomain(?string $requested, string $name): string
+    {
+        $req = strtolower(preg_replace('/[^a-z0-9]/i', '', (string) $requested));
+        if (strlen($req) >= 3 && strlen($req) <= self::SLUG_MAX
+            && ! DB::table('tenants')->where('subdomain', $req)->exists()) {
+            return $req;
+        }
+
+        return self::uniqueSubdomain($name);
     }
 
     /** Issue a set-password token and email the new tenant admin a welcome invite. */

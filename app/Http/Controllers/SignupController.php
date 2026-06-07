@@ -82,7 +82,8 @@ class SignupController extends Controller
         }
         // rev 90: buyer GST profile captured at signup (GSTIN + state) — drives
         // the CGST+SGST vs IGST split on invoices. Also ensured on tenants.
-        foreach (['gstin' => 20, 'state' => 60] as $col => $len) {
+        // rev 108: + the client-chosen web address (slug, max 10 chars).
+        foreach (['gstin' => 20, 'state' => 60, 'subdomain' => 30] as $col => $len) {
             if (! Schema::hasColumn('signups', $col)) {
                 try {
                     Schema::table('signups', fn (Blueprint $t) => $t->string($col, $len)->nullable());
@@ -145,10 +146,21 @@ class SignupController extends Controller
                 // GSTIN optional (unregistered businesses) but format-checked if given.
                 'state' => ['required', 'string', 'max:60'],
                 'gstin' => ['nullable', 'string', 'max:20', 'regex:/^[0-9]{2}[A-Z0-9]{13}$/i'],
+                'subdomain' => ['nullable', 'string', 'max:30'],
             ], [
                 'gstin.regex' => 'GSTIN must be 15 characters, starting with the 2-digit state code (e.g. 36AAHCT0971F1ZB).',
                 'state.required' => 'Please select your state — it decides how GST appears on your tax invoice.',
             ]);
+            // rev 108: optional client-chosen web address (smartprs.com/c/<this>).
+            $slugReq = strtolower(preg_replace('/[^a-z0-9]/i', '', (string) ($v['subdomain'] ?? '')));
+            if ($slugReq !== '') {
+                if (strlen($slugReq) < 3 || strlen($slugReq) > 10) {
+                    return response()->json(['ok' => false, 'error' => 'Your web address must be 3 to 10 letters/numbers (no spaces or symbols).'], 422);
+                }
+                if (DB::table('tenants')->where('subdomain', $slugReq)->exists()) {
+                    return response()->json(['ok' => false, 'error' => 'The web address "'.$slugReq.'" is already taken — please pick another.'], 422);
+                }
+            }
             $companies = max(1, (int) ($v['companies'] ?? 1));
             $gstin = strtoupper(trim((string) ($v['gstin'] ?? ''))) ?: null;
             // GSTIN state code must match the chosen state's code when both given.
@@ -177,7 +189,7 @@ class SignupController extends Controller
             $signupId = DB::table('signups')->insertGetId([
                 'uuid' => $uuid, 'company' => $v['company'], 'admin_name' => $v['admin_name'],
                 'admin_email' => $email, 'mobile' => $v['mobile'] ?? null,
-                'gstin' => $gstin, 'state' => $v['state'],
+                'gstin' => $gstin, 'state' => $v['state'], 'subdomain' => $slugReq ?: null,
                 'plan_id' => $plan->id, 'seats' => (int) $v['seats'], 'companies' => $companies, 'cycle' => $v['cycle'],
                 'amount' => $price['amount'], 'tax' => $price['tax'],
                 'terms_accepted_at' => now(),
@@ -282,6 +294,7 @@ class SignupController extends Controller
                 'admin_name' => $s->admin_name, 'admin_email' => $s->admin_email,
                 'plan_id' => $s->plan_id, 'seats_licensed' => $s->seats,
                 'gstin' => $s->gstin ?? null, 'state' => $s->state ?? null,   // rev 90: GST profile → invoice tax split
+                'subdomain' => $s->subdomain ?? null,                         // rev 108: client-chosen web address
                 'email_credentials' => true,   // paid signup → email login + temp password
                 'extra_lines' => $paymentLines,
             ]);
@@ -411,6 +424,7 @@ class SignupController extends Controller
             'cycle' => ['required', 'in:quarterly,halfyear,annual'],
             'state' => ['required', 'string', 'max:60'],
             'gstin' => ['nullable', 'string', 'max:20', 'regex:/^[0-9]{2}[A-Z0-9]{13}$/i'],
+            'subdomain' => ['nullable', 'string', 'max:30'],
         ], [
             'gstin.regex' => 'GSTIN must be 15 characters, starting with the 2-digit state code (e.g. 36AAHCT0971F1ZB).',
             'state.required' => 'Please select your state.',
@@ -438,13 +452,20 @@ class SignupController extends Controller
             }
             $price = BillingController::priceFor($plan, (int) $v['seats'], $v['cycle'], $companies);
 
+            // rev 108: optional client-chosen web address (validated lightly here;
+            // final uniqueness is re-checked at provisioning with auto fallback).
+            $slugReq = strtolower(preg_replace('/[^a-z0-9]/i', '', (string) ($v['subdomain'] ?? '')));
+            if ($slugReq !== '' && (strlen($slugReq) < 3 || strlen($slugReq) > 10)) {
+                return response()->json(['ok' => false, 'error' => 'Your web address must be 3 to 10 letters/numbers (no spaces or symbols).'], 422);
+            }
+
             $uuid = (string) Str::uuid();
             $token = Str::random(48);
             $quoteNo = 'QUO-'.now()->format('Ym').'-'.str_pad((string) (DB::table('signups')->count() + 1), 4, '0', STR_PAD_LEFT);
             $signupId = DB::table('signups')->insertGetId([
                 'uuid' => $uuid, 'company' => $v['company'], 'admin_name' => $v['admin_name'],
                 'admin_email' => $email, 'mobile' => $v['mobile'] ?? null,
-                'gstin' => $gstin, 'state' => $v['state'],
+                'gstin' => $gstin, 'state' => $v['state'], 'subdomain' => $slugReq ?: null,
                 'plan_id' => $plan->id, 'seats' => (int) $v['seats'], 'companies' => $companies, 'cycle' => $v['cycle'],
                 'amount' => $price['amount'], 'tax' => $price['tax'],
                 'status' => 'quoted', 'quote_token' => $token, 'quote_no' => $quoteNo, 'quoted_at' => now(),

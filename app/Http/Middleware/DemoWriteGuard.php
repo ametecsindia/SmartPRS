@@ -41,12 +41,22 @@ class DemoWriteGuard
         // Money: the demo must never reach a payment gateway.
         '#^app/my-subscription/(quote|renew)#',
         '#^app/fin-year/set$#',
+        // rev 107: licence + self-update machinery is never for demo visitors.
+        '#^app/activate$#',
+        '#^app/updates/#',
+        '#^admin/(onprem|releases)#',
     ];
 
     public function handle(Request $request, Closure $next)
     {
         try {
             if (in_array($request->method(), ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+                // rev 105: TEAM demos (/teamdemo, /app1-3, PIN-entered) are
+                // UNRESTRICTED — the Ametecs team demonstrates everything
+                // personally. Only the public OTP /demo stays write-guarded.
+                if ($request->session()->get('demo_team')) {
+                    return $next($request);
+                }
                 $u = $request->user();
                 if ($u && DemoAccessController::isDemoTenant($u->tenant_id)) {
                     $path = ltrim($request->path(), '/');

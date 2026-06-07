@@ -62,6 +62,12 @@ class EnsureSubscriptionActive
             return $next($request);   // platform / super admin — never gated
         }
 
+        // rev 103: on-premise editions are PERPETUAL licences — there is no
+        // subscription to expire. Never lock an L1/L2/L3 installation.
+        if (\App\Services\Edition::isOnPrem()) {
+            return $next($request);
+        }
+
         $state = SubscriptionService::state((int) $u->tenant_id)['state'];
         if ($state !== 'locked') {
             return $next($request);   // active / grace / none

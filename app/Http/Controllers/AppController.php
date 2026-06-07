@@ -82,7 +82,10 @@ class AppController extends Controller
         $role = self::ROLE_MAP[$user->getRoleNames()->first() ?? 'admin'] ?? 'Admin';
 
         // Subscription lifecycle (rev 75) — banner + lock-out state for this login.
-        $subInfo = \App\Services\SubscriptionService::state($user->tenant_id ? (int) $user->tenant_id : null);
+        // rev 103: on-prem editions are perpetual — no renew banners, ever.
+        $subInfo = \App\Services\Edition::isOnPrem()
+            ? ['state' => 'active', 'end' => null, 'daysLeft' => 9999]
+            : \App\Services\SubscriptionService::state($user->tenant_id ? (int) $user->tenant_id : null);
 
         $cfg = json_encode([
             'role' => $role,
@@ -151,6 +154,7 @@ class AppController extends Controller
             'recruitmentBase' => url('/app/recruitment'),          // ATS pipeline
             'offrollAgentBase' => url('/app/offroll-agent'),        // off-roll agent KYC
             'waTplBase' => url('/app/wa-templates'),                // rev 92: WhatsApp template registry
+            'helpBase' => url('/app/help'),                         // rev 100: per-screen ⓘ guide
             'billingBase' => url('/app/billing'),                   // SaaS billing (super admin)
             'dashboardStatsUrl' => url('/app/dashboard/stats'),     // live dashboard widgets
             'searchUrl' => url('/app/search'),                      // global top-bar search
@@ -164,6 +168,15 @@ class AppController extends Controller
             // mark demo-workspace sessions (floating tour button + safety).
             'tour' => request()->boolean('tour') ? 1 : 0,
             'isDemo' => \App\Http\Controllers\DemoAccessController::isDemoTenant($user->tenant_id) ? 1 : 0,
+            // rev 105: team-driven personal demo (PIN-entered) — unrestricted.
+            'demoTeam' => session('demo_team') ? 1 : 0,
+            // rev 103: on-premise editions (SmartPRS-L1/L2/L3). saas = full.
+            'edition' => \App\Services\Edition::current(),
+            'editionLevel' => \App\Services\Edition::level(),
+            'editionHide' => \App\Services\Edition::hiddenNavIds(),
+            // rev 107: update & licensing (on-prem Updates screen + version).
+            'updatesBase' => url('/app/updates'),
+            'appVersion' => config('smartprs.version'),
             'user' => $user->name,
             'userEmail' => $user->email,
             'company' => optional($user->company)->name,
@@ -346,12 +359,17 @@ CSS;
         safe(function () { injectLiveSalaryNav(cfg); });
         safe(function () { injectPayLedgerNav(); });
         safe(function () { injectWaTplNav(); });
+        // rev 107: on-prem "Updates & Licence" under Administration.
+        safe(function () { injectUpdatesNav(cfg); });
         safe(function () { wireSidebarLogo(); });
         safe(function () { wireUserCard(cfg); });
         safe(function () { wireSubBanner(cfg); });
         // rev 97: public live demo — guided tour + floating restart button.
         safe(function () { if (cfg.isDemo) { spTourFab(); } });
         safe(function () { wireDemoLockdown(); });
+        // rev 103: on-premise edition gating (SmartPRS-L1/L2/L3).
+        safe(function () { wireEditionLockdown(); });
+        safe(function () { wireScreenHelp(); });
         safe(function () { if (cfg.tour) { setTimeout(function () { try { spTourStart(); } catch (e) {} }, 1400); } });
         safe(function () { wireResponsive(); });
         safe(function () { wirePunch(cfg); });
@@ -513,17 +531,19 @@ CSS;
         toHide.forEach(function (el) { el.style.display = 'none'; });
         hideEmptyNavSections();
     }
-    // Hide a section header when every nav item under it (until the next header)
-    // is hidden. Shared by the plan gate and the role matrix.
+    // Hide a section when every nav item inside it is hidden. rev 104 FIX:
+    // the prototype nav is NESTED — each .nav-section CONTAINS its group
+    // header (.nav-item.nav-group, no data-id) and a .nav-sub holding the
+    // .nav-item[data-id] entries. The old sibling-walk assumed a flat list
+    // and hid EVERY section (blank menu in the L1 demo). Now we look inside,
+    // and also UN-hide a section when late-injected items make it non-empty.
     function hideEmptyNavSections() {
         document.querySelectorAll('.nav-section').forEach(function (sec) {
-            var anyVisible = false;
-            var n = sec.nextElementSibling;
-            while (n && !n.classList.contains('nav-section')) {
-                if (n.classList.contains('nav-item') && n.style.display !== 'none') { anyVisible = true; break; }
-                n = n.nextElementSibling;
-            }
-            if (!anyVisible) { sec.style.display = 'none'; }
+            var items = sec.querySelectorAll('.nav-item[data-id]');
+            if (!items.length) { return; }
+            var any = false;
+            items.forEach(function (it) { if (it.style.display !== 'none') { any = true; } });
+            sec.style.display = any ? '' : 'none';
         });
     }
     window.spPerms = null;
@@ -683,6 +703,8 @@ CSS;
     // Add super-admin admin-panel links (Laravel pages) into the SaaS Platform sidebar section.
     function injectAdminLinks(cfg) {
         if (cfg.role !== 'Super Admin') { return; }
+        // rev 103: on-prem editions have no SaaS platform surfaces at all.
+        if (cfg.edition && cfg.edition !== 'saas') { return; }
         var tenantsItem = document.querySelector('.nav-item[data-id="tenants"]');
         if (!tenantsItem) { return; }
         var sec = tenantsItem.parentNode;
@@ -715,6 +737,9 @@ CSS;
         sec.appendChild(mk('/admin/landing', 'fa-globe', 'Landing Page (CMS)'));
         sec.appendChild(mk('/admin/leads', 'fa-bullseye', 'Leads (Demo Requests)'));
         sec.appendChild(mk('/admin/quotations', 'fa-file-invoice', 'Quotations'));
+        // rev 107: perpetual-licence sales desk + release/update distribution.
+        sec.appendChild(mk('/admin/onprem', 'fa-building-lock', 'On-Prem Clients & Licences'));
+        sec.appendChild(mk('/admin/releases', 'fa-cloud-arrow-up', 'Releases & Updates'));
         sec.appendChild(mk('/admin/staff', 'fa-user-shield', 'Platform Staff'));
         sec.__adminLinks = true;
     }
@@ -748,6 +773,87 @@ CSS;
         anchor.parentNode.insertBefore(d, anchor.nextSibling);
         anchor.parentNode.__transfersNav = true;
     }
+    // rev 107: "Updates & Licence" nav under Administration — ON-PREM editions
+    // only (the SaaS platform updates from the admin Releases page instead).
+    function injectUpdatesNav(cfg) {
+        if (!cfg.edition || cfg.edition === 'saas') { return; }
+        if (cfg.role !== 'Admin' && cfg.role !== 'Super Admin') { return; }
+        var anchor = document.querySelector('.nav-item[data-id="fin-year"]')
+            || document.querySelector('.nav-item[data-id="settings"]')
+            || document.querySelector('.nav-item[data-id="users"]');
+        if (!anchor || !anchor.parentNode || anchor.parentNode.__sysUpdNav) { return; }
+        var d = document.createElement('div');
+        d.className = 'nav-item';
+        d.setAttribute('data-id', 'sys-updates');
+        d.setAttribute('onclick', "go('sys-updates',this)");
+        d.textContent = 'Updates & Licence';
+        anchor.parentNode.insertBefore(d, anchor.nextSibling);
+        anchor.parentNode.__sysUpdNav = true;
+    }
+    // rev 107: the client-side Updates screen (SRS FR-9) — two buttons: Check, Apply.
+    function sysUpdatesScreen() {
+        var st = window.__SYS_UPD;
+        if (!st) { sysUpdLoad(); return pghead('Updates & Licence', 'Loading…', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        var pend = st.pending;
+        var info = '<div class="card" style="padding:20px 22px;margin-bottom:14px"><div style="display:flex;gap:26px;flex-wrap:wrap;font-size:13.5px">'
+            + '<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px">Current version</div><div style="font-weight:800;font-size:20px">' + (st.version || '—') + '</div></div>'
+            + '<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px">Edition</div><div style="font-weight:700;padding-top:4px">' + (st.edition || '—') + '</div></div>'
+            + '<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px">Licensed to</div><div style="font-weight:700;padding-top:4px">' + (st.company || '—') + '</div></div>'
+            + '<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px">AMC valid till</div><div style="font-weight:700;padding-top:4px">' + (st.amc_expires_on || '—') + '</div></div>'
+            + '<div><div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px">Last check</div><div style="padding-top:4px;color:var(--text2)">' + (st.last_check || 'never') + '</div></div>'
+            + '</div></div>';
+        var act;
+        if (!st.activated) {
+            act = '<div class="card" style="padding:20px 22px;margin-bottom:14px"><b>Not activated.</b> <a href="/app/activate" style="color:var(--accent);font-weight:700">Open the activation screen</a> and enter your licence key.</div>';
+        } else if (pend) {
+            act = '<div class="card" style="padding:20px 22px;margin-bottom:14px;border-left:4px solid var(--accent)">'
+                + '<div style="font-weight:800;font-size:15px;margin-bottom:6px"><i class="fas fa-gift" style="color:var(--accent)"></i> Update ' + pend.version + ' is ready for you</div>'
+                + '<div style="font-size:13px;color:var(--text2);white-space:pre-line;margin-bottom:12px">' + (pend.notes || '') + '</div>'
+                + '<button class="btn btn-primary" onclick="sysUpdApply(&#39;' + pend.version + '&#39;)"><i class="fas fa-circle-down"></i> Download &amp; apply (auto-backup)</button>'
+                + ' <span id="sysupd-msg" style="font-size:12.5px;color:var(--text3);margin-left:8px"></span></div>';
+        } else {
+            act = '<div class="card" style="padding:20px 22px;margin-bottom:14px"><span style="color:#16a34a;font-weight:700"><i class="fas fa-circle-check"></i> ' + (st.reason || 'You are up to date.') + '</span></div>';
+        }
+        var hist = (st.history || []).map(function (h) {
+            return '<tr><td style="padding:7px 12px;font-size:12px;white-space:nowrap;border-top:1px solid var(--border)">' + String(h.created_at || '').slice(0, 16) + '</td>'
+                + '<td style="padding:7px 12px;font-size:12px;border-top:1px solid var(--border);font-weight:600">' + (h.action || '') + '</td>'
+                + '<td style="padding:7px 12px;font-size:12px;border-top:1px solid var(--border);color:var(--text3)">' + (h.detail || '') + '</td></tr>';
+        }).join('');
+        var btns = '<button class="btn btn-primary btn-sm" onclick="sysUpdCheck()"><i class="fas fa-rotate"></i> Check for updates</button>';
+        return pghead('Updates & Licence', 'Your SmartPRS stays current here — two clicks, automatic backup', btns)
+            + info + act
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>'
+            + ['When', 'Action', 'Detail'].map(function (h) { return '<th style="padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + h + '</th>'; }).join('')
+            + '</tr></thead><tbody>' + (hist || '<tr><td colspan="3" style="padding:18px;text-align:center;color:var(--text3)">No update history yet.</td></tr>') + '</tbody></table></div>';
+    }
+    function sysUpdLoad() {
+        fetch(cfg.updatesBase + '/status', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__SYS_UPD = j && j.ok ? j : { version: cfg.appVersion, activated: false, history: [] }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__SYS_UPD = { version: cfg.appVersion, activated: false, history: [] }; if (typeof render === 'function') { render(); } });
+    }
+    window.sysUpdCheck = function () {
+        if (typeof toast === 'function') { toast('Checking with smartprs.com…'); }
+        fetch(cfg.updatesBase + '/check', { method: 'POST', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Check failed'); } return; }
+                if (window.__SYS_UPD) { window.__SYS_UPD.pending = j.update || null; window.__SYS_UPD.reason = j.reason || ''; window.__SYS_UPD.last_check = 'just now'; if (j.amc_expires_on) { window.__SYS_UPD.amc_expires_on = j.amc_expires_on; } }
+                if (typeof render === 'function') { render(); }
+                if (typeof toast === 'function') { toast(j.update ? ('Update ' + j.update.version + ' is available!') : (j.reason || 'Up to date')); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not reach the update server'); } });
+    };
+    window.sysUpdApply = function (version) {
+        if (!confirm('Apply update ' + version + ' now? SmartPRS takes an automatic backup first and restores itself if anything fails. Takes about two minutes.')) { return; }
+        var msg = document.getElementById('sysupd-msg');
+        if (msg) { msg.textContent = 'Downloading and applying — please keep this window open…'; }
+        fetch(cfg.updatesBase + '/apply', { method: 'POST', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ version: version }) })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (j && j.ok) { alert(j.message + String.fromCharCode(10) + 'The page will reload now.'); location.reload(); }
+                else { if (msg) { msg.textContent = ''; } alert((j && j.error) || 'Update failed — nothing was changed.'); }
+            }).catch(function () { if (msg) { msg.textContent = ''; } alert('Update failed — check the connection and try again.'); });
+    };
     // rev 91: REAL Ametecs logo in the sidebar (Ejaz's file, public/images/logo.png).
     // Done in boot JS (not app.html) — the prototype file is replaced wholesale on
     // deploys and this keeps the swap in one reviewable place. The old bolt+text
@@ -1096,6 +1202,7 @@ CSS;
             if (id === 'att-manual') { return attManualScreen(); }
             if (id === 'pay-ledger') { return payLedgerScreen(); }
             if (id === 'wa-templates') { return waTplScreen(); }
+            if (id === 'sys-updates') { return sysUpdatesScreen(); }
             if (MASTER_MAP[id]) { return masterScreen(id); }
             if (id === 'payslip') { return payslipHistoryScreen(); }
             if (id === 'kb') { return kbScreen(); }
@@ -3971,9 +4078,17 @@ CSS;
     }
     window.__RECRUIT_TAB = window.__RECRUIT_TAB || 'pipeline';
     window.recruitSetTab = function (t) { window.__RECRUIT_TAB = t; if (typeof render === 'function') { render(); } };
+    // rev 103: Volume Hiring Machine (3.3 — drives + WhatsApp campaigns) is an
+    // L3 DNA module. On L1/L2 editions its tabs and buttons are not shown.
+    function recruitHasVolumeHiring() {
+        return !cfg.editionLevel || cfg.editionLevel >= 3;
+    }
     function recruitTabBar(tab, d) {
         var s = d.stats || {};
         var tabs = [['pipeline', 'Pipeline', s.candidates || 0], ['requisitions', 'Requisitions', (d.jobs || []).length], ['pool', 'Talent Pool', s.poolCount || 0], ['drives', 'Hiring Drives', ''], ['campaigns', 'WhatsApp Campaigns', '']];
+        if (!recruitHasVolumeHiring()) {
+            tabs = tabs.filter(function (t) { return t[0] !== 'drives' && t[0] !== 'campaigns'; });
+        }
         var html = tabs.map(function (t) {
             var on = (t[0] === tab);
             return '<span onclick="recruitSetTab(' + "'" + t[0] + "'" + ')" style="cursor:pointer;padding:9px 16px;font-size:14px;font-weight:600;border-bottom:2.5px solid ' + (on ? 'var(--accent)' : 'transparent') + ';color:' + (on ? 'var(--text1)' : 'var(--text3)') + '">' + t[1] + ' <span style="font-size:12px;color:var(--text3)">' + t[2] + '</span></span>';
@@ -3986,9 +4101,10 @@ CSS;
         if (d.error) { return pghead('Recruitment', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + String(d.error) + '</b></div></div>'; }
         var s = d.stats || {};
         var tab = window.__RECRUIT_TAB || 'pipeline';
+        if (!recruitHasVolumeHiring() && (tab === 'drives' || tab === 'campaigns')) { tab = 'pipeline'; window.__RECRUIT_TAB = 'pipeline'; }
         var addBtns = '<a href="' + cfg.recruitmentBase + '/template" class="btn btn-outline btn-sm" style="text-decoration:none" title="Download CSV template"><i class="fas fa-file-csv"></i> Template</a> '
             + '<label class="btn btn-outline btn-sm" style="cursor:pointer" title="Import applicants from a job-portal export (Excel .xlsx or CSV) straight into the Talent Pool"><i class="fas fa-file-import"></i> Import from Portal<input type="file" accept=".xlsx,.xls,.csv,text/csv" style="display:none" onchange="recruitImportFile(this)"></label> '
-            + '<label class="btn btn-sm" style="cursor:pointer;background:#25d366;color:#fff" title="Upload a portal export (needs Name + Mobile columns) and WhatsApp them directly"><i class="fab fa-whatsapp"></i> Bulk WhatsApp from file<input type="file" accept=".xlsx,.xls,.csv,text/csv" style="display:none" onchange="recruitMsgFile(this)"></label> '
+            + (recruitHasVolumeHiring() ? '<label class="btn btn-sm" style="cursor:pointer;background:#25d366;color:#fff" title="Upload a portal export (needs Name + Mobile columns) and WhatsApp them directly"><i class="fab fa-whatsapp"></i> Bulk WhatsApp from file<input type="file" accept=".xlsx,.xls,.csv,text/csv" style="display:none" onchange="recruitMsgFile(this)"></label> ' : '')
             + '<button class="btn btn-outline btn-sm" onclick="recruitReq(null)"><i class="fas fa-clipboard-list"></i> Raise Requisition</button> '
             + '<button class="btn btn-primary btn-sm" onclick="recruitCand(null)"><i class="fas fa-user-plus"></i> Add Candidate</button>';
         var jcs = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border)';
@@ -3998,7 +4114,7 @@ CSS;
             var pr = RPRIO[j.priority] || ['—', '#64748b'];
             var sc = j.status === 'open' ? '#16a34a' : (j.status === 'closed' ? '#dc2626' : '#f59e0b');
             var fillTxt = j.filled + ' / ' + j.openings + (j.remaining ? '' : ' ✓');
-            var act = '<i class="fab fa-whatsapp" title="WhatsApp everyone in this requisition pipeline" onclick="recruitMsgOpen(&#39;pipeline&#39;,' + j.id + ',&#39;' + rqA(j.title).replace(/&#39;/g, '') + '&#39;)" style="cursor:pointer;color:#25d366;margin-right:12px"></i>'
+            var act = (recruitHasVolumeHiring() ? '<i class="fab fa-whatsapp" title="WhatsApp everyone in this requisition pipeline" onclick="recruitMsgOpen(&#39;pipeline&#39;,' + j.id + ',&#39;' + rqA(j.title).replace(/&#39;/g, '') + '&#39;)" style="cursor:pointer;color:#25d366;margin-right:12px"></i>' : '')
                 + '<i class="fas fa-pen" title="Edit" onclick="recruitReq(' + j.id + ')" style="cursor:pointer;color:var(--text2);margin-right:12px"></i>';
             if (canAppr && j.approval_status === 'pending') {
                 act += '<i class="fas fa-check" title="Approve" onclick="recruitApprove(' + j.id + ')" style="cursor:pointer;color:#16a34a;margin-right:12px"></i>';
@@ -4187,7 +4303,7 @@ CSS;
             + '<div style="flex:1;min-width:120px"><label style="' + lbl + '">Location</label><input id="rploc" value="' + rqA(f.loc) + '" style="' + inp + '"></div>'
             + '<button class="btn btn-primary btn-sm" onclick="recruitPoolLoad()"><i class="fas fa-magnifying-glass"></i> Search</button>'
             + (f.q || f.loc || f.exp || f.ctc ? '<button class="btn btn-outline btn-sm" onclick="recruitPoolClear()">Clear</button>' : '')
-            + ((st.loaded && (st.list || []).length) ? '<button class="btn btn-sm" style="background:#25d366;color:#fff" onclick="recruitMsgOpen(&#39;pool&#39;)" title="WhatsApp every candidate currently shown"><i class="fab fa-whatsapp"></i> Message all ' + (st.list || []).length + '</button>' : '')
+            + ((recruitHasVolumeHiring() && st.loaded && (st.list || []).length) ? '<button class="btn btn-sm" style="background:#25d366;color:#fff" onclick="recruitMsgOpen(&#39;pool&#39;)" title="WhatsApp every candidate currently shown"><i class="fab fa-whatsapp"></i> Message all ' + (st.list || []).length + '</button>' : '')
             + '</div>';
         if (!st.loaded) { setTimeout(function () { if (!window.__RECRUIT_POOL.loaded) { recruitPoolLoad(); } }, 30); }
         return '<div><div class="card" style="padding:16px">'
@@ -4198,7 +4314,7 @@ CSS;
         var sl = window.__RECRUIT_SHORTLIST || {}; var ids = Object.keys(sl); var n = ids.length;
         var head = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
             + '<div style="font-weight:700;font-size:14px"><i class="fas fa-square-check" style="color:#16a34a"></i> Shortlist <span style="color:var(--text3);font-weight:600">' + n + '</span></div>'
-            + (n ? '<div><button class="btn btn-sm" style="background:#25d366;color:#fff" onclick="recruitMsgOpen(&#39;shortlist&#39;)"><i class="fab fa-whatsapp"></i> WhatsApp ' + n + '</button> <button class="btn btn-primary btn-sm" onclick="recruitPoolAssignBulk()"><i class="fas fa-arrow-right-to-bracket"></i> Assign to requisition</button> <button class="btn btn-outline btn-sm" onclick="recruitPoolClearSel()">Clear</button></div>' : '')
+            + (n ? '<div>' + (recruitHasVolumeHiring() ? '<button class="btn btn-sm" style="background:#25d366;color:#fff" onclick="recruitMsgOpen(&#39;shortlist&#39;)"><i class="fab fa-whatsapp"></i> WhatsApp ' + n + '</button> ' : '') + '<button class="btn btn-primary btn-sm" onclick="recruitPoolAssignBulk()"><i class="fas fa-arrow-right-to-bracket"></i> Assign to requisition</button> <button class="btn btn-outline btn-sm" onclick="recruitPoolClearSel()">Clear</button></div>' : '')
             + '</div>';
         var body;
         if (!n) {
@@ -4975,10 +5091,24 @@ CSS;
         SP_TOUR_I = 1; spTourShow();
     };
     window.spTourNext = function () { if (SP_TOUR_I < SP_TOUR.length - 1) { SP_TOUR_I++; spTourShow(); } else { spTourEnd(); } };
-    window.spTourBack = function () { if (SP_TOUR_I > 0) { SP_TOUR_I--; spTourShow(); } };
+    window.spTourBack = function () {
+        if (SP_TOUR_I > 0) {
+            SP_TOUR_I--;
+            // rev 103: step over stops whose screen is outside this edition.
+            var hh = cfg.editionHide || [];
+            while (SP_TOUR_I > 0 && SP_TOUR[SP_TOUR_I].screen && hh.indexOf(SP_TOUR[SP_TOUR_I].screen) >= 0) { SP_TOUR_I--; }
+            spTourShow();
+        }
+    };
     window.spTourEnd = function () { try { window.speechSynthesis.cancel(); } catch (e) {} var ov = document.getElementById('sp-tour'); if (ov) { ov.remove(); } };
     function spTourShow() {
         var st = SP_TOUR[SP_TOUR_I]; if (!st) { spTourEnd(); return; }
+        // rev 103: a stop for a screen outside this edition's licence is skipped
+        // forward automatically (L1/L2 demos never show Live Salary etc.).
+        if (st.screen && (cfg.editionHide || []).indexOf(st.screen) >= 0) {
+            if (SP_TOUR_I < SP_TOUR.length - 1) { SP_TOUR_I++; spTourShow(); } else { spTourEnd(); }
+            return;
+        }
         try { if (st.screen && typeof go === 'function') { var nv = document.querySelector('.nav-item[data-id="' + st.screen + '"]'); go(st.screen, nv || undefined); } } catch (e) {}
         // Place once when the screen mounts, and again after data settles —
         // both placements are INSTANT (no transition), so nothing slides about.
@@ -5016,7 +5146,8 @@ CSS;
                 + '<button class="btn btn-outline btn-sm" onclick="spTourGo(true)">Start muted</button> '
                 + '<button class="btn btn-outline btn-sm" onclick="spTourEnd()" style="border:none;color:#94a3b8">Skip</button>';
         } else if (st.finish) {
-            btns = '<button class="btn btn-primary btn-sm" onclick="window.location.href=&#39;/signup&#39;" style="background:#f97316"><i class="fas fa-rocket"></i> See plans &amp; sign up</button> '
+            // rev 103: on-prem editions have no /signup — the sales pitch is in person.
+            btns = (cfg.edition && cfg.edition !== 'saas' ? '' : '<button class="btn btn-primary btn-sm" onclick="window.location.href=&#39;/signup&#39;" style="background:#f97316"><i class="fas fa-rocket"></i> See plans &amp; sign up</button> ')
                 + '<button class="btn btn-outline btn-sm" onclick="spTourStart()">Restart</button> '
                 + '<button class="btn btn-outline btn-sm" onclick="spTourEnd()">Explore freely</button> ' + muteBtn;
         } else {
@@ -5029,12 +5160,129 @@ CSS;
             + '<div style="font-size:13.5px;color:#475569;line-height:1.6;margin-bottom:14px">' + st.text + '</div>'
             + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' + btns + '</div>';
     }
+    // ======================================================================
+    // rev 100: SCREEN HELP — an ⓘ beside the topbar title on EVERY screen,
+    // opening a professional guide popup (what / features / steps / tip /
+    // roles). Content comes lazily from /app/help/{screen} so the boot JS
+    // never grows with text. One injection point covers all 113 screens.
+    // ======================================================================
+    function wireScreenHelp() {
+        if (window.__helpWired) { return; }
+        window.__helpWired = true;
+        var place = function () {
+            var tt = document.getElementById('topbar-title');
+            if (!tt || document.getElementById('sp-help-i')) { return; }
+            var b = document.createElement('i');
+            b.id = 'sp-help-i';
+            b.className = 'fas fa-circle-info';
+            b.title = 'How this screen works';
+            b.style.cssText = 'margin-left:8px;color:#94a3b8;cursor:pointer;font-size:15px;vertical-align:middle;transition:color .15s';
+            b.onmouseenter = function () { b.style.color = 'var(--accent)'; };
+            b.onmouseleave = function () { b.style.color = '#94a3b8'; };
+            b.onclick = function () { spHelpOpen(); };
+            tt.appendChild(b);
+        };
+        place(); setTimeout(place, 600);
+        // The title is re-written on navigation — re-attach after each go().
+        if (typeof go === 'function' && !go.__helpWrapped) {
+            var _g = window.go;
+            window.go = function () { var r = _g.apply(this, arguments); setTimeout(place, 60); return r; };
+            window.go.__helpWrapped = true;
+        }
+    }
+    window.spHelpOpen = function () {
+        var id = '';
+        try { id = localStorage.getItem('sp_screen') || ''; } catch (e) {}
+        if (!id) { var act = document.querySelector('.nav-item.active[data-id]'); id = act ? act.getAttribute('data-id') : 'dashboard'; }
+        var ov = document.getElementById('sp-help');
+        if (!ov) {
+            ov = document.createElement('div'); ov.id = 'sp-help';
+            ov.style.cssText = 'position:fixed;inset:0;z-index:9500;background:rgba(12,25,41,.55);display:flex;align-items:flex-start;justify-content:center;padding:36px 14px;overflow:auto';
+            ov.onclick = function (e) { if (e.target === ov) { spHelpClose(); } };
+            document.body.appendChild(ov);
+        }
+        ov.innerHTML = '<div style="max-width:560px;width:100%;background:#fff;border-radius:14px;margin:auto;padding:40px;text-align:center;color:var(--text3)">Loading the guide…</div>';
+        fetch(cfg.helpBase + '/' + encodeURIComponent(id), { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { spHelpRender((j && j.help) || null); })
+            .catch(function () { spHelpRender(null); });
+    };
+    window.spHelpClose = function () { var ov = document.getElementById('sp-help'); if (ov) { ov.remove(); } };
+    window.spHelpTab = function (which) {
+        var on = 'flex:1;border:none;background:none;padding:11px;font-size:13px;font-weight:700;cursor:pointer;color:#0c1929;border-bottom:2.5px solid var(--accent)';
+        var off = 'flex:1;border:none;background:none;padding:11px;font-size:13px;font-weight:700;cursor:pointer;color:#64748b;border-bottom:2.5px solid transparent';
+        ['how', 'why', 'mk'].forEach(function (k) {
+            var d = document.getElementById('sph-' + k);
+            if (d) { d.style.display = k === which ? 'block' : 'none'; }
+            var b = document.getElementById('sph-tb-' + k);
+            if (b) { b.style.cssText = k === which ? on : off; }
+        });
+    };
+    function spHelpEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function spHelpRender(h) {
+        var ov = document.getElementById('sp-help'); if (!ov) { return; }
+        if (!h) { ov.innerHTML = '<div style="max-width:560px;width:100%;background:#fff;border-radius:14px;margin:auto;padding:40px;text-align:center;color:var(--text3)">Could not load the guide right now.</div>'; return; }
+        var chipColors = { what: ['#993c1d', '#faece7', 'fa-circle-question', 'What is this screen for?'], can: ['#085041', '#e1f5ee', 'fa-wand-magic-sparkles', 'What you can do here'], how: ['#26215c', '#eeedfe', 'fa-list-ol', 'How to use it — step by step'] };
+        var chip = function (k) { var c = chipColors[k]; return '<div style="margin:0 0 8px"><span style="font-size:12px;font-weight:700;color:' + c[0] + ';background:' + c[1] + ';display:inline-block;padding:3px 11px;border-radius:99px"><i class="fas ' + c[2] + '" style="font-size:12px"></i> ' + c[3] + '</span></div>'; };
+        var feats = (h.f || []).map(function (x) {
+            return '<div style="border:1px solid var(--border);border-radius:9px;padding:8px 11px;font-size:12.5px;color:#334155"><i class="' + (String(x[0]).indexOf('fa-whatsapp') >= 0 ? 'fab ' : 'fas ') + spHelpEsc(x[0]).replace(' (fab)', '') + '" style="color:var(--accent);font-size:13px"></i> ' + spHelpEsc(x[1]) + '</div>';
+        }).join('');
+        var steps = (h.s || []).map(function (tx, i) {
+            return '<div style="display:flex;gap:11px;margin-bottom:9px"><span style="flex:0 0 22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center">' + (i + 1) + '</span><div style="font-size:13.5px;line-height:1.55;color:#334155">' + spHelpEsc(tx) + '</div></div>';
+        }).join('');
+        var roles = (h.r || []).map(function (x) { return '<span style="font-size:11.5px;background:#e6f1fb;color:#0c447c;padding:2px 9px;border-radius:99px">' + spHelpEsc(x) + '</span>'; }).join(' ');
+        ov.innerHTML = '<div style="max-width:560px;width:100%;background:#fff;border-radius:14px;overflow:hidden;margin:auto;box-shadow:0 24px 60px rgba(0,0,0,.35)">'
+            + '<div style="background:#0c1929;padding:17px 22px;display:flex;align-items:flex-start;gap:13px">'
+            + '<div style="width:38px;height:38px;border-radius:10px;background:var(--accent);display:flex;align-items:center;justify-content:center;flex:0 0 auto"><i class="fas fa-circle-info" style="font-size:19px;color:#fff"></i></div>'
+            + '<div style="flex:1"><div style="font-size:11px;color:var(--accent);letter-spacing:.6px;font-weight:700;text-transform:uppercase">Screen guide &middot; ' + spHelpEsc(h.m) + '</div>'
+            + '<div style="font-size:18px;font-weight:700;color:#fff;margin-top:2px">' + spHelpEsc(h.t) + '</div>'
+            + '<div style="font-size:12.5px;color:#94a3b8;margin-top:3px">' + spHelpEsc(h.g) + '</div></div>'
+            + '<i class="fas fa-xmark" onclick="spHelpClose()" title="Close" style="font-size:18px;color:#94a3b8;cursor:pointer;padding:4px"></i></div>'
+            // rev 101 (Ejaz): two voices — the trainer (How) and the sales mentor (Why).
+            + '<div style="display:flex;border-bottom:1px solid var(--border);background:#f8fafc">'
+            + '<button id="sph-tb-how" onclick="spHelpTab(&#39;how&#39;)" style="flex:1;border:none;background:none;padding:11px;font-size:13px;font-weight:700;cursor:pointer;color:#0c1929;border-bottom:2.5px solid var(--accent)"><i class="fas fa-list-check"></i> How to use it</button>'
+            + '<button id="sph-tb-why" onclick="spHelpTab(&#39;why&#39;)" style="flex:1;border:none;background:none;padding:11px;font-size:13px;font-weight:700;cursor:pointer;color:#64748b;border-bottom:2.5px solid transparent"><i class="fas fa-handshake" style="color:var(--accent)"></i> Why it matters</button>'
+            + (((h.mk || []).length) ? '<button id="sph-tb-mk" onclick="spHelpTab(&#39;mk&#39;)" style="flex:1;border:none;background:none;padding:11px;font-size:13px;font-weight:700;cursor:pointer;color:#64748b;border-bottom:2.5px solid transparent"><i class="fas fa-triangle-exclamation" style="color:#f59e0b"></i> Do it right</button>' : '')
+            + '</div>'
+            + '<div id="sph-how" style="padding:18px 22px 8px">'
+            + chip('what') + '<div style="font-size:14px;line-height:1.65;color:#334155;margin:0 0 14px">' + spHelpEsc(h.w) + '</div>'
+            + (feats ? chip('can') + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:16px">' + feats + '</div>' : '')
+            + (steps ? chip('how') + '<div style="margin-bottom:14px">' + steps + '</div>' : '')
+            + (h.tip ? '<div style="background:#faeeda;border-radius:10px;padding:11px 14px;margin-bottom:14px"><div style="font-size:12px;font-weight:700;color:#633806;margin-bottom:3px"><i class="fas fa-lightbulb"></i> Good to know</div><div style="font-size:12.5px;line-height:1.6;color:#854f0b">' + spHelpEsc(h.tip) + '</div></div>' : '')
+            + (roles ? '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><span style="font-size:11.5px;color:#475569;font-weight:700">Who can use it:</span> ' + roles + '</div>' : '')
+            + '</div>'
+            + '<div id="sph-why" style="display:none;padding:18px 22px 8px">'
+            + '<div style="margin:0 0 8px"><span style="font-size:12px;font-weight:700;color:#993c1d;background:#faece7;display:inline-block;padding:3px 11px;border-radius:99px"><i class="fas fa-bullseye" style="font-size:12px"></i> Why this feature exists</span></div>'
+            + '<div style="font-size:14px;line-height:1.7;color:#334155;margin:0 0 16px">' + spHelpEsc(h.why || '') + '</div>'
+            + (h.uc ? '<div style="margin:0 0 8px"><span style="font-size:12px;font-weight:700;color:#0c447c;background:#e6f1fb;display:inline-block;padding:3px 11px;border-radius:99px"><i class="fas fa-clapperboard" style="font-size:12px"></i> A real use case</span></div>'
+                + '<div style="background:#0c1929;color:#e2e8f0;border-radius:10px;padding:13px 16px;font-size:13.5px;line-height:1.7;margin-bottom:16px;border-left:3px solid var(--accent)">' + spHelpEsc(h.uc) + '</div>' : '')
+            + ((h.adv || []).length ? '<div style="margin:0 0 8px"><span style="font-size:12px;font-weight:700;color:#085041;background:#e1f5ee;display:inline-block;padding:3px 11px;border-radius:99px"><i class="fas fa-gem" style="font-size:12px"></i> What you gain</span></div>'
+                + '<div style="margin-bottom:14px">' + (h.adv || []).map(function (a) { return '<div style="display:flex;gap:9px;align-items:flex-start;margin-bottom:7px"><i class="fas fa-circle-check" style="color:#16a34a;font-size:14px;margin-top:2px"></i><div style="font-size:13.5px;line-height:1.5;color:#334155">' + spHelpEsc(a) + '</div></div>'; }).join('') + '</div>' : '')
+            + '</div>'
+            // rev 102: the supervisor's voice — common mistakes, their impact,
+            // and the right way to avoid or correct them (where applicable).
+            + (((h.mk || []).length) ? '<div id="sph-mk" style="display:none;padding:18px 22px 8px">'
+                + '<div style="margin:0 0 10px"><span style="font-size:12px;font-weight:700;color:#92400e;background:#fef3c7;display:inline-block;padding:3px 11px;border-radius:99px"><i class="fas fa-triangle-exclamation" style="font-size:12px"></i> Common mistakes — and the right way</span></div>'
+                + (h.mk || []).map(function (mk) {
+                    return '<div style="border:1px solid var(--border);border-left:3px solid #ef4444;border-radius:10px;padding:11px 14px;margin-bottom:10px">'
+                        + '<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:5px"><i class="fas fa-circle-xmark" style="color:#ef4444;font-size:13px;margin-top:3px"></i><div style="font-size:13.5px;font-weight:700;color:#0c1929;line-height:1.45">' + spHelpEsc(mk[0]) + '</div></div>'
+                        + '<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:5px"><i class="fas fa-burst" style="color:#f59e0b;font-size:13px;margin-top:3px"></i><div style="font-size:12.5px;color:#92400e;line-height:1.5"><b>Impact:</b> ' + spHelpEsc(mk[1]) + '</div></div>'
+                        + '<div style="display:flex;gap:8px;align-items:flex-start"><i class="fas fa-circle-check" style="color:#16a34a;font-size:13px;margin-top:3px"></i><div style="font-size:12.5px;color:#166534;line-height:1.5"><b>Right way:</b> ' + spHelpEsc(mk[2]) + '</div></div>'
+                        + '</div>';
+                }).join('') + '</div>' : '')
+            + '<div style="border-top:1px solid var(--border);padding:12px 22px;display:flex;justify-content:space-between;align-items:center;background:#f8fafc">'
+            + '<span style="font-size:12px;color:#64748b">' + (h.rel ? '<i class="fas fa-diagram-project" style="font-size:12px"></i> ' + spHelpEsc(h.rel) : '<i class="fas fa-graduation-cap" style="font-size:12px"></i> More help: Knowledge Base') + '</span>'
+            + '<button class="btn btn-primary btn-sm" onclick="spHelpClose()" style="background:var(--accent)">Got it <i class="fas fa-check"></i></button>'
+            + '</div></div>';
+    }
     // rev 99 (Ejaz): in the PUBLIC demo, sensitive/config screens are hidden
     // and a slim notice explains that settings & deletions are disabled.
     // (Server-side the same actions are 403-blocked by DemoWriteGuard — this
     // is just the polish so visitors don't find dead buttons.)
     function wireDemoLockdown() {
         if (!cfg.isDemo) { return; }
+        // rev 105: TEAM demos show EVERYTHING — no hidden screens, no demo bar.
+        if (cfg.demoTeam) { return; }
         var hide = ['users', 'roles', 'branding', 'company-emails', 'mail-log', 'wa-settings', 'wa-templates', 'sms-settings', 'sms-templates', 'my-subscription', 'exits', 'settings'];
         var apply = function () {
             hide.forEach(function (id) {
@@ -5046,9 +5294,29 @@ CSS;
             var bar = document.createElement('div');
             bar.id = 'sp-demo-bar';
             bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:8300;background:#0c1929;color:#e2e8f0;padding:7px 14px;text-align:center;font-size:12.5px';
-            bar.innerHTML = '<i class="fas fa-flask" style="color:#f97316"></i> You are exploring the LIVE DEMO — play freely; settings, logins and deletions are disabled here. <a href="/signup" style="color:#f97316;font-weight:700">Get your own workspace &rarr;</a> <i class="fas fa-xmark" onclick="this.parentNode.remove()" style="margin-left:10px;cursor:pointer;color:#94a3b8"></i>';
+            // rev 103: on-prem demo instances pitch the edition, not /signup.
+            var demoCta = (cfg.edition && cfg.edition !== 'saas')
+                ? '<span style="color:#f97316;font-weight:700">This is the ' + (cfg.edition || '').toUpperCase() + ' edition demonstration.</span>'
+                : '<a href="/signup" style="color:#f97316;font-weight:700">Get your own workspace &rarr;</a>';
+            bar.innerHTML = '<i class="fas fa-flask" style="color:#f97316"></i> You are exploring the LIVE DEMO — play freely; settings, logins and deletions are disabled here. ' + demoCta + ' <i class="fas fa-xmark" onclick="this.parentNode.remove()" style="margin-left:10px;cursor:pointer;color:#94a3b8"></i>';
             document.body.appendChild(bar);
         }
+    }
+    // rev 103: ON-PREMISE EDITION lockdown (SmartPRS-L1/L2/L3). Modules outside
+    // the licence vanish from the menu (server side: EditionGuard middleware
+    // blocks their endpoints too). Same proven pattern as wireDemoLockdown —
+    // re-applied at 900/2600ms because injected nav items arrive late. Empty
+    // section headers are tidied away via hideEmptyNavSections().
+    function wireEditionLockdown() {
+        var hide = cfg.editionHide || [];
+        if (!hide.length) { return; }
+        var apply = function () {
+            hide.forEach(function (id) {
+                document.querySelectorAll('.nav-item[data-id="' + id + '"]').forEach(function (nv) { nv.style.display = 'none'; });
+            });
+            try { hideEmptyNavSections(); } catch (e) {}
+        };
+        apply(); setTimeout(apply, 900); setTimeout(apply, 2600); setTimeout(apply, 5000);
     }
     // Floating restart button — demo workspace only.
     function spTourFab() {
