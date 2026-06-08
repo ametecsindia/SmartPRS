@@ -52,7 +52,10 @@ class LeadController extends Controller
             return response()->json(['ok' => true, 'message' => 'Thank you! Our team will contact you shortly.']);
         }
 
-        $v = $request->validate([
+        // rev 118: return validation problems as JSON (the form reads res.j.errors)
+        // instead of letting Laravel throw — so the visitor always sees a clear
+        // per-field message, never a blank generic error.
+        $validator = \Illuminate\Support\Facades\Validator::make($request->all(), [
             'name' => 'required|string|max:120',
             'company' => 'required|string|max:160',
             'designation' => 'nullable|string|max:120',
@@ -62,8 +65,34 @@ class LeadController extends Controller
             'employees' => 'nullable|string|max:40',
             'challenges' => 'nullable|string|max:2000',
         ]);
+        if ($validator->fails()) {
+            return response()->json(['ok' => false, 'errors' => $validator->errors()->toArray()], 422);
+        }
+        $v = $validator->validated();
 
-        self::recordLead($v, 'landing');
+        // rev 118: the LEAD must always be saved, even if the e-mail / WhatsApp
+        // alerts hit a snag — a saved enquiry the team can work beats a lost one.
+        try {
+            self::recordLead($v, 'landing');
+        } catch (\Throwable $e) {
+            Log::warning('Lead store failed: '.$e->getMessage());
+            // Last-resort: store the bare row so the enquiry is never lost.
+            try {
+                self::ensureLeads();
+                DB::table('leads')->insert([
+                    'name' => $v['name'] ?? '', 'company' => $v['company'] ?? null,
+                    'designation' => $v['designation'] ?? null, 'city' => $v['city'] ?? null,
+                    'mobile' => $v['mobile'] ?? null, 'email' => $v['email'] ?? null,
+                    'employees' => $v['employees'] ?? null, 'challenges' => $v['challenges'] ?? null,
+                    'status' => 'new', 'source' => 'landing',
+                    'created_at' => now(), 'updated_at' => now(),
+                ]);
+            } catch (\Throwable $e2) {
+                Log::error('Lead store FULLY failed: '.$e2->getMessage());
+
+                return response()->json(['ok' => false, 'message' => 'Something went wrong on our side — please reach us on WhatsApp and we will set up your demo right away.'], 500);
+            }
+        }
 
         return response()->json(['ok' => true, 'message' => 'Thank you! Our team will contact you shortly.']);
     }

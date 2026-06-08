@@ -506,33 +506,54 @@
                 var f = document.getElementById('leadForm');
                 var btn = document.getElementById('leadBtn');
                 var msg = document.getElementById('leadMsg');
+                // rev 118: validate the required fields IN THE BROWSER first, so the
+                // visitor is told exactly what is missing before anything is sent.
+                var required = { name: 'Full Name', company: 'Company Name', city: 'City / Location', mobile: 'Mobile Number', email: 'Official Email ID' };
                 var data = {};
-                new FormData(f).forEach(function (v, k) { data[k] = v; });
-                btn.disabled = true; btn.style.opacity = '.6';
+                new FormData(f).forEach(function (v, k) { data[k] = (v || '').toString().trim(); });
                 var ok9 = 'background:#dcfce7;color:#166534;border:1px solid #bbf7d0;';
                 var bad9 = 'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;';
                 var base9 = 'display:block;margin-top:14px;padding:12px 14px;border-radius:10px;font-size:14px;';
+                var miss = [];
+                Object.keys(required).forEach(function (k) { if (!data[k]) { miss.push(required[k]); } });
+                if (data.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(data.email)) { miss.push('a valid email'); }
+                if (data.mobile && data.mobile.replace(/\D/g, '').length < 10) { miss.push('a 10-digit mobile'); }
+                if (miss.length) {
+                    msg.style.cssText = base9 + bad9;
+                    msg.innerHTML = '<i class="fas fa-circle-exclamation"></i> Please add: ' + miss.join(', ') + '.';
+                    return false;
+                }
+                btn.disabled = true; btn.style.opacity = '.6';
                 fetch('{{ route('lead.store') }}', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}', 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
                     body: JSON.stringify(data)
-                }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; }); })
+                }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; }, function () { return { s: r.status, j: null }; }); })
                 .then(function (res) {
                     btn.disabled = false; btn.style.opacity = '1';
                     if (res.s === 200 && res.j && res.j.ok) {
                         window.__leadSaved = true;   // a later WhatsApp click must not save a duplicate
                         msg.style.cssText = base9 + ok9;
-                        msg.innerHTML = '<i class="fas fa-circle-check"></i> ' + (res.j.message || 'Thank you! Our team will contact you shortly.');
+                        msg.innerHTML = '<i class="fas fa-circle-check"></i> ' + (res.j.message || 'Thank you! Our team will contact you shortly. ');
                         f.reset();
-                    } else {
-                        var errs = res.j && res.j.errors ? Object.values(res.j.errors).map(function (a) { return a[0]; }).join(' ') : 'Please check the required fields and try again.';
-                        msg.style.cssText = base9 + bad9;
-                        msg.innerHTML = '<i class="fas fa-circle-exclamation"></i> ' + errs;
+                        return;
                     }
+                    var errs;
+                    if (res.j && res.j.errors) {
+                        errs = Object.values(res.j.errors).map(function (a) { return a[0]; }).join(' ');
+                    } else if (res.s === 429) {
+                        errs = 'Too many attempts — please wait a minute and try again, or use the WhatsApp button.';
+                    } else if (res.j && res.j.message) {
+                        errs = res.j.message;
+                    } else {
+                        errs = 'Could not submit just now — please tap “Chat on WhatsApp” and we will set up your demo right away.';
+                    }
+                    msg.style.cssText = base9 + bad9;
+                    msg.innerHTML = '<i class="fas fa-circle-exclamation"></i> ' + errs;
                 }).catch(function () {
                     btn.disabled = false; btn.style.opacity = '1';
                     msg.style.cssText = base9 + bad9;
-                    msg.innerHTML = 'Could not submit right now — please use the WhatsApp button instead.';
+                    msg.innerHTML = '<i class="fas fa-circle-exclamation"></i> Could not submit right now — please use the WhatsApp button and we will help you immediately.';
                 });
                 return false;
             }

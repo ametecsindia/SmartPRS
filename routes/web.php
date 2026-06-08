@@ -37,9 +37,15 @@ if ($spOnPrem) {
 }
 
 // rev 89: public demo-request (lead) form on the landing page. Throttled.
+// rev 118 (Ejaz bug: "sometimes the form errors and doesn't submit"): a landing
+// page left open past the session lifetime had a STALE CSRF token → 419, shown
+// to the visitor as the generic error. The form is public and protected by a
+// honeypot + throttle, so CSRF is exempted here (same pattern as the webhooks)
+// — the demo request now goes through every time, fresh tab or hours-old tab.
 if (! $spOnPrem) {
     Route::post('/lead', [App\Http\Controllers\LeadController::class, 'store'])
-        ->middleware('throttle:10,1')->name('lead.store');
+        ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+        ->middleware('throttle:20,1')->name('lead.store');
 
     // rev 111: public legal/policy pages (Razorpay LIVE + DPDP/IT-Rules compliance).
     // whereIn-constrained — matches ONLY the 9 known slugs, nothing else at root.
