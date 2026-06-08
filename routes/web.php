@@ -40,6 +40,12 @@ if ($spOnPrem) {
 if (! $spOnPrem) {
     Route::post('/lead', [App\Http\Controllers\LeadController::class, 'store'])
         ->middleware('throttle:10,1')->name('lead.store');
+
+    // rev 111: public legal/policy pages (Razorpay LIVE + DPDP/IT-Rules compliance).
+    // whereIn-constrained — matches ONLY the 9 known slugs, nothing else at root.
+    Route::get('/{policy_slug}', [App\Http\Controllers\PolicyController::class, 'show'])
+        ->whereIn('policy_slug', array_keys(App\Http\Controllers\PolicyController::PAGES))
+        ->name('policy.show');
 }
 
 // Public offer-acceptance page (candidate, no login — secured by the token).
@@ -84,6 +90,10 @@ if (! $spOnPrem) {
 
     // rev 96: quotation flow — "Send a Quotation" + public pay link.
     Route::post('/signup/quote', [App\Http\Controllers\SignupController::class, 'quote'])->middleware('throttle:10,1')->name('signup.quote');
+    // rev 112: live coupon validation on the signup page.
+    Route::post('/signup/coupon-check', [App\Http\Controllers\SignupController::class, 'couponCheck'])->middleware('throttle:20,1')->name('signup.coupon');
+    // rev 113: the cart catches the email → exclusive offer auto-applies.
+    Route::post('/signup/exclusive-check', [App\Http\Controllers\SignupController::class, 'exclusiveCheck'])->middleware('throttle:20,1')->name('signup.exclusive');
     Route::get('/quote/{token}', [App\Http\Controllers\SignupController::class, 'showQuote'])->name('quote.show');
     Route::get('/quote/{token}/pdf', [App\Http\Controllers\SignupController::class, 'quotePdf'])->name('quote.pdf');
     Route::post('/quote/{token}/order', [App\Http\Controllers\SignupController::class, 'quoteOrder'])->middleware('throttle:20,1')->name('quote.order');
@@ -182,6 +192,12 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::get('/admin/quotations', [App\Http\Controllers\SignupController::class, 'quotations'])->name('admin.quotations');
     Route::get('/admin/leads', [App\Http\Controllers\LeadController::class, 'index'])->name('admin.leads');
     Route::post('/admin/leads/{id}', [App\Http\Controllers\LeadController::class, 'update'])->name('admin.leads.update');
+    // rev 112: discount coupons (marketing campaigns).
+    Route::get('/admin/coupons', [App\Http\Controllers\CouponController::class, 'index'])->name('admin.coupons');
+    Route::post('/admin/coupons', [App\Http\Controllers\CouponController::class, 'save'])->name('admin.coupons.save');
+    Route::post('/admin/coupons/exclusive', [App\Http\Controllers\CouponController::class, 'sendExclusive'])->name('admin.coupons.exclusive');
+    Route::post('/admin/coupons/{id}/toggle', [App\Http\Controllers\CouponController::class, 'toggle'])->name('admin.coupons.toggle');
+    Route::post('/admin/coupons/{id}/delete', [App\Http\Controllers\CouponController::class, 'destroy'])->name('admin.coupons.delete');
     Route::get('/admin/staff', [StaffController::class, 'index'])->name('admin.staff');
     Route::post('/admin/staff', [StaffController::class, 'store'])->name('admin.staff.store');
     Route::put('/admin/staff/{user}', [StaffController::class, 'update'])->name('admin.staff.update');
@@ -203,6 +219,14 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     // Code of Conduct — read + acknowledge.
     Route::get('/app/code-of-conduct', [App\Http\Controllers\CodeOfConductController::class, 'show'])->name('app.coc');
     Route::post('/app/code-of-conduct/ack', [App\Http\Controllers\CodeOfConductController::class, 'acknowledge'])->name('app.coc.ack');
+    // rev 115: predefined Commission & Incentive SCHEMES (hierarchy-scoped
+    // creation, claim autofill, caps, announcements). for-me BEFORE {id} routes.
+    Route::get('/app/schemes', [App\Http\Controllers\SchemeController::class, 'index'])->name('app.schemes');
+    Route::get('/app/schemes/for-me', [App\Http\Controllers\SchemeController::class, 'forMe'])->name('app.schemes.forme');
+    Route::post('/app/schemes', [App\Http\Controllers\SchemeController::class, 'save'])->name('app.schemes.save');
+    Route::post('/app/schemes/{id}/withdraw', [App\Http\Controllers\SchemeController::class, 'withdraw'])->name('app.schemes.withdraw');
+    Route::post('/app/schemes/{id}/decide', [App\Http\Controllers\SchemeController::class, 'decide'])->name('app.schemes.decide');
+    Route::post('/app/schemes/{id}/reopen', [App\Http\Controllers\SchemeController::class, 'reopen'])->name('app.schemes.reopen');
     // Commission / Incentive bulk calculation engine.
     Route::get('/app/incentive/template', [App\Http\Controllers\IncentiveController::class, 'template'])->name('app.incentive.template');
     Route::post('/app/incentive/calculate', [App\Http\Controllers\IncentiveController::class, 'calculate'])->name('app.incentive.calc');
@@ -286,6 +310,10 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     // every row lands as PENDING with the employee's own hierarchy approver.
     Route::post('/app/requests/commissions/bulk', [App\Http\Controllers\RequestController::class, 'bulkCommissions'])->name('app.requests.comm.bulk');
     // rev 84 (Ejaz, USP): edit-after-approval (diff-logged), manual lock, history trail.
+    // rev 116: collection evidence — proof upload/view + Accounts confirmation stage.
+    Route::post('/app/requests/commissions/proof-upload', [App\Http\Controllers\RequestController::class, 'proofUpload'])->name('app.requests.comm.proof');
+    Route::get('/app/requests/commissions/{id}/proof', [App\Http\Controllers\RequestController::class, 'proofServe'])->name('app.requests.comm.proof.view');
+    Route::post('/app/requests/commissions/{id}/accounts', [App\Http\Controllers\RequestController::class, 'accountsDecide'])->name('app.requests.comm.accounts');
     Route::post('/app/requests/commissions/{id}/update', [App\Http\Controllers\RequestController::class, 'updateCommission'])->name('app.requests.comm.update');
     Route::post('/app/requests/commissions/{id}/lock', [App\Http\Controllers\RequestController::class, 'lockCommission'])->name('app.requests.comm.lock');
     Route::get('/app/requests/commissions/{id}/history', [App\Http\Controllers\RequestController::class, 'commissionHistory'])->name('app.requests.comm.history');

@@ -28,6 +28,7 @@ class UserController extends Controller
         'hr_manager' => 'HR Manager',
         'field_agent' => 'Field Agent',
         'employee' => 'Employee',
+        'accountant' => 'Accountant',   // rev 116: confirms collections before commission approval
     ];
 
     private function canManage(Request $request): bool

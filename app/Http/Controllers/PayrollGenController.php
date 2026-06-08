@@ -1082,6 +1082,9 @@ class PayrollGenController extends Controller
                 'pendingCommission' => round($pendingComm, 2),
                 'projectedNet' => round($sumE - $sumD + $pendingComm, 2),
                 'commList' => $commList,
+                // rev 115: live incentive schemes for THIS employee — the Live
+                // Salary card shows them as the orange "earn more" ribbon.
+                'schemes' => $this->liveSchemesFor($target),
                 'canPick' => $scope->count() > 1,
                 'employees' => $scope->count() > 1
                     ? $scope->map(fn ($x) => ['id' => $x->id, 'name' => $x->name, 'code' => $x->emp_code])->values()
@@ -1089,6 +1092,39 @@ class PayrollGenController extends Controller
             ]);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
+        }
+    }
+
+    /** rev 115: active schemes applicable to an employee (fail-soft, max 5). */
+    private function liveSchemesFor(object $emp): array
+    {
+        try {
+            if (! \Illuminate\Support\Facades\Schema::hasTable('incentive_schemes')) {
+                return [];
+            }
+            $today = now()->toDateString();
+
+            return DB::table('incentive_schemes')
+                ->when($emp->tenant_id ?? null, fn ($q) => $q->where('tenant_id', $emp->tenant_id))
+                ->where('status', 'active')
+                ->where(function ($q) use ($today) {
+                    $q->whereNull('valid_from')->orWhere('valid_from', '<=', $today);
+                })
+                ->where(function ($q) use ($today) {
+                    $q->whereNull('valid_till')->orWhere('valid_till', '>=', $today);
+                })
+                ->orderByDesc('id')->limit(25)->get()
+                ->filter(fn ($s) => \App\Http\Controllers\SchemeController::appliesTo($s, $emp))
+                ->take(5)
+                ->map(fn ($s) => [
+                    'id' => $s->id, 'title' => $s->title,
+                    'rate' => $s->rate_type === 'percent'
+                        ? rtrim(rtrim(number_format((float) $s->rate_value, 2), '0'), '.').'% of collections'
+                        : ($s->rate_type === 'fixed' ? '₹'.number_format((float) $s->rate_value).' per claim' : 'open amount'),
+                    'till' => $s->valid_till ? \Carbon\Carbon::parse($s->valid_till)->format('d M') : null,
+                ])->values()->all();
+        } catch (\Throwable $e) {
+            return [];
         }
     }
 

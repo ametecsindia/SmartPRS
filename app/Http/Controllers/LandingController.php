@@ -135,16 +135,36 @@ class LandingController extends Controller
             'clients' => [
                 ['name' => 'Exon'], ['name' => 'Storm'], ['name' => 'Numero Uno'], ['name' => 'Vimal Enterprises'],
             ],
+            // rev 111: About / Why SmartPRS section (Ejaz 8 Jun 2026) — industry-roots story,
+            // deliberately NO client-count claims (skip-tracing figures are unofficial — keep off public pages).
+            'about' => [
+                'eyebrow' => 'Why SmartPRS',
+                'title' => 'Built inside the industry, not just for it',
+                'body' => "SmartPRS was not designed in a software lab. Since 2019, Ametecs has built every product on a community-development model — growing through regular feedback, real experiences, pain points and ideas shared by industry leaders, experienced professionals and domain experts from India's collections & recovery world.\n\n"
+                    ."That is how SmartDCM, our debt collection platform, was built — by deeply studying each client's requirement and answering it with innovative, practical solutions. The same method now powers SmartPRS: every module — from biometric attendance and statutory payroll to incentive engines and DRA/PCC compliance — exists because someone in the industry asked for it. That is what makes SmartPRS feel familiar from the very first login.",
+                // Proof strip under the story — SmartDCM figures Ejaz approved for public use (8 Jun 2026).
+                'proof' => 'SmartDCM by Ametecs today serves 300+ collection agencies with 2,500+ users across India.',
+                'proof_label' => 'Know more at smartdcm.app',
+                'proof_url' => 'https://www.smartdcm.app',
+                'founder' => 'Ejaz Hussain',
+                'founder_role' => 'Founder & Managing Director, Ametecs India Pvt. Ltd.',
+                'short' => 'The complete workforce platform for India\'s collections & recovery industry — built from deep industry experience and the feedback of agency teams across the country. Conceived and led by Ejaz Hussain, Managing Director, Ametecs India.',
+            ],
             'contact' => [
                 'email' => 'sales@ametecsindia.com',
                 // rev 89: real numbers (Ejaz 6 Jun 2026) — all editable in /admin/landing.
                 // NOTE: only 9000098877 has WhatsApp (9666612424 does NOT) — both
                 // the Chat button and the Interakt lead alert must use 9000098877.
-                'phone' => '+91 96666 12424',
+                'phone' => '+91 96666 12424, +91 77020 01122',
                 'whatsapp' => '919000098877',           // Chat-on-WhatsApp button (wa.me)
                 'lead_email' => 'sales@ametecsindia.com', // every demo request emailed here
                 'lead_wa' => '919000098877',            // WhatsApp alert per lead (Interakt)
-                'address' => 'M/s. Ametecs India Private Limited · Modern Profound Techpark, Ground Floor, Hive Space, opp. Google, Whitefields, Kondapur, Hyderabad, Telangana, India 500084 · GST: 36AAHCT0971F1ZB',
+                // rev 111: multi-line (one array line = one page line; blade renders via nl2br)
+                'address' => "M/s. Ametecs India Private Limited\n"
+                    ."Modern Profound Techpark, Ground Floor,\n"
+                    ."Hive Space, opp. Google, Whitefields,\n"
+                    ."Kondapur, Hyderabad, Telangana,\n"
+                    ."India 500084 · GST: 36AAHCT0971F1ZB",
             ],
             'footer' => '© '.date('Y').' Ametecs India Pvt. Ltd. All rights reserved.',
         ];

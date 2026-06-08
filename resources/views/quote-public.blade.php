@@ -52,7 +52,12 @@
                 <div class="row"><span>{{ $plan->name ?? 'Plan' }} plan — {{ (int) $s->seats }} employees</span><b>₹{{ number_format($plan->base_price ?? 0, 0) }}/mo base</b></div>
                 @if(($s->companies ?? 1) > 1)<div class="row"><span>{{ $s->companies }} companies (1 included + {{ $s->companies - 1 }} extra)</span><b>₹{{ number_format(1000 * (($s->companies) - 1), 0) }}/mo</b></div>@endif
                 <div class="row"><span>Billing period</span><b>{{ ['quarterly'=>'Quarterly (3 mo)','halfyear'=>'Half-yearly (6 mo, 10% off)','annual'=>'Annual (12 mo, 25% off)'][$s->cycle] ?? $s->cycle }}</b></div>
-                <div class="row"><span>Subscription amount</span><b>₹{{ number_format($price['amount'], 2) }}</b></div>
+                {{-- rev 113: locked coupon discount shown clearly --}}
+                @if(($price['coupon_discount'] ?? 0) > 0)
+                <div class="row"><span>Amount before discount</span><b>₹{{ number_format($price['amount_before_coupon'] ?? 0, 2) }}</b></div>
+                <div class="row" style="color:#16a34a;"><span><i class="fas fa-gift"></i> Discount — coupon {{ $price['coupon_code'] }}</span><b>− ₹{{ number_format($price['coupon_discount'], 2) }}</b></div>
+                @endif
+                <div class="row"><span>Subscription amount{{ ($price['coupon_discount'] ?? 0) > 0 ? ' (after discount)' : '' }}</span><b>₹{{ number_format($price['amount'], 2) }}</b></div>
                 <div class="row"><span>GST (18%)</span><b>₹{{ number_format($price['tax'], 2) }}</b></div>
                 <div class="total"><span>Total payable</span><span>₹{{ number_format($price['total'], 2) }}</span></div>
 

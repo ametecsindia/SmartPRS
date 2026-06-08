@@ -60,10 +60,26 @@
                     <div class="fg"><label>Client {{ $i+1 }}</label><input name="content[clients][{{ $i }}][name]" value="{{ $cl['name'] ?? '' }}"></div>
                 @endforeach
             </div>
+            {{-- rev 111: About / Why SmartPRS section --}}
+            <div class="grid c3" style="margin-top:10px;">
+                <div class="fg"><label>About — eyebrow</label><input name="content[about][eyebrow]" value="{{ $c['about']['eyebrow'] ?? '' }}"></div>
+                <div class="fg"><label>About — title</label><input name="content[about][title]" value="{{ $c['about']['title'] ?? '' }}"></div>
+            </div>
+            <div class="fg" style="margin-top:10px;"><label>About — story (blank line = new paragraph)</label><textarea name="content[about][body]" rows="6">{{ $c['about']['body'] ?? '' }}</textarea></div>
+            <div class="grid c3" style="margin-top:10px;">
+                <div class="fg"><label>Proof line (green-tick box; blank = hide box)</label><input name="content[about][proof]" value="{{ $c['about']['proof'] ?? '' }}"></div>
+                <div class="fg"><label>Proof link label</label><input name="content[about][proof_label]" value="{{ $c['about']['proof_label'] ?? '' }}"></div>
+                <div class="fg"><label>Proof link URL</label><input name="content[about][proof_url]" value="{{ $c['about']['proof_url'] ?? '' }}"></div>
+            </div>
+            <div class="grid c3" style="margin-top:10px;">
+                <div class="fg"><label>About — founder name</label><input name="content[about][founder]" value="{{ $c['about']['founder'] ?? '' }}"></div>
+                <div class="fg"><label>About — founder role</label><input name="content[about][founder_role]" value="{{ $c['about']['founder_role'] ?? '' }}"></div>
+            </div>
+            <div class="fg" style="margin-top:10px;"><label>Footer intro line (after "SmartPRS by Ametecs —")</label><textarea name="content[about][short]" rows="3">{{ $c['about']['short'] ?? '' }}</textarea></div>
             <div class="grid c3" style="margin-top:10px;">
                 <div class="fg"><label>Contact email</label><input name="content[contact][email]" value="{{ $c['contact']['email'] }}"></div>
                 <div class="fg"><label>Phone (shown on page)</label><input name="content[contact][phone]" value="{{ $c['contact']['phone'] }}"></div>
-                <div class="fg"><label>Address</label><input name="content[contact][address]" value="{{ $c['contact']['address'] }}"></div>
+                <div class="fg"><label>Address (each line here = one line on the page)</label><textarea name="content[contact][address]" rows="5">{{ $c['contact']['address'] }}</textarea></div>
             </div>
             {{-- rev 89: lead-generation settings (demo form + WhatsApp button) --}}
             <div class="grid c3" style="margin-top:10px;">

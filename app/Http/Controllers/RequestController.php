@@ -54,6 +54,73 @@ class RequestController extends Controller
         return $request->user()->hasAnyRole(['super_admin', 'admin', 'hr_manager']);
     }
 
+    /** rev 116: Accounts dept — confirms money received BEFORE manager approval. */
+    private function isAccounts(Request $request): bool
+    {
+        return $request->user()->hasAnyRole(['super_admin', 'admin', 'accountant']);
+    }
+
+    /**
+     * rev 116 (Ejaz): COLLECTION EVIDENCE on every commission claim — customer,
+     * account ref, what was collected, when, where, how (mode), proof upload,
+     * and the Accounts-confirmation stage that gates manager approval.
+     */
+    private static function ensureCollectionCols(): void
+    {
+        try {
+            if (! \Illuminate\Support\Facades\Schema::hasTable('commissions')) {
+                return;
+            }
+            $cols = [
+                // base_amount/scheme_id normally come from SchemeController::ensure,
+                // but a claim can arrive before the Schemes screen was ever opened.
+                'base_amount' => fn ($t) => $t->decimal('base_amount', 14, 2)->nullable(),
+                'scheme_id' => fn ($t) => $t->unsignedBigInteger('scheme_id')->nullable()->index(),
+                'customer_name' => fn ($t) => $t->string('customer_name', 150)->nullable(),
+                'account_ref' => fn ($t) => $t->string('account_ref', 100)->nullable(),
+                'collection_type' => fn ($t) => $t->string('collection_type', 40)->nullable(),
+                'collected_at' => fn ($t) => $t->dateTime('collected_at')->nullable(),
+                'collection_location' => fn ($t) => $t->string('collection_location', 190)->nullable(),
+                'collection_mode' => fn ($t) => $t->string('collection_mode', 30)->nullable(),
+                'proof_path' => fn ($t) => $t->string('proof_path', 255)->nullable(),
+                'claim_type' => fn ($t) => $t->string('claim_type', 12)->nullable(), // collection | simple (rev 116d)
+                'accounts_status' => fn ($t) => $t->string('accounts_status', 12)->nullable(), // pending | confirmed | flagged
+                'accounts_by' => fn ($t) => $t->string('accounts_by', 120)->nullable(),
+                'accounts_at' => fn ($t) => $t->timestamp('accounts_at')->nullable(),
+                'accounts_note' => fn ($t) => $t->string('accounts_note', 255)->nullable(),
+            ];
+            foreach ($cols as $name => $add) {
+                if (! \Illuminate\Support\Facades\Schema::hasColumn('commissions', $name)) {
+                    try {
+                        \Illuminate\Support\Facades\Schema::table('commissions', $add);
+                    } catch (\Throwable $e) {
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+    }
+
+    /** Normalise the collection-mode display label → stable token. */
+    private static function normMode(string $v): string
+    {
+        $v = strtolower($v);
+        if (strpos($v, 'office') !== false) {
+            return 'cash_office';
+        }
+        if (strpos($v, 'deposit') !== false) {
+            return 'cash_deposited';
+        }
+        if (strpos($v, 'direct') !== false || strpos($v, 'client') !== false) {
+            return 'client_direct';
+        }
+        if (strpos($v, 'online') !== false || strpos($v, 'upi') !== false) {
+            return 'online_company';
+        }
+
+        return $v !== '' ? substr($v, 0, 30) : '';
+    }
+
     /** List rows for one module with names + audit + canDecide. */
     public function list(Request $request, string $module)
     {
@@ -178,6 +245,18 @@ class RequestController extends Controller
                     'grossAmount' => isset($a['gross_amount']) ? (float) $a['gross_amount'] : null,
                     'tdsRate' => isset($a['tds_rate']) ? (float) $a['tds_rate'] : null,
                     'descriptionText' => $a['description'] ?? '',
+                    // rev 116: collection evidence + accounts stage.
+                    'claimType' => $a['claim_type'] ?? '',
+                    'customerName' => $a['customer_name'] ?? '',
+                    'accountRef' => $a['account_ref'] ?? '',
+                    'collectionType' => $a['collection_type'] ?? '',
+                    'collectedAt' => ! empty($a['collected_at']) ? substr((string) $a['collected_at'], 0, 16) : '',
+                    'collectionLocation' => $a['collection_location'] ?? '',
+                    'collectionMode' => $a['collection_mode'] ?? '',
+                    'hasProof' => ! empty($a['proof_path']),
+                    'accountsStatus' => $a['accounts_status'] ?? '',
+                    'accountsBy' => $a['accounts_by'] ?? '',
+                    'accountsNote' => $a['accounts_note'] ?? '',
                     // rev 85: disbursement ledger summary per entry.
                     'payoutMethod' => ($a['payout_method'] ?? '') ?: 'with_salary',
                     'paidTotal' => round((float) ($paidMap[(int) $a['id']] ?? 0), 2),
@@ -198,7 +277,8 @@ class RequestController extends Controller
                 ];
             })->values();
 
-            return response()->json(['rows' => $out, 'isManager' => $manager, 'me' => $me->name ?? '', 'label' => $cfg['label'], 'fyActive' => FinYearController::active($tid), 'fyOptions' => FinYearController::options()]);
+            return response()->json(['rows' => $out, 'isManager' => $manager, 'me' => $me->name ?? '', 'label' => $cfg['label'], 'fyActive' => FinYearController::active($tid), 'fyOptions' => FinYearController::options(),
+                'canAccounts' => $module === 'commissions' ? $this->isAccounts($request) : false]);
         } catch (\Throwable $e) {
             return response()->json(['rows' => [], 'error' => $e->getMessage()]);
         }
@@ -212,6 +292,24 @@ class RequestController extends Controller
             if (! empty($a[$k])) {
                 $bits[] = $a[$k];
             }
+        }
+        // rev 116d: claim type tag.
+        if (($a['claim_type'] ?? '') === 'simple') {
+            $bits[] = 'Simple claim';
+        }
+        // rev 116: collection evidence — customer + account + when/where/how.
+        if (! empty($a['customer_name'])) {
+            $bits[] = $a['customer_name'].(! empty($a['account_ref']) ? ' ('.$a['account_ref'].')' : '');
+        }
+        if (! empty($a['collection_type'])) {
+            $bits[] = $a['collection_type'].' collected';
+        }
+        if (! empty($a['collected_at'])) {
+            $bits[] = 'on '.substr((string) $a['collected_at'], 0, 16).(! empty($a['collection_location']) ? ' at '.$a['collection_location'] : '');
+        }
+        if (! empty($a['collection_mode'])) {
+            $modes = ['cash_office' => 'cash → office', 'cash_deposited' => 'cash deposited to bank', 'client_direct' => 'client paid directly', 'online_company' => 'online to company a/c'];
+            $bits[] = $modes[$a['collection_mode']] ?? $a['collection_mode'];
         }
         // rev 83: commission register — gross − TDS = net, free-text note, audit.
         if (! empty($a['gross_amount'])) {
@@ -315,6 +413,19 @@ class RequestController extends Controller
                         return response()->json(['ok' => false, 'error' => 'You can claim for yourself, or enter for your own reportees only.'], 403);
                     }
                 }
+                // rev 115: claim raised AGAINST A SCHEME — the scheme decides the
+                // money (percent of base / fixed / open), purpose, TDS and payout
+                // method. Validated + computed server-side; friendly errors.
+                if (! empty($fields['scheme_id']) && is_numeric($fields['scheme_id'])) {
+                    try {
+                        $sv = \App\Http\Controllers\SchemeController::validateClaim((int) $fields['scheme_id'], $emp, $fields);
+                        $fields = array_merge($fields, $sv);
+                    } catch (\RuntimeException $se) {
+                        return response()->json(['ok' => false, 'error' => $se->getMessage()], 422);
+                    }
+                } else {
+                    unset($fields['scheme_id'], $fields['base_amount']);
+                }
                 $gross = isset($fields['gross_amount']) && is_numeric($fields['gross_amount']) ? (float) $fields['gross_amount'] : null;
                 if ($gross !== null && $gross > 0) {
                     $rate = isset($fields['tds_rate']) && is_numeric($fields['tds_rate']) ? max(0.0, min(100.0, (float) $fields['tds_rate'])) : 5.0;
@@ -340,6 +451,54 @@ class RequestController extends Controller
                 // rev 85: payout method — 'separate' = paid through the ledger
                 // on its own dates; anything else = with salary (payslip).
                 $fields['payout_method'] = (stripos((string) ($fields['payout_method'] ?? ''), 'sep') !== false) ? 'separate' : 'with_salary';
+
+                // rev 116d (Ejaz): TWO CLAIM TYPES — 'collection' (customer money
+                // collected → full evidence + Accounts confirmation) vs 'simple'
+                // (target achieved / special incentive / bonus → notes + normal
+                // approval only, no customer, no accounts stage).
+                self::ensureCollectionCols();
+                $claimType = stripos((string) ($fields['claim_type'] ?? ''), 'simp') !== false ? 'simple' : 'collection';
+                $fields['claim_type'] = $claimType;
+                if ($claimType === 'simple') {
+                    // No collection evidence on a simple claim — clear any strays.
+                    foreach (['customer_name', 'account_ref', 'collection_type', 'collected_at', 'collection_location', 'collection_mode', 'base_amount', 'proof_path', 'accounts_status'] as $k0) {
+                        unset($fields[$k0]);
+                    }
+                } else {
+                    // rev 116: COLLECTION EVIDENCE — required on every collection claim.
+                    foreach ([
+                        'customer_name' => 'Enter the customer name.',
+                        'account_ref' => 'Enter the account no / CC no / customer ID.',
+                        'collection_type' => 'Pick what was collected (EMI / penalty / settlement…).',
+                        'collected_at' => 'Enter the collection date & time.',
+                        'collection_mode' => 'Pick the mode of collection.',
+                    ] as $reqK => $reqMsg) {
+                        if (trim((string) ($fields[$reqK] ?? '')) === '') {
+                            return response()->json(['ok' => false, 'error' => $reqMsg], 422);
+                        }
+                    }
+                    try {
+                        $fields['collected_at'] = Carbon::parse((string) $fields['collected_at'])->format('Y-m-d H:i:s');
+                    } catch (\Throwable $e) {
+                        return response()->json(['ok' => false, 'error' => 'The collection date & time could not be read — please re-pick it.'], 422);
+                    }
+                    // rev 116c (Ejaz — "gross confusion"): base_amount = what the
+                    // CUSTOMER paid (evidence); gross_amount = the COMMISSION claimed.
+                    $baseAmt = isset($fields['base_amount']) && is_numeric($fields['base_amount']) ? (float) $fields['base_amount'] : 0.0;
+                    if ($baseAmt <= 0) {
+                        return response()->json(['ok' => false, 'error' => 'Enter the amount collected from the customer.'], 422);
+                    }
+                    $fields['base_amount'] = round($baseAmt, 2);
+                    $fields['collection_mode'] = self::normMode((string) $fields['collection_mode']);
+                    // rev 116e (Ejaz): proof is OPTIONAL — banks send the payments-
+                    // received list, so Accounts verifies against that; a screenshot
+                    // or deposit slip just speeds the confirmation up.
+                    // Safety: only accept proof paths our own uploader produced.
+                    if (! empty($fields['proof_path']) && strpos((string) $fields['proof_path'], 'commission-proofs/') !== 0) {
+                        unset($fields['proof_path']);
+                    }
+                    $fields['accounts_status'] = 'pending';   // Accounts confirms before approval
+                }
             }
             // rev 83b (Ejaz): increments — Old CTC defaults to the employee's
             // CURRENT record; New CTC ↔ % cross-computed server-side so the
@@ -445,13 +604,20 @@ class RequestController extends Controller
     {
         try {
             $user = $request->user();
-            if (! $user->hasAnyRole(['super_admin', 'admin', 'hr_manager'])) {
-                return response()->json(['ok' => false, 'error' => 'Only Admin / HR can bulk-upload commissions.'], 403);
+            // rev 116d (Ejaz): individual employees may bulk-upload their OWN
+            // claims — every row is forced to themselves regardless of the sheet.
+            $selfOnly = ! $user->hasAnyRole(['super_admin', 'admin', 'hr_manager']);
+            $meEmp = null;
+            if ($selfOnly) {
+                $meEmp = $this->currentEmployee($request);
+                if (! $meEmp) {
+                    return response()->json(['ok' => false, 'error' => 'Your login is not linked to an employee record — ask HR to link it before uploading.'], 403);
+                }
             }
             ApprovalService::ensureAuditCols('commissions');
             $v = $request->validate([
                 'rows' => ['required', 'array', 'min:1', 'max:1000'],
-                'rows.*.employee' => ['required', 'string'],
+                'rows.*.employee' => ['nullable', 'string'],   // rev 116d: self-uploads may omit it
                 'rows.*.gross' => ['required', 'numeric', 'gt:0'],
             ]);
             $tid = $user->tenant_id ?? DB::table('tenants')->value('id');
@@ -474,14 +640,19 @@ class RequestController extends Controller
             $created = 0;
             $errors = [];
             // Hoisted out of the loop: column list + FY stamp are per-table facts.
+            self::ensureCollectionCols();   // rev 116c: evidence columns in bulk too
             $colFlip = array_flip(Schema::getColumnListing('commissions'));
             $fy = FinYearController::stamp('commissions', $tid);
             foreach ($v['rows'] as $i => $r) {
                 $line = $i + 2; // +2 = header row + 1-based, matches what they see in Excel
-                $key = strtolower(trim((string) $r['employee']));
-                $emp = $byCode[$key] ?? $byName[$key] ?? null;
+                if ($selfOnly) {
+                    $emp = $meEmp;   // rev 116d: agents upload for THEMSELVES only
+                } else {
+                    $key = strtolower(trim((string) ($r['employee'] ?? '')));
+                    $emp = $key !== '' ? ($byCode[$key] ?? $byName[$key] ?? null) : null;
+                }
                 if (! $emp) {
-                    $errors[] = 'Row '.$line.': employee not found — "'.$r['employee'].'"';
+                    $errors[] = 'Row '.$line.': employee not found — "'.($r['employee'] ?? '(blank)').'"';
                     continue;
                 }
                 $gross = round((float) $r['gross'], 2);
@@ -507,6 +678,23 @@ class RequestController extends Controller
                     }
                 }
                 [$approverId, $approverName] = ApprovalService::resolveApprover($emp, $tid, $gross - $tds, 0);
+                // rev 116c: collection evidence from the sheet (optional per row —
+                // Accounts can chase missing proof; the gate still applies).
+                $collectedAt = null;
+                if (trim((string) ($r['collected_at'] ?? '')) !== '') {
+                    try {
+                        $collectedAt = Carbon::parse((string) $r['collected_at'])->format('Y-m-d H:i:s');
+                    } catch (\Throwable $e) {
+                        $collectedAt = null;
+                    }
+                }
+                // rev 116d: per-row claim type — 'simple' (target/bonus, manager
+                // approval only) vs 'collection' (evidence + accounts stage).
+                // Default: simple when the row carries NO customer details.
+                $ctRaw = (string) ($r['claim_type'] ?? '');
+                $rowType = stripos($ctRaw, 'simp') !== false ? 'simple'
+                    : (stripos($ctRaw, 'coll') !== false ? 'collection'
+                    : ((trim((string) ($r['customer_name'] ?? '')) !== '' || trim((string) ($r['account_ref'] ?? '')) !== '') ? 'collection' : 'simple'));
                 $row = array_intersect_key([
                     'tenant_id' => $emp->tenant_id,
                     'company_id' => $emp->company_id,
@@ -520,6 +708,15 @@ class RequestController extends Controller
                     'payout_date' => $payout ?: null,
                     'payout_method' => (stripos((string) ($r['payout_method'] ?? ''), 'sep') !== false) ? 'separate' : 'with_salary',
                     'description' => mb_substr(trim((string) ($r['description'] ?? '')), 0, 500) ?: null,
+                    'claim_type' => $rowType,
+                    'customer_name' => $rowType === 'collection' ? (trim((string) ($r['customer_name'] ?? '')) ?: null) : null,
+                    'account_ref' => $rowType === 'collection' ? (trim((string) ($r['account_ref'] ?? '')) ?: null) : null,
+                    'collection_type' => $rowType === 'collection' ? (trim((string) ($r['collection_type'] ?? '')) ?: null) : null,
+                    'collected_at' => $rowType === 'collection' ? $collectedAt : null,
+                    'collection_location' => $rowType === 'collection' ? (trim((string) ($r['collection_location'] ?? '')) ?: null) : null,
+                    'collection_mode' => $rowType === 'collection' && trim((string) ($r['collection_mode'] ?? '')) !== '' ? self::normMode((string) $r['collection_mode']) : null,
+                    'base_amount' => $rowType === 'collection' && isset($r['base_amount']) && is_numeric($r['base_amount']) && (float) $r['base_amount'] > 0 ? round((float) $r['base_amount'], 2) : null,
+                    'accounts_status' => $rowType === 'collection' ? 'pending' : null,   // simple claims skip the accounts stage
                     'gross_amount' => $gross,
                     'tds_rate' => $rate,
                     'tds_amount' => $tds,
@@ -1147,6 +1344,15 @@ class RequestController extends Controller
             if ($module === 'commissions' && ! empty($rec->locked_at)) {
                 return response()->json(['ok' => false, 'error' => 'This entry is LOCKED ('.($rec->lock_source ?: 'paid out').') and can no longer be changed.'], 422);
             }
+            // rev 116 (Ejaz): APPROVAL GATE — the manager can approve only AFTER
+            // Accounts confirms the money was actually received. Claims with an
+            // accounts stage carry accounts_status (pending|confirmed|flagged).
+            if ($module === 'commissions' && $v['action'] === 'approve'
+                && ! empty($rec->accounts_status ?? null) && $rec->accounts_status !== 'confirmed') {
+                return response()->json(['ok' => false, 'error' => $rec->accounts_status === 'flagged'
+                    ? 'Accounts FLAGGED this collection ('.($rec->accounts_note ?: 'see note').') — resolve it before approval.'
+                    : 'Accounts must confirm this collection first — the money trail comes before the commission.'], 422);
+            }
 
             $me = $this->currentEmployee($request);
             $myId = $me->id ?? null;
@@ -1299,6 +1505,92 @@ class RequestController extends Controller
             return response()->json(['items' => $items, 'count' => count($items), 'isManager' => $manager]);
         } catch (\Throwable $e) {
             return response()->json(['items' => [], 'count' => 0, 'error' => $e->getMessage()]);
+        }
+    }
+
+    // ---- rev 116: COLLECTION PROOF + ACCOUNTS CONFIRMATION -------------------
+
+    /** POST /app/requests/commissions/proof-upload — image/PDF, returns the stored path. */
+    public function proofUpload(Request $request)
+    {
+        try {
+            $v = $request->validate([
+                'file' => ['required', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:5120'],
+            ], [
+                'file.mimes' => 'Upload an image (JPG/PNG/WebP) or a PDF.',
+                'file.max' => 'The proof must be under 5 MB.',
+            ]);
+            $path = $request->file('file')->store('commission-proofs', 'public');
+
+            return response()->json(['ok' => true, 'path' => $path]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['ok' => false, 'error' => implode(' ', collect($e->errors())->flatten()->all())], 422);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
+        }
+    }
+
+    /** GET /app/requests/commissions/{id}/proof — view the uploaded proof (owner / manager / accounts). */
+    public function proofServe(Request $request, int $id)
+    {
+        self::ensureCollectionCols();
+        $tid = $request->user()->tenant_id;
+        $rec = DB::table('commissions')->where('id', $id)
+            ->when($tid, fn ($q) => $q->where('tenant_id', $tid))->first();
+        abort_unless($rec && ! empty($rec->proof_path), 404);
+        $me = $this->currentEmployee($request);
+        $own = $me && (int) $me->id === (int) ($rec->employee_id ?? 0);
+        abort_unless($this->isManager($request) || $this->isAccounts($request) || $own, 403);
+        $full = storage_path('app/public/'.$rec->proof_path);
+        abort_unless(is_file($full), 404);
+
+        return response()->file($full);
+    }
+
+    /**
+     * POST /app/requests/commissions/{id}/accounts {action: confirm|flag, note}
+     * The Accounts stage — money confirmed in BEFORE the manager can approve.
+     */
+    public function accountsDecide(Request $request, int $id)
+    {
+        try {
+            self::ensureCollectionCols();
+            if (! $this->isAccounts($request)) {
+                return response()->json(['ok' => false, 'error' => 'Only Accounts (or an Admin) can confirm collections.'], 403);
+            }
+            $v = $request->validate([
+                'action' => ['required', 'in:confirm,flag'],
+                'note' => ['nullable', 'string', 'max:255'],
+            ]);
+            $tid = $request->user()->tenant_id;
+            $rec = DB::table('commissions')->where('id', $id)
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid))->first();
+            if (! $rec) {
+                return response()->json(['ok' => false, 'error' => 'Entry not found.'], 404);
+            }
+            if (! empty($rec->locked_at)) {
+                return response()->json(['ok' => false, 'error' => 'This entry is locked.'], 422);
+            }
+            $by = (string) ($request->user()->name ?? $request->user()->email);
+            DB::table('commissions')->where('id', $id)->update(ApprovalService::safeRow('commissions', [
+                'accounts_status' => $v['action'] === 'confirm' ? 'confirmed' : 'flagged',
+                'accounts_by' => $by, 'accounts_at' => now(),
+                'accounts_note' => $v['note'] ?? null, 'updated_at' => now(),
+            ]));
+            try {
+                ApprovalService::logCommission($tid, $id, 'accounts',
+                    ($v['action'] === 'confirm' ? 'Accounts CONFIRMED the collection' : 'Accounts FLAGGED the collection')
+                    .(! empty($v['note']) ? ' · '.$v['note'] : ''), $by);
+            } catch (\Throwable $e) {
+            }
+
+            return response()->json(['ok' => true, 'message' => $v['action'] === 'confirm'
+                ? 'Collection confirmed — the entry can now be approved by the manager.'
+                : 'Collection flagged — approval stays blocked until this is resolved and confirmed.']);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['ok' => false, 'error' => implode(' ', collect($e->errors())->flatten()->all())], 422);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
         }
     }
 }

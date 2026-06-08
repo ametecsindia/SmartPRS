@@ -97,12 +97,20 @@
             <tr>
                 <td>SmartPRS {{ $plan->name ?? 'Subscription' }} plan — all 16 modules ({{ $cycleLabel }})</td>
                 <td class="amt">{{ (int) $s->seats }} emp</td>
-                <td class="amt">{{ number_format($price['amount'], 2) }}</td>
+                <td class="amt">{{ number_format($price['amount_before_coupon'] ?? $price['amount'], 2) }}</td>
             </tr>
             @if($companies > 1)
             <tr><td style="color:#64748b;">Includes {{ $companies }} companies ({{ $companies - 1 }} additional × ₹1,000/mo)</td><td></td><td></td></tr>
             @endif
-            <tr class="tot"><td colspan="2">Taxable value</td><td class="amt">{{ number_format($price['amount'], 2) }}</td></tr>
+            {{-- rev 113: discount stated CLEARLY on the quotation (Ejaz) --}}
+            @if(($price['coupon_discount'] ?? 0) > 0)
+            <tr>
+                <td style="color:#166534;font-weight:bold;">DISCOUNT — coupon {{ $price['coupon_code'] }} (special offer for {{ $s->company }})</td>
+                <td></td>
+                <td class="amt" style="color:#166534;font-weight:bold;">− {{ number_format($price['coupon_discount'], 2) }}</td>
+            </tr>
+            @endif
+            <tr class="tot"><td colspan="2">Taxable value{{ ($price['coupon_discount'] ?? 0) > 0 ? ' (after discount)' : '' }}</td><td class="amt">{{ number_format($price['amount'], 2) }}</td></tr>
         </table>
 
         <table class="totbox">

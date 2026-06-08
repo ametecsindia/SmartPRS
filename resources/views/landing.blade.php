@@ -183,6 +183,7 @@
         <div class="wrap">
             <a href="/" class="logo"><img src="{{ asset('images/logo.png') }}" alt="SmartPRS — Reputation | Relationships | Results" style="height:40px;width:auto;display:block;"></a>
             <div class="navlinks">
+                <a href="#about">Why SmartPRS</a>
                 <a href="#features">Features</a>
                 <a href="#how">How it works</a>
                 <a href="#pricing">Pricing</a>
@@ -226,6 +227,34 @@
             @endforeach
         </div>
     </div>
+
+    {{-- rev 111: About / Why SmartPRS — industry-roots story (CMS-editable) --}}
+    <section class="alt" id="about">
+        <div class="wrap">
+            <div class="sec-head">
+                <div class="eyebrow">{{ $c['about']['eyebrow'] }}</div>
+                <h2>{{ $c['about']['title'] }}</h2>
+            </div>
+            <div style="max-width:840px;margin:0 auto;">
+                @foreach (preg_split('/\n{2,}/', $c['about']['body']) as $p)
+                    <p class="lead" style="margin-bottom:16px;">{!! nl2br(e($p)) !!}</p>
+                @endforeach
+                @if (!empty($c['about']['proof']))
+                    <div style="margin-top:22px;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px 22px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+                        <i class="fas fa-circle-check" style="color:var(--green);font-size:1.3rem;"></i>
+                        <span style="font-weight:600;color:var(--navy);flex:1 1 280px;">{{ $c['about']['proof'] }}</span>
+                        @if (!empty($c['about']['proof_url']))
+                            <a href="{{ $c['about']['proof_url'] }}" target="_blank" rel="noopener" style="color:var(--accent);font-weight:700;white-space:nowrap;">{{ $c['about']['proof_label'] ?? 'Know more' }} <i class="fas fa-arrow-up-right-from-square" style="font-size:.8rem;"></i></a>
+                        @endif
+                    </div>
+                @endif
+                <div style="margin-top:26px;padding-left:16px;border-left:3px solid var(--accent);">
+                    <div style="font-weight:800;color:var(--navy);font-size:1.05rem;">{{ $c['about']['founder'] }}</div>
+                    <div style="color:var(--text2);font-size:.93rem;">{{ $c['about']['founder_role'] }}</div>
+                </div>
+            </div>
+        </div>
+    </section>
 
     <section id="features">
         <div class="wrap">
@@ -366,6 +395,10 @@
                     <details><summary>Do you support GST invoicing &amp; auto-renewal? <i class="fas fa-plus"></i></summary><p>Yes — GST tax invoices are generated and emailed, with automated subscription renewals.</p></details>
                 </div>
             </div>
+            {{-- rev 114: complete FAQ page with deep links into the policy documents --}}
+            <div style="text-align:center;margin-top:34px;">
+                <a href="{{ url('/faqs') }}" class="btn btn-accent">View the complete FAQ — every question, answered in detail <i class="fas fa-arrow-right"></i></a>
+            </div>
         </div>
     </section>
 
@@ -423,7 +456,7 @@
                     <div style="font-size:14px;color:#334155;line-height:1.9;">
                         <div><i class="fas fa-envelope" style="color:var(--accent);width:20px;"></i> <a href="mailto:{{ $c['contact']['email'] }}" style="color:#334155;">{{ $c['contact']['email'] }}</a></div>
                         <div><i class="fas fa-phone" style="color:var(--accent);width:20px;"></i> {{ $c['contact']['phone'] }}</div>
-                        <div><i class="fas fa-location-dot" style="color:var(--accent);width:20px;"></i> {{ $c['contact']['address'] }}</div>
+                        <div style="display:flex;gap:8px;"><i class="fas fa-location-dot" style="color:var(--accent);width:20px;margin-top:3px;"></i> <span>{!! nl2br(e(str_replace(' · ', "\n", $c['contact']['address']))) !!}</span></div>
                     </div>
                 </div>
             </div>
@@ -511,7 +544,14 @@
             <div class="cols">
                 <div>
                     <div class="logo"><img src="{{ asset('images/logo.png') }}" alt="SmartPRS — Reputation | Relationships | Results" style="height:42px;width:auto;display:block;"></div>
-                    <p class="blurb">{{ $c['brand'] }} {{ $c['tagline'] }} — the complete workforce platform for India's collections &amp; recovery industry.</p>
+                    <p class="blurb">{{ $c['brand'] }} {{ $c['tagline'] }} — {{ $c['about']['short'] }}</p>
+                    {{-- rev 111: Ametecs corporate logo (white-text — dark surfaces only). Renders only once the file is saved. --}}
+                    @if (file_exists(public_path('images/ametecs-logo.png')))
+                        <a href="https://www.ametecsindia.com" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:10px;margin-top:14px;">
+                            <span style="color:var(--text3);font-size:.85rem;">A product of</span>
+                            <img src="{{ asset('images/ametecs-logo.png') }}" alt="Ametecs India" style="height:30px;width:auto;display:block;">
+                        </a>
+                    @endif
                 </div>
                 <div>
                     <h5>Product</h5>
@@ -530,9 +570,16 @@
                 <div>
                     <h5>Get in touch</h5>
                     <a class="lk" href="mailto:{{ $c['contact']['email'] }}">{{ $c['contact']['email'] }}</a>
-                    <span class="lk">{{ $c['contact']['phone'] }}</span>
-                    <span class="lk">{{ $c['contact']['address'] }}</span>
+                    {{-- rev 111: phone numbers never break mid-number; address honours line breaks (newlines or ·) --}}
+                    <span class="lk">@foreach(explode(',', $c['contact']['phone']) as $i => $ph){{ $i ? ', ' : '' }}<span style="white-space:nowrap">{{ trim($ph) }}</span>@endforeach</span>
+                    <span class="lk">{!! nl2br(e(str_replace(' · ', "\n", $c['contact']['address']))) !!}</span>
                 </div>
+            </div>
+            {{-- rev 111: legal/policy links (Razorpay LIVE requirement + DPDP) --}}
+            <div style="display:flex;flex-wrap:wrap;gap:6px 16px;padding:18px 0 4px;border-top:1px solid rgba(255,255,255,.08);margin-top:26px;">
+                @foreach (App\Http\Controllers\PolicyController::PAGES as $pslug => $ppg)
+                    <a class="lk" style="font-size:.82rem;" href="{{ url('/'.$pslug) }}">{{ $ppg[0] }}</a>
+                @endforeach
             </div>
             <div class="bottom">
                 <span>{{ $c['footer'] }}</span>

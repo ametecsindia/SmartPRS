@@ -132,12 +132,19 @@ class ScreenHelpController extends Controller
                 ['Deducting without a written reason', 'A reasonless deduction is indefensible in any hearing — and looks like harassment', 'Always fill the reason; one sentence today saves one tribunal tomorrow'],
             ],
             'commissions' => [
+                ['Confusing the two amounts', '"Collected from customer" entered as the commission = a ₹42,000 payout instead of ₹840', 'Collected Amount = what the CUSTOMER paid; Gross Commission = what the AGENT earns — the scheme picker computes it for you'],
+                ['Approving before Accounts confirms', 'The system refuses anyway — but chasing Accounts after month-end delays everyone\'s payout', 'Accounts should confirm collections daily; managers approve right behind them'],
+                ['Treating the proof upload as useless because it\'s optional', 'Accounts has to hunt the bank\'s payments list line by line — your confirmation waits', 'Attach the screenshot/slip when you have it — Accounts confirms in seconds instead of days'],
                 ['Editing an entry instead of using clawback after it\'s locked', 'You can\'t — and trying signals you don\'t trust your own audit trail', 'Locked is sacred: corrections are NEW clawback entries with reasons'],
                 ['Letting entries sit unapproved past month-end', 'They miss the payslip fold-in; agents get paid late and trust drops', 'Approve before cut-off; the Approvals Inbox shows everything waiting'],
-                ['Skipping the purpose/portfolio fields', 'Month-end you can\'t tell which bank\'s collections drove which payout', 'Fill purpose and portfolio on entry — reports and bank MIS depend on them'],
             ],
             'commission-calc' => [
                 ['Committing without reading the preview', 'A wrong slab rate multiplies across 100 agents in one click', 'Preview totals against a manual spot-check of 2-3 agents, then commit'],
+            ],
+            'incentive-schemes' => [
+                ['Publishing a scheme with no expiry and no caps', 'An "open offer" runs forever — claims keep coming long after the campaign died', 'Always set valid-till; add per-person caps when the budget is fixed'],
+                ['Withdrawing a scheme to fix a typo in the rate', 'Agents who saw the announcement feel cheated when it vanishes', 'Withdraw + republish FAST with a clear new title; tell the team why in the announcement'],
+                ['Announcing to "All employees" for a one-team drive', 'Everyone else asks why they can\'t claim — morale damage from a dropdown', 'Target exactly: one team or selected people; the hierarchy scope exists for this'],
             ],
             'expenses' => [
                 ['Approving claims months after the spend', 'Verification becomes impossible; padding creeps in', 'Set a claim-within-7-days culture; old claims get extra scrutiny'],
@@ -247,6 +254,11 @@ class ScreenHelpController extends Controller
             ],
             'admin-quotations' => [
                 ['Letting quotes expire silently', 'The prospect\'s approval finally lands — on a dead link', 'Nudge at day 10; a fresh quote takes the client two minutes on the signup page'],
+            ],
+            'admin-coupons' => [
+                ['Creating a coupon with no expiry and no use limit', 'The code leaks to a WhatsApp group and every signup forever arrives pre-discounted', 'Always set valid-till AND max uses — scarcity is the point of a coupon'],
+                ['Forgetting that coupons STACK with the annual 25% discount', 'A 30% code on an annual payment means 55%+ off — margin gone', 'Before publishing, compute the worst case: annual discount + coupon on your cheapest plan'],
+                ['Deleting a code mid-campaign instead of disabling', 'Prospects holding the ad get "invalid coupon" and feel cheated', 'Disable stops NEW use politely; delete only codes that were never redeemed'],
             ],
             'admin-staff' => [
                 ['Creating staff logins for temporary helpers', 'Platform staff see EVERY client\'s data — temporary access becomes permanent risk', 'Tiny list, real staff only, removed the day they stop'],
@@ -466,6 +478,11 @@ class ScreenHelpController extends Controller
                 'why' => 'Calculating 100 agents\' payouts from collection sheets by hand takes a day and breeds errors that breed mistrust. The calculator makes the formula do the work — same rules for everyone.',
                 'uc' => 'Picture this: the bank\'s MIS lands Monday. You upload it, pick the slab formula, preview, commit — 100 accurate entries in fifteen minutes, each still requiring approval.',
                 'adv' => ['A day of Excel becomes fifteen minutes', 'One formula, applied equally to all', 'Preview-first means zero accidental payouts'],
+            ],
+            'incentive-schemes' => [
+                'why' => 'A collections floor runs on offers — "2% on HDFC this month", "₹500 per settlement this week". Announced verbally, those offers become disputes; announced here, they become a machine: published once, every targeted agent notified, the claim form fills itself, and the scheme reports its own ROI.',
+                'uc' => 'Picture this: month-end pressure on the ICICI bucket. The manager publishes "ICICI Final Push — 3% till the 30th" for Team Alpha at 10 AM. By 10:01 all 14 agents have the WhatsApp; their Live Salary card glows with the orange ribbon. Claims flow in pre-filled — no rate confusion, no "sir promised" arguments. On the 31st the scheme card reads: 38 claims, ₹1.4L paid, bucket closed.',
+                'adv' => ['Verbal promises become published, provable offers', 'Targeted announcements — the right people, instantly', 'Claims pre-fill themselves: no wrong rates, no disputes', 'Per-scheme ROI: claims, approvals and ₹ on one line'],
             ],
             'expenses' => [
                 'why' => 'Field work costs money out of agents\' pockets — and slow reimbursement is paying your most active people with frustration. A clean claim flow keeps your fielders fielding.',
@@ -777,6 +794,11 @@ class ScreenHelpController extends Controller
                 'uc' => 'Picture this: a quote sits 9 days. You re-share the link with a "valid till Friday" nudge; their accounts head pays Thursday evening — workspace live before you wake up.',
                 'adv' => ['Deals survive approval delays', 'Anyone with the link can pay', 'Validity creates honest urgency'],
             ],
+            'admin-coupons' => [
+                'why' => 'A discount with no deadline is just a lower price — a COUPON is a reason to buy now. Codes create urgency ("first 50 signups"), reward annual commitment, arm channel partners, and tell you with hard numbers which marketing actually works.',
+                'uc' => 'Picture this: you speak at a collections-industry meet in Mumbai and close the talk with "code MUMBAI30, thirty percent off, valid ten days, first twenty agencies." Next week the redemption log shows 14 signups against MUMBAI30 — you now know exactly what that stage slot earned, in rupees.',
+                'adv' => ['Urgency and scarcity built into every campaign', 'Each code is its own ROI report — no guessing which ad worked', 'Partner and event codes without touching the price list'],
+            ],
             'admin-staff' => [
                 'why' => 'Platform staff can see every client\'s data — this list is your blast radius. Keeping it tiny and current is platform security in its simplest form.',
                 'uc' => 'Picture this: you onboard one support person for renewals. One login, properly created — and removed the day they move on. Every client\'s trust, maintained.',
@@ -866,6 +888,15 @@ class ScreenHelpController extends Controller
                 'tip' => 'A paid quotation provisions the workspace INSTANTLY — no manual step; your job here is only the follow-up nudge.',
                 'r' => ['Super Admin / platform staff'],
                 'rel' => 'Also see: Subscriptions, Invoices',
+            ],
+            'admin-coupons' => [
+                'm' => 'SaaS Platform', 't' => 'Discount Coupons', 'g' => 'Campaign codes that sell and track themselves',
+                'w' => 'Create discount codes for marketing campaigns — a percentage or a flat ₹ amount off, working on new signups, renewals, or both. Each code carries its own rules: expiry date, maximum uses, minimum advance period, specific plans, one-use-per-customer. Every redemption is recorded below with the company it brought, so a code doubles as campaign tracking.',
+                'f' => [['fa-ticket', 'Percent or flat ₹ codes'], ['fa-calendar-xmark', 'Expiry + max-use limits'], ['fa-filter', 'Plan / cycle / context rules'], ['fa-chart-line', 'Redemption log per campaign']],
+                's' => ['Create the code with its discount and limits — give it a campaign note like "June LinkedIn ads".', 'Share the code in the ad, WhatsApp broadcast or with a partner.', 'The prospect types it on the signup page (or a client in their renewal dialog) — price drops instantly, server re-checks everything at payment.', 'Watch the redemption log to see which campaign actually brings clients; Disable the code when the campaign ends.'],
+                'tip' => 'Coupons stack ON TOP of the advance-payment discount — an annual payer with LAUNCH10 gets both. Price that into the campaign before publishing the code.',
+                'r' => ['Super Admin'],
+                'rel' => 'Also see: Landing Page (CMS), Quotations',
             ],
             'admin-staff' => [
                 'm' => 'SaaS Platform', 't' => 'Platform Staff', 'g' => 'Who runs the platform',
@@ -1474,13 +1505,22 @@ class ScreenHelpController extends Controller
     {
         return [
             'commissions' => [
-                'm' => 'Compensation & Claims', 't' => 'Commission Entries', 'g' => 'Record, approve and pay every incentive',
-                'w' => 'When a field agent collects money or meets a target, the commission is recorded here. The manager approves it, TDS is cut automatically, and the net folds into the payslip or is paid separately — with a complete money trail on every entry.',
-                'f' => [['fa-plus', 'Add a commission entry'], ['fa-file-excel','Bulk import from Excel'], ['fa-check-double','Approve / reject / reopen'], ['fa-cash-register', 'Record full or part payments'], ['fa-book', 'Employee ledger'], ['fa-lock', 'Auto-lock once in a payslip']],
-                's' => ['Add the entry — employee, gross amount, purpose; TDS and net calculate on their own.', 'The manager approves or rejects it (employees can self-claim; managers verify).', 'Payout method "with salary" folds into the next payslip; "separate" is paid via Record Payment.', 'Open the Ledger anytime for the complete per-employee account.'],
-                'tip' => 'Once an entry enters a payslip it locks and cannot be edited — use a clawback for corrections. Every change is in the entry History.',
-                'r' => ['Admin — everything', 'HR & managers — add, approve, pay', 'Employees — view own + self-claim'],
-                'rel' => 'Also see: Live Salary, Salary & Commission Ledger, Clawbacks',
+                'm' => 'Compensation & Claims', 't' => 'Commission Entries', 'g' => 'Claim with proof, verify the money, then pay',
+                'w' => 'Every commission claim carries its COLLECTION EVIDENCE: customer, account/ID, what was collected, when and where, the mode (cash to office / deposited / client paid directly) and a proof upload. Two amounts, clearly separate: the amount collected FROM the customer, and the commission the agent is claiming (gross − TDS = net). Accounts confirms the money actually arrived, and only then can the manager approve. Pick a published Scheme and the form fills itself with the right rate.',
+                'f' => [['fa-plus', 'Claim with collection evidence'], ['fa-bullseye', 'Scheme picker — rates auto-fill'], ['fa-receipt', 'Proof upload (screenshot / slip)'], ['fa-check-double', 'Accounts confirm → manager approve'], ['fa-file-excel', 'Bulk import (evidence columns)'], ['fa-book', 'Ledger + auto-lock on payslip']],
+                's' => ['Pick the Claim Type — Collection (customer money, full evidence) or Simple (target / bonus, notes only).', 'For collections: customer, account/ID, what was collected, date-time, location, mode; attach the proof if you have it (optional — Accounts checks the bank\'s payments list, but a proof speeds confirmation).', 'Enter the amount collected from the customer; pick a Scheme and the commission computes itself, or type the gross — TDS and net auto-calculate.', 'Accounts (or Admin) clicks Confirm once the money is verified — the amber chip turns green; simple claims skip this stage.', 'Then the manager Approves; "with salary" folds into the payslip, "separate" pays through Record Payment.'],
+                'tip' => 'The approve button refuses until Accounts confirms — the money trail comes before the commission. Once an entry enters a payslip it locks; corrections go through Clawbacks.',
+                'r' => ['Admin — everything', 'Accountant — confirm / flag collections', 'HR & managers — add, approve, pay', 'Employees — view own + self-claim'],
+                'rel' => 'Also see: Incentive Schemes, Live Salary, Salary & Commission Ledger, Clawbacks',
+            ],
+            'incentive-schemes' => [
+                'm' => 'Compensation & Claims', 't' => 'Commission & Incentive Schemes', 'g' => 'Publish offers your people claim against',
+                'w' => 'Create a scheme — month-wise, weekly or portfolio-wise — with how it pays (% of collections, fixed ₹ per claim, or open), who can claim (everyone, one team, or selected people), validity dates and optional per-person caps. On publish, the targeted people are announced by email, WhatsApp and the notice board, their Live Salary card shows an orange ribbon, and the scheme appears inside their commission claim form with everything pre-filled.',
+                'f' => [['fa-bullseye', '% / fixed / open pay types'], ['fa-users', 'All / team / selected targeting'], ['fa-calendar-xmark', 'Validity window + withdraw'], ['fa-gauge', 'Per-person claim & ₹ caps'], ['fa-bullhorn', 'Auto announcements'], ['fa-chart-line', 'Claims & ₹ per scheme']],
+                's' => ['Click New Scheme — title it the way you would announce it on the floor.', 'Choose how it pays and who it is for (team leaders can target only their own people).', 'Set the window and caps; Publish — announcements go out by themselves.', 'Agents pick the scheme in their claim form; everything fills in; approvals flow as usual.', 'Watch the Claims column; Withdraw any time — existing claims stay.'],
+                'tip' => 'The scheme decides the money server-side — an agent cannot type a different rate. Expired or withdrawn schemes vanish from claim forms instantly but never touch claims already raised.',
+                'r' => ['Admin / HR — any scheme incl. company-wide', 'Managers & Team Leaders — schemes for their own people', 'Employees — see and claim what applies to them'],
+                'rel' => 'Also see: Commission Entries, Live Salary, Commission Calculator',
             ],
             'commission-calc' => [
                 'm' => 'Compensation & Claims', 't' => 'Commission Calculator', 'g' => 'Bulk compute from collection sheets',

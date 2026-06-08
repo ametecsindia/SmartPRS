@@ -58,8 +58,8 @@ class Edition
     /** SaaS-platform-only surfaces (hidden on EVERY on-prem edition). */
     private const SAAS_ONLY = ['platform-dashboard', 'tenants', 'plans', 'subscriptions', 'invoices', 'payments', 'gateways', 'my-subscription'];
 
-    /** Level-3 DNA nav ids (hidden on l1 + l2). */
-    private const DNA = ['live-salary', 'pay-ledger', 'commissions', 'commission-calc', 'clawbacks', 'escalations', 'offroll-agents', 'agent-auth', 'compliance-alerts', 'roster', 'complaints'];
+    /** Level-3 DNA nav ids (hidden on l1 + l2). rev 115: + incentive-schemes (module 3.1). */
+    private const DNA = ['live-salary', 'pay-ledger', 'commissions', 'commission-calc', 'incentive-schemes', 'clawbacks', 'escalations', 'offroll-agents', 'agent-auth', 'compliance-alerts', 'roster', 'complaints'];
 
     /** Level-2 module nav ids (hidden on l1). */
     private const L2_MODULES = [
@@ -98,7 +98,7 @@ class Edition
     /** DNA endpoints — blocked on l1 + l2 (ALL methods: data stays invisible). */
     private const BLOCK_DNA = [
         '#^app/requests/commissions#', '#^app/requests/salary-pay#', '#^app/requests/clawbacks#',
-        '#^app/incentive#', '#^app/live-salary#', '#^app/offroll-agent#',
+        '#^app/incentive#', '#^app/schemes#', '#^app/live-salary#', '#^app/offroll-agent#',
         '#^app/compliance-alerts#', '#^app/master/(escalations|agent-auth|roster|complaints)(/|$)#',
         '#^app/recruitment/(messages|campaigns|campaign|drives|drive|message)(/|$)#',   // 3.3 volume hiring
         '#^webhooks/interakt#',

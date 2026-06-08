@@ -51,6 +51,13 @@ class TenantBillingController extends Controller
             if (Schema::hasTable('renewals') && ! Schema::hasColumn('renewals', 'mode')) {
                 Schema::table('renewals', fn (Blueprint $t) => $t->string('mode', 12)->default('renew'));
             }
+            // rev 112: discount coupons on renewals.
+            if (Schema::hasTable('renewals') && ! Schema::hasColumn('renewals', 'coupon_code')) {
+                Schema::table('renewals', function (Blueprint $t) {
+                    $t->string('coupon_code', 40)->nullable();
+                    $t->decimal('coupon_discount', 12, 2)->default(0);
+                });
+            }
             if (Schema::hasTable('subscriptions') && ! Schema::hasColumn('subscriptions', 'companies')) {
                 Schema::table('subscriptions', fn (Blueprint $t) => $t->integer('companies')->default(1));
             }
@@ -150,6 +157,9 @@ class TenantBillingController extends Controller
                 'invoices' => $invoices,
                 'plans' => $this->activePlans(),
                 'canPay' => (bool) BillingController::razorpayCreds(),
+                // rev 113b: coupon input in the renew dialog only when public
+                // coupons are live; an exclusive auto-apply reveals itself anyway.
+                'couponsEnabled' => \App\Services\CouponService::publicCouponsExist('renewal'),
             ]);
         } catch (\Throwable $e) {
             return response()->json(['error' => $e->getMessage()]);
@@ -200,6 +210,7 @@ class TenantBillingController extends Controller
                 'companies' => ['nullable', 'integer', 'min:1', 'max:100'],
                 'cycle' => ['required', 'in:quarterly,halfyear,annual'],
                 'mode' => ['nullable', 'in:renew,upgrade'],
+                'coupon' => ['nullable', 'string', 'max:40'],   // rev 112: renew mode only
             ]);
             $plan = DB::table('plans')->where('id', $v['plan_id'])->where('status', 'active')->first();
             if (! $plan) {
@@ -222,6 +233,23 @@ class TenantBillingController extends Controller
                 return response()->json(['ok' => true, 'summary' => $pp, 'plan' => $plan->name, 'mode' => 'upgrade']);
             }
             $price = BillingController::priceFor($plan, (int) $v['seats'], $v['cycle'], $companies);
+            // rev 112: coupon (renew mode only — upgrades pay a pro-rata difference).
+            // rev 113: no code given → AUTO-APPLY any exclusive offer sent to the
+            // workspace owner's email (unless the user removed it — no_auto).
+            $ownerEmail = DB::table('tenants')->where('id', $tid)->value('owner_email');
+            if (! empty($v['coupon'])) {
+                [$coupon, $cErr] = \App\Services\CouponService::validate($v['coupon'], (int) $plan->id, $v['cycle'], 'renewal', $ownerEmail, $tid);
+                if ($cErr) {
+                    return response()->json(['ok' => false, 'error' => $cErr], 422);
+                }
+                $price = \App\Services\CouponService::apply($price, $coupon);
+            } elseif (! $request->boolean('no_auto')) {
+                $auto = \App\Services\CouponService::forEmail($ownerEmail, (int) $plan->id, $v['cycle'], 'renewal', $tid);
+                if ($auto) {
+                    $price = \App\Services\CouponService::apply($price, $auto);
+                    $price['coupon_auto'] = 1;
+                }
+            }
 
             return response()->json(['ok' => true, 'summary' => $price, 'plan' => $plan->name, 'mode' => 'renew']);
         } catch (\Illuminate\Validation\ValidationException $e) {
@@ -243,6 +271,7 @@ class TenantBillingController extends Controller
                 'companies' => ['nullable', 'integer', 'min:1', 'max:100'],
                 'cycle' => ['required', 'in:quarterly,halfyear,annual'],
                 'mode' => ['nullable', 'in:renew,upgrade'],
+                'coupon' => ['nullable', 'string', 'max:40'],   // rev 112: renew mode only
             ]);
             $mode = $v['mode'] ?? 'renew';
             $plan = DB::table('plans')->where('id', $v['plan_id'])->where('status', 'active')->first();
@@ -279,16 +308,33 @@ class TenantBillingController extends Controller
             } else {
                 $price = BillingController::priceFor($plan, (int) $v['seats'], $v['cycle'], $companies);
                 $cycleStored = $v['cycle'];
+                // rev 112: coupon (renew mode only) — re-validated here, never trusted from quote.
+                // rev 113: empty code + no dismissal → auto-apply the exclusive offer
+                // (mirrors quote() so the paid amount always equals the quoted amount).
+                $ownerEmail = DB::table('tenants')->where('id', $tid)->value('owner_email');
+                if (! empty($v['coupon'])) {
+                    [$coupon, $cErr] = \App\Services\CouponService::validate($v['coupon'], (int) $plan->id, $v['cycle'], 'renewal', $ownerEmail, $tid);
+                    if ($cErr) {
+                        return response()->json(['ok' => false, 'error' => $cErr], 422);
+                    }
+                    $price = \App\Services\CouponService::apply($price, $coupon);
+                } elseif (! $request->boolean('no_auto')) {
+                    $auto = \App\Services\CouponService::forEmail($ownerEmail, (int) $plan->id, $v['cycle'], 'renewal', $tid);
+                    if ($auto) {
+                        $price = \App\Services\CouponService::apply($price, $auto);
+                    }
+                }
             }
             $paise = (int) round($price['total'] * 100);
 
             $uuid = (string) Str::uuid();
-            $renewalId = DB::table('renewals')->insertGetId([
+            $renewalId = DB::table('renewals')->insertGetId(ApprovalService::safeRow('renewals', [
                 'uuid' => $uuid, 'tenant_id' => $tid, 'plan_id' => $plan->id,
                 'seats' => (int) $v['seats'], 'companies' => $companies, 'mode' => $mode, 'cycle' => $cycleStored,
                 'amount' => $price['amount'], 'tax' => $price['tax'],
+                'coupon_code' => $price['coupon_code'] ?? null, 'coupon_discount' => $price['coupon_discount'] ?? 0,
                 'status' => 'pending', 'created_at' => now(), 'updated_at' => now(),
-            ]);
+            ]));
 
             $resp = Http::withBasicAuth($creds['key'], $creds['secret'])
                 ->asForm()->post('https://api.razorpay.com/v1/orders', [
@@ -428,10 +474,29 @@ class TenantBillingController extends Controller
             // Invoice for the renewed period (created due, then marked paid).
             $inv = BillingController::createInvoiceForTenant($tid);
         }
-        DB::table('invoices')->where('id', $inv->id)->update(ApprovalService::safeRow('invoices', [
-            'gateway_order_id' => $orderId, 'updated_at' => now(),
-        ]));
+        // rev 112: with a coupon the invoice must show what was ACTUALLY charged
+        // (the renewals row holds the discounted amount/tax); the subscription
+        // row above keeps the FULL rate so the NEXT renewal bills full price.
+        $couponDisc = (float) ($r->coupon_discount ?? 0);
+        $invPatch = ['gateway_order_id' => $orderId, 'updated_at' => now()];
+        if (! $isUpgrade && $couponDisc > 0) {
+            $invPatch['amount'] = (float) $r->amount;
+            $invPatch['tax'] = (float) $r->tax;
+        }
+        DB::table('invoices')->where('id', $inv->id)->update(ApprovalService::safeRow('invoices', $invPatch));
+        $inv = DB::table('invoices')->where('id', $inv->id)->first();
         BillingController::recordPayment($inv, 'razorpay', 'razorpay', $paymentId);
+        if (! $isUpgrade && $couponDisc > 0 && ! empty($r->coupon_code)) {
+            try {
+                $cpn = DB::table('coupons')->where('code', $r->coupon_code)->first();
+                $ownerEmail = DB::table('tenants')->where('id', $tid)->value('owner_email');
+                if ($cpn) {
+                    \App\Services\CouponService::redeem($cpn, 'renewal', $couponDisc, $ownerEmail, $tid);
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('renewal coupon redeem: '.$e->getMessage());
+            }
+        }
 
         DB::table('renewals')->where('id', $r->id)->update(['status' => 'done', 'updated_at' => now()]);
 

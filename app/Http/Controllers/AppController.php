@@ -119,6 +119,7 @@ class AppController extends Controller
             'leaveDecideUrl' => url('/app/leaves'),   // + /{id}/decide
             'approvalsUrl' => route('app.approvals'),
             'requestsBase' => url('/app/requests'),   // + /{module}  and  /{module}/{id}/decide
+            'schemesBase' => url('/app/schemes'),     // rev 115: + /for-me, /{id}/withdraw
             'masterBase' => url('/app/master'),       // + /{type}, /{type}/{id}/delete
             'cocUrl' => url('/app/code-of-conduct'),   // Code of Conduct read + acknowledge (+ /ack)
             'incentiveBase' => url('/app/incentive'),   // commission/incentive calc: /template /calculate /commit
@@ -354,6 +355,7 @@ CSS;
         safe(function () { addLogout(cfg); });
         safe(function () { addAccountMenu(cfg); });
         safe(function () { injectAdminLinks(cfg); });
+        safe(function () { wirePlatformNavIcons(); });
         safe(function () { injectMySubNav(cfg); });
         safe(function () { injectTransfersNav(); });
         safe(function () { injectLiveSalaryNav(cfg); });
@@ -701,6 +703,29 @@ CSS;
         if (sb) { sb.addEventListener('click', function (e) { if (e.target.closest('.nav-item')) { document.body.classList.remove('nav-open'); } }); }
     }
     // Add super-admin admin-panel links (Laravel pages) into the SaaS Platform sidebar section.
+    // rev 113c (Ejaz screenshot): the native SaaS Platform nav items have no
+    // icons while the injected admin links do — give them matching icons.
+    // Idempotent: skips any item that already carries an <i>.
+    function wirePlatformNavIcons() {
+        var map = {
+            'platform-dashboard': 'fa-gauge-high',
+            'tenants': 'fa-building-user',
+            'plans': 'fa-tags',
+            'subscriptions': 'fa-rotate',
+            'invoices': 'fa-file-invoice',
+            'payments': 'fa-indian-rupee-sign',
+            'gateways': 'fa-credit-card'
+        };
+        Object.keys(map).forEach(function (id) {
+            document.querySelectorAll('.nav-item[data-id="' + id + '"]').forEach(function (el) {
+                if (el.querySelector('i')) { return; }
+                var ic = document.createElement('i');
+                ic.className = 'fas ' + map[id];
+                el.insertBefore(ic, el.firstChild);
+                el.insertBefore(document.createTextNode(' '), ic.nextSibling);
+            });
+        });
+    }
     function injectAdminLinks(cfg) {
         if (cfg.role !== 'Super Admin') { return; }
         // rev 103: on-prem editions have no SaaS platform surfaces at all.
@@ -737,6 +762,8 @@ CSS;
         sec.appendChild(mk('/admin/landing', 'fa-globe', 'Landing Page (CMS)'));
         sec.appendChild(mk('/admin/leads', 'fa-bullseye', 'Leads (Demo Requests)'));
         sec.appendChild(mk('/admin/quotations', 'fa-file-invoice', 'Quotations'));
+        // rev 112: campaign discount coupons.
+        sec.appendChild(mk('/admin/coupons', 'fa-ticket', 'Coupons'));
         // rev 107: perpetual-licence sales desk + release/update distribution.
         sec.appendChild(mk('/admin/onprem', 'fa-building-lock', 'On-Prem Clients & Licences'));
         sec.appendChild(mk('/admin/releases', 'fa-cloud-arrow-up', 'Releases & Updates'));
@@ -1196,6 +1223,7 @@ CSS;
             if (id === 'performance') { return performanceScreen(); }
             if (id === 'code-of-conduct') { return codeOfConductScreen(); }
             if (id === 'late-policy') { return latePolicyScreen(); }
+            if (id === 'incentive-schemes') { return schemesScreen(); }
             if (id === 'commission-calc') { return commissionCalcScreen(); }
             if (id === 'fin-year') { return finYearScreen(); }
             if (id === 'my-subscription') { return mySubScreen(); }
@@ -1535,14 +1563,28 @@ CSS;
         'advance': { m: 'advances', title: 'Salary Advance', amount: true, fields: [{ k: 'reason', l: 'Reason' }] },
         'loans': { m: 'loans', title: 'Loans & Advances', amount: true, fields: [{ k: 'emi', l: 'EMI (₹)', t: 'number' }, { k: 'tenure_months', l: 'Tenure (months)', t: 'number' }, { k: 'reason', l: 'Purpose' }] },
         'commissions': { m: 'commissions', title: 'Commission Entries', single: 'Commission Entry', amount: true, amountRO: 'Net Payable (₹) — auto: Gross − TDS', fields: [
+            // rev 116d: TWO claim types — collection (evidence + accounts stage)
+            // vs simple (target/bonus, manager approval only).
+            { k: 'claim_type', l: 'Claim Type', opts: ['Collection claim — money collected from a customer', 'Simple claim — target / bonus / special incentive'], oninput: 'commClaimTypeToggle()' },
             { k: 'purpose', l: 'Purpose', opts: ['EMI Collection', 'Settlement / OTS', 'Recovery Incentive', 'Penalty Collection', 'Repo / Seizure', 'Target Bonus', 'Field Visit Allowance', 'Other'] },
             { k: 'cycle_month', l: 'For Month', t: 'month' },
+            { k: 'customer_name', l: 'Customer Name' },
+            { k: 'account_ref', l: 'Account No / CC No / Customer ID' },
+            { k: 'collection_type', l: 'What Was Collected', opts: ['EMI', 'Penalty', 'Settlement / OTS', 'Part-payment', 'Multiple', 'Other'] },
+            { k: 'collected_at', l: 'Collected On (date & time)', t: 'datetime-local' },
+            { k: 'collection_location', l: 'Collection Location' },
+            { k: 'collection_mode', l: 'Mode of Collection', opts: ['Cash — submitted to office', 'Cash — deposited to bank', 'Client paid company directly', 'Online to company account'] },
             { k: 'portfolio', l: 'Portfolio / Bank' },
-            { k: 'gross_amount', l: 'Gross Amount (₹)', t: 'number', oninput: 'rqCommCalc()' },
+            // rev 116c (Ejaz): TWO clearly-named amounts — what the CUSTOMER paid
+            // vs what the AGENT is claiming as commission.
+            { k: 'base_amount', l: 'Amount Collected from Customer (₹)', t: 'number', oninput: 'schemeBaseCalc()' },
+            { k: 'gross_amount', l: 'Commission Claimed — Gross (₹), before TDS', t: 'number', oninput: 'rqCommCalc()' },
             { k: 'tds_rate', l: 'TDS % (194H)', t: 'number', oninput: 'rqCommCalc()', defRate: 1 },
             { k: 'payout_date', l: 'Payout Date (decides which payslip pays it)', t: 'date' },
             { k: 'payout_method', l: 'Payout Method', opts: ['With salary (in the payslip)', 'Separate payout (own dates - ledger)'] },
-            { k: 'description', l: 'Short Description' }] },
+            { k: 'description', l: 'Short Description' },
+            { k: 'scheme_id', hidden: 1 },
+            { k: 'proof_path', hidden: 1 }] },
         'clawbacks': { m: 'clawbacks', title: 'Clawbacks / Reversals', amount: true, fields: [{ k: 'portfolio', l: 'Portfolio' }, { k: 'cycle_month', l: 'Month' }, { k: 'reason', l: 'Reason' }] },
         'increments': { m: 'increments', title: 'Increment / Appraisal', single: 'Increment / Appraisal', amount: false, fields: [
             { k: 'cycle', l: 'Cycle', opts: ['Annual', 'Half-yearly', 'Quarterly', 'Promotion', 'Special / Market correction', 'Confirmation'] },
@@ -1647,6 +1689,24 @@ CSS;
             // approved entry; Admin can Lock manually. History always available.
             if (navId === 'commissions') {
                 act += ' <a onclick="commHist(' + r.id + ')" title="Full history of this entry" style="cursor:pointer;color:#4f46e5;font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-clock-rotate-left"></i> History</a>';
+                // rev 116: collection evidence — proof link + ACCOUNTS stage chip
+                // + Confirm/Flag actions for the Accounts role.
+                if (r.hasProof) {
+                    act += ' <a href="' + cfg.requestsBase + '/commissions/' + r.id + '/proof" target="_blank" rel="noopener" title="View the payment proof"><i class="fas fa-receipt" style="color:#0891b2;margin-left:8px"></i></a>';
+                }
+                if (r.accountsStatus === 'pending') {
+                    act += ' <span style="background:#fef3c7;color:#92400e;font-size:10px;font-weight:800;padding:2px 8px;border-radius:99px;margin-left:8px;white-space:nowrap"><i class="fas fa-hourglass-half"></i> ACCOUNTS PENDING</span>';
+                } else if (r.accountsStatus === 'confirmed') {
+                    act += ' <span title="' + (r.accountsBy || '') + '" style="background:#dcfce7;color:#15803d;font-size:10px;font-weight:800;padding:2px 8px;border-radius:99px;margin-left:8px;white-space:nowrap"><i class="fas fa-check"></i> ACCOUNTS OK</span>';
+                } else if (r.accountsStatus === 'flagged') {
+                    act += ' <span title="' + (r.accountsNote || '') + '" style="background:#fee2e2;color:#991b1b;font-size:10px;font-weight:800;padding:2px 8px;border-radius:99px;margin-left:8px;white-space:nowrap"><i class="fas fa-flag"></i> ACCOUNTS FLAGGED</span>';
+                }
+                if (d.canAccounts && (r.accountsStatus === 'pending' || r.accountsStatus === 'flagged') && !r.locked) {
+                    act += ' <a onclick="commAccounts(' + r.id + ',&#39;confirm&#39;)" title="Confirm the money was received" style="cursor:pointer;color:#15803d;font-size:12px;margin-left:8px;white-space:nowrap;font-weight:700"><i class="fas fa-check-double"></i> Confirm</a>';
+                    if (r.accountsStatus === 'pending') {
+                        act += ' <a onclick="commAccounts(' + r.id + ',&#39;flag&#39;)" title="Flag a problem with this collection" style="cursor:pointer;color:#b91c1c;font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-flag"></i> Flag</a>';
+                    }
+                }
                 // rev 85: disbursement — Record payment on approved SEPARATE
                 // entries with balance; paid/partial chip for everyone.
                 if (r.paidTotal > 0) {
@@ -1714,6 +1774,9 @@ CSS;
         var amountHtml = rc.amount ? '<div><label style="' + lbl + '">' + (rc.amountRO || 'Amount (₹)') + '</label><input id="rq_amount" type="number"' + (rc.amountRO ? ' readonly tabindex="-1"' : '') + ' style="' + inp + (rc.amountRO ? ';background:#eef2f7;color:var(--text2);font-weight:700' : '') + '"></div>' : '';
         if (rc.amount && !rc.amountRO) { f += amountHtml; }
         rc.fields.forEach(function (fl) {
+            // rev 115: hidden carrier fields (scheme_id / base_amount) — collected
+            // by the generic saver but never shown to the user.
+            if (fl.hidden) { f += '<input type="hidden" id="rqf_' + fl.k + '">'; return; }
             var extraAttr = fl.oninput ? ' oninput="' + fl.oninput + '"' : '';
             var defVal = '';
             if (fl.defRate) { defVal = '5'; try { var rr = spRates(); if (rr && rr.comm_tds_rate != null) { defVal = String(rr.comm_tds_rate); } } catch (e) {} }
@@ -1744,6 +1807,532 @@ CSS;
         var net = g > 0 ? Math.round((g - (g * rt / 100)) * 100) / 100 : 0;
         var a = document.getElementById('rq_amount'); if (a) { a.value = net > 0 ? net : ''; }
     };
+    // ---- rev 115: COMMISSION & INCENTIVE SCHEMES screen ----------------------
+    window.__SCHEMES = null;
+    function schemesLoad() {
+        fetch(cfg.schemesBase, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__SCHEMES = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__SCHEMES = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function schemeStateChip(st) {
+        var map = { active: ['#dcfce7', '#166534', 'ACTIVE'], upcoming: ['#dbeafe', '#1d4ed8', 'UPCOMING'], expired: ['#f1f5f9', '#64748b', 'EXPIRED'], withdrawn: ['#fee2e2', '#991b1b', 'WITHDRAWN'], pending: ['#fef3c7', '#92400e', 'PENDING APPROVAL'], rejected: ['#fee2e2', '#991b1b', 'REJECTED'] };
+        var c = map[st] || map.expired;
+        return '<span style="background:' + c[0] + ';color:' + c[1] + ';font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px">' + c[2] + '</span>';
+    }
+    // rev 115g: full detail view — creation + approval trail + claims.
+    window.schemeView = function (id) {
+        var rows = (window.__SCHEMES && window.__SCHEMES.rows) || [];
+        var s = rows.find(function (x) { return String(x.id) === String(id); });
+        if (!s) { return; }
+        var row = function (a, b) { return '<div style="display:flex;justify-content:space-between;gap:14px;padding:7px 0;border-bottom:1px solid var(--border);font-size:13.5px"><span style="color:var(--text3)">' + a + '</span><b style="text-align:right">' + (b || '—') + '</b></div>'; };
+        var trail = row('Created by', (s.createdBy || '') + (s.createdAt ? ' · ' + s.createdAt : ''));
+        if (s.approvalStatus === 'pending') { trail += row('Approval', 'PENDING — awaiting ' + (s.approver || 'Admin / HR')); }
+        else if (s.approvalStatus === 'rejected') { trail += row('Approval', 'REJECTED by ' + (s.decidedBy || '') + (s.decidedAt ? ' · ' + s.decidedAt : '') + (s.rejectReason ? '<br>' + s.rejectReason : '')); }
+        else { trail += row('Approval', s.decidedBy ? ('Approved by ' + s.decidedBy + (s.decidedAt ? ' · ' + s.decidedAt : '')) : 'Instant (published by Admin / HR)'); }
+        var caps = [];
+        if (s.maxClaims) { caps.push(s.maxClaims + ' claims/person'); }
+        if (s.maxAmount) { caps.push('Rs ' + s.maxAmount + ' gross/person'); }
+        commModal('<div class="card" style="max-width:560px;width:100%;padding:24px 26px;margin:auto">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h3 style="margin:0;font-size:17px">' + s.title + '</h3><button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="margin-bottom:10px">' + schemeStateChip(s.state) + '</div>'
+            + row('Pays', schemeRateText(s) + (s.tdsRate !== null && s.tdsRate !== undefined ? ' · TDS ' + s.tdsRate + '%' : ''))
+            + row('Purpose / Portfolio', (s.purpose || '') + (s.portfolio ? ' · ' + s.portfolio : ''))
+            + row('Payout', s.payoutMethod === 'separate' ? 'Separate payout (ledger)' : 'With salary (payslip)')
+            + row('Applies to', schemeAppliesText(s))
+            + row('Window', (s.from || '—') + ' → ' + (s.till || 'open'))
+            + row('Caps', caps.join(' · ') || 'No caps')
+            + trail
+            + row('Claims', s.claims + ' raised · ' + s.approved + ' approved · ' + (s.pendingClaims || 0) + ' pending · Rs ' + (s.approvedGross || 0) + ' approved gross')
+            + (s.notes ? row('Note', s.notes) : '')
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">'
+            + (s.canDecide ? '<button class="btn btn-primary" onclick="commModalClose();schemeDecide(' + s.id + ',&#39;approve&#39;)"><i class="fas fa-check"></i> Approve</button><button class="btn btn-outline" style="color:var(--red)" onclick="commModalClose();schemeDecide(' + s.id + ',&#39;reject&#39;)">Reject</button>' : '')
+            + (s.canEdit ? '<button class="btn btn-outline" onclick="commModalClose();schemeFormOpen(' + s.id + ')"><i class="fas fa-pen"></i> Edit</button>' : '')
+            + (s.canReopen ? '<button class="btn" style="background:#16a34a;color:#fff" onclick="commModalClose();schemeReopen(' + s.id + ')"><i class="fas fa-rotate-left"></i> Re-open</button>' : '')
+            + '<button class="btn btn-outline" onclick="commModalClose()">Close</button>'
+            + '</div></div>');
+    };
+    // rev 115d: approve/reject a pending scheme (creator's reporting manager or Admin).
+    window.schemeDecide = function (id, action) {
+        var remarks = '';
+        if (action === 'reject') {
+            remarks = window.prompt('Reason for rejecting (the creator sees this):', '');
+            if (remarks === null) { return; }
+        } else if (!window.confirm('Approve this scheme? It goes LIVE immediately and the team is announced.')) { return; }
+        fetch(cfg.schemesBase + '/' + id + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action, remarks: remarks }) })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Done'); } window.__SCHEMES = null; schemesLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Action failed'); }
+            }).catch(function () {});
+    };
+    function schemeAppliesText(s) {
+        if (s.appliesTo === 'all') { return 'All employees'; }
+        if (s.appliesTo === 'team') { return 'Team: ' + (s.team || ''); }
+        return (s.employeeIds || []).length + ' selected people';
+    }
+    function schemesScreen() {
+        var d = window.__SCHEMES;
+        if (!d) { setTimeout(function () { if (!window.__SCHEMES) { schemesLoad(); } }, 10); return pghead('Incentive Schemes', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading schemes…</div></div>'; }
+        var rows = d.rows || [];
+        var btn = '<button class="btn btn-primary" onclick="schemeFormOpen()"><i class="fas fa-plus"></i> New Scheme</button>';
+        var body = rows.map(function (s) {
+            var caps = [];
+            if (s.maxClaims) { caps.push(s.maxClaims + ' claims/person'); }
+            if (s.maxAmount) { caps.push('Rs ' + s.maxAmount + '/person'); }
+            return '<tr>'
+                + '<td><a onclick="schemeView(' + s.id + ')" style="cursor:pointer"><b style="color:var(--accent);text-decoration:underline;text-decoration-style:dotted">' + s.title + '</b></a><div style="font-size:11.5px;color:var(--text3)">' + (s.purpose || '') + (s.portfolio ? ' · ' + s.portfolio : '') + (s.notes ? ' · ' + s.notes : '') + '</div></td>'
+                + '<td>' + schemeRateText(s) + (s.tdsRate !== null && s.tdsRate !== undefined ? '<div style="font-size:11px;color:var(--text3)">TDS ' + s.tdsRate + '%</div>' : '') + '</td>'
+                + '<td>' + schemeAppliesText(s) + '<div style="font-size:11px;color:var(--text3)">' + (s.payoutMethod === 'separate' ? 'Separate payout' : 'With salary') + '</div></td>'
+                + '<td style="white-space:nowrap">' + (s.from || '—') + ' → ' + (s.till || 'open') + (caps.length ? '<div style="font-size:11px;color:var(--text3)">' + caps.join(' · ') + '</div>' : '') + '</td>'
+                + '<td style="text-align:center"><b>' + s.claims + '</b> raised<div style="font-size:11px;color:var(--text3)">' + s.approved + ' approved · Rs ' + (s.approvedGross || 0) + '</div></td>'
+                + '<td>' + schemeStateChip(s.state)
+                + '<div style="font-size:11px;color:var(--text3);margin-top:3px">by ' + (s.createdBy || '') + '</div>'
+                + (s.state === 'pending' && s.approver ? '<div style="font-size:11px;color:#92400e">awaiting ' + s.approver + '</div>' : '')
+                + (s.state === 'rejected' ? '<div style="font-size:11px;color:#991b1b">' + (s.decidedBy ? 'by ' + s.decidedBy : '') + (s.rejectReason ? ' · ' + s.rejectReason : '') + '</div>' : '')
+                + (s.approvalStatus === 'approved' && s.decidedBy ? '<div style="font-size:11px;color:#166534">approved by ' + s.decidedBy + '</div>' : '')
+                + '</td>'
+                + '<td style="white-space:nowrap">'
+                + (s.canDecide ? '<button class="btn btn-primary btn-sm" onclick="schemeDecide(' + s.id + ',&#39;approve&#39;)"><i class="fas fa-check"></i> Approve</button> <button class="btn btn-outline btn-sm" onclick="schemeDecide(' + s.id + ',&#39;reject&#39;)" style="color:var(--red)">Reject</button> ' : '')
+                + (s.canEdit ? '<button class="btn btn-outline btn-sm" onclick="schemeFormOpen(' + s.id + ')"><i class="fas fa-pen"></i> Edit</button> ' : '')
+                + (s.canReopen ? '<button class="btn btn-sm" style="background:#16a34a;color:#fff" onclick="schemeReopen(' + s.id + ')"><i class="fas fa-rotate-left"></i> Re-open</button> ' : '')
+                + (s.state === 'active' || s.state === 'upcoming' || s.state === 'pending' ? '<button class="btn btn-outline btn-sm" onclick="schemeWithdraw(' + s.id + ')" style="color:var(--red)">Withdraw</button>' : '')
+                + '</td>'
+                + '</tr>';
+        }).join('');
+        return pghead('Commission & Incentive Schemes', 'Publish offers your people claim against — month-wise, weekly or portfolio-wise, with expiry, caps and automatic announcements', btn)
+            + '<div class="card" style="padding:0;overflow-x:auto"><table class="tbl" style="width:100%"><thead><tr><th>Scheme</th><th>Pays</th><th>Applies to</th><th>Window & caps</th><th style="text-align:center">Claims</th><th>Status</th><th></th></tr></thead><tbody>'
+            + (body || '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:34px">No schemes yet. Click "New Scheme" — your people get notified the moment you publish, and the offer appears in their claim form automatically.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.schemeFormRate = function () {
+        var t = (document.getElementById('sf_rate_type') || {}).value || 'open';
+        var lab = document.getElementById('sf_rate_lab');
+        var inp = document.getElementById('sf_rate_value');
+        if (lab) { lab.textContent = t === 'percent' ? 'RATE — % OF COLLECTED AMOUNT' : (t === 'fixed' ? 'FIXED ₹ PER CLAIM' : 'RATE (NOT USED FOR OPEN ENTRIES)'); }
+        if (inp) { inp.disabled = (t === 'open'); if (t === 'open') { inp.value = ''; } }
+    };
+    window.schemeFormApplies = function () {
+        var t = (document.getElementById('sf_applies') || {}).value || 'all';
+        var tr = document.getElementById('sf_team_row'); if (tr) { tr.style.display = t === 'team' ? 'block' : 'none'; }
+        var er = document.getElementById('sf_emp_row'); if (er) { er.style.display = t === 'selected' ? 'block' : 'none'; }
+        if (t === 'selected') { schemeEmpRender(); }   // rev 115b: build the cascading picker
+    };
+    // rev 115b (Ejaz): big teams — cascading picker Company → Branch → Team →
+    // employees, with select-all-shown. Selections survive filter changes
+    // (window.__SF_SEL keeps emp_code → name across re-renders).
+    window.__SF_SEL = {};
+    function sfCompanyName(e) {
+        try {
+            var cs = (DB.companies || []);
+            var c = cs.find(function (x) { return String(x.id) === String(e.companyId || e.company_id || ''); });
+            return c ? c.name : (e.company || '');
+        } catch (er) { return e.company || ''; }
+    }
+    function sfFiltered() {
+        var emps = ((typeof DB !== 'undefined' && DB.employees) || []);
+        var co = (document.getElementById('sf_f_co') || {}).value || '';
+        var br = (document.getElementById('sf_f_br') || {}).value || '';
+        var tm = (document.getElementById('sf_f_tm') || {}).value || '';
+        return emps.filter(function (e) {
+            if (co && sfCompanyName(e) !== co) { return false; }
+            if (br && (e.branch || '') !== br) { return false; }
+            if (tm && (e.team || '') !== tm) { return false; }
+            return true;
+        });
+    }
+    window.schemeEmpFilter = function (level) {
+        // Changing an upper filter resets the ones below it.
+        if (level === 'co') { var b = document.getElementById('sf_f_br'); if (b) { b.value = ''; } var t = document.getElementById('sf_f_tm'); if (t) { t.value = ''; } }
+        if (level === 'br') { var t2 = document.getElementById('sf_f_tm'); if (t2) { t2.value = ''; } }
+        schemeEmpRender();
+    };
+    window.schemeEmpPick = function (cb) {
+        if (cb.checked) { window.__SF_SEL[cb.value] = cb.getAttribute('data-name') || cb.value; }
+        else { delete window.__SF_SEL[cb.value]; }
+        schemeEmpCount();
+    };
+    window.schemeEmpAll = function (on) {
+        sfFiltered().forEach(function (e) {
+            if (on) { window.__SF_SEL[e.id] = e.name; } else { delete window.__SF_SEL[e.id]; }
+        });
+        schemeEmpRender();
+    };
+    function schemeEmpCount() {
+        var n = Object.keys(window.__SF_SEL).length;
+        var el = document.getElementById('sf_sel_count');
+        if (el) { el.textContent = n ? (n + ' selected') : 'none selected'; }
+    }
+    window.schemeEmpRender = function () {
+        var emps = ((typeof DB !== 'undefined' && DB.employees) || []);
+        var co = (document.getElementById('sf_f_co') || {}).value || '';
+        var br = (document.getElementById('sf_f_br') || {}).value || '';
+        var tm = (document.getElementById('sf_f_tm') || {}).value || '';
+        // Cascade option lists: branches within the company, teams within branch.
+        var cos = {}; var brs = {}; var tms = {};
+        emps.forEach(function (e) {
+            var cn = sfCompanyName(e);
+            if (cn) { cos[cn] = 1; }
+            if ((!co || cn === co) && e.branch) { brs[e.branch] = 1; }
+            if ((!co || cn === co) && (!br || (e.branch || '') === br) && e.team) { tms[e.team] = 1; }
+        });
+        var mkOpts = function (obj, cur, anyLabel) {
+            return '<option value="">' + anyLabel + '</option>' + Object.keys(obj).sort().map(function (k) { return '<option' + (k === cur ? ' selected' : '') + '>' + k + '</option>'; }).join('');
+        };
+        var coEl = document.getElementById('sf_f_co'); if (coEl) { coEl.innerHTML = mkOpts(cos, co, 'All companies'); }
+        var brEl = document.getElementById('sf_f_br'); if (brEl) { brEl.innerHTML = mkOpts(brs, br, 'All branches'); }
+        var tmEl = document.getElementById('sf_f_tm'); if (tmEl) { tmEl.innerHTML = mkOpts(tms, tm, 'All teams'); }
+        var list = sfFiltered();
+        var box = document.getElementById('sf_emp_list');
+        if (box) {
+            box.innerHTML = list.map(function (e) {
+                var on = window.__SF_SEL[e.id] ? ' checked' : '';
+                return '<label style="display:flex;align-items:center;gap:7px;font-size:13px;padding:3px 0;cursor:pointer"><input type="checkbox" value="' + e.id + '" data-name="' + e.name + '" onchange="schemeEmpPick(this)"' + on + '>' + e.name + ' <span style="color:var(--text3);font-size:11px">' + e.id + (e.team ? ' · ' + e.team : '') + (e.branch ? ' · ' + e.branch : '') + '</span></label>';
+            }).join('') || '<div style="color:var(--text3);font-size:13px;padding:8px 0">No employees match these filters</div>';
+        }
+        var shown = document.getElementById('sf_shown_count'); if (shown) { shown.textContent = list.length + ' shown'; }
+        schemeEmpCount();
+    };
+    window.schemeFormOpen = function (editId) {
+        window.__SF_SEL = {};
+        window.__SF_EDIT_ID = editId || null;
+        var ed = null;
+        if (editId) {
+            var rows0 = (window.__SCHEMES && window.__SCHEMES.rows) || [];
+            ed = rows0.find(function (x) { return String(x.id) === String(editId); }) || null;
+        }
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var emps = ((typeof DB !== 'undefined' && DB.employees) || []);
+        var teams = {};
+        emps.forEach(function (e) { if (e.team) { teams[e.team] = 1; } });
+        var teamOpts = Object.keys(teams).sort().map(function (t) { return '<option>' + t + '</option>'; }).join('');
+        var purposes = ['EMI Collection', 'Settlement / OTS', 'Recovery Incentive', 'Penalty Collection', 'Repo / Seizure', 'Target Bonus', 'Field Visit Allowance', 'Other'];
+        commModal('<div class="card" style="max-width:760px;width:100%;padding:26px 28px;margin:auto">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><h3 style="margin:0;font-size:18px">' + (ed ? 'Edit Scheme' : 'New Commission / Incentive Scheme') + '</h3><button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div>'
+            + (ed && ed.claims > 0 ? '<div style="background:#fef3c7;border:1px solid #fde68a;border-radius:10px;padding:11px 15px;margin-bottom:13px;font-size:13px;color:#92400e"><i class="fas fa-triangle-exclamation"></i> <b>This scheme has ' + ed.claims + ' claim(s).</b> Changing the rate or TDS will RECALCULATE all unlocked claims — approved ones go back to Pending for re-approval. Locked (payslip-paid) claims never change.</div>' : '')
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:13px">'
+            + '<div style="grid-column:1/3"><label style="' + lbl + '">Scheme title (your people see this)</label><input id="sf_title" style="' + inp + '" placeholder="e.g. June EMI Drive — HDFC portfolio"></div>'
+            + '<div><label style="' + lbl + '">Purpose (prefills the claim)</label><select id="sf_purpose" style="' + inp + '">' + purposes.map(function (p) { return '<option>' + p + '</option>'; }).join('') + '</select></div>'
+            + '<div><label style="' + lbl + '">Portfolio / Bank (optional)</label><input id="sf_portfolio" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">How it pays</label><select id="sf_rate_type" style="' + inp + '" onchange="schemeFormRate()"><option value="percent">% of collected amount</option><option value="fixed">Fixed ₹ per claim</option><option value="open">Open — agent enters amount</option></select></div>'
+            + '<div><label style="' + lbl + '" id="sf_rate_lab">RATE — % OF COLLECTED AMOUNT</label><input id="sf_rate_value" type="number" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">TDS % (blank = claim default)</label><input id="sf_tds" type="number" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Payout method</label><select id="sf_payout" style="' + inp + '"><option value="with_salary">With salary (payslip)</option><option value="separate">Separate payout (ledger)</option></select></div>'
+            + '<div><label style="' + lbl + '">Valid from</label><input id="sf_from" type="date" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Valid till (expiry)</label><input id="sf_till" type="date" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Who can claim</label><select id="sf_applies" style="' + inp + '" onchange="schemeFormApplies()"><option value="all">All employees</option><option value="team">One team</option><option value="selected">Selected people</option></select></div>'
+            + '<div id="sf_team_row" style="display:none"><label style="' + lbl + '">Team</label><input id="sf_team" list="sf_teams" style="' + inp + '"><datalist id="sf_teams">' + teamOpts + '</datalist></div>'
+            + '<div id="sf_emp_row" style="display:none;grid-column:1/3;border:1.5px solid var(--border);border-radius:9px;padding:12px 14px">'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:9px">'
+            + '<select id="sf_f_co" style="' + inp + '" onchange="schemeEmpFilter(&#39;co&#39;)"></select>'
+            + '<select id="sf_f_br" style="' + inp + '" onchange="schemeEmpFilter(&#39;br&#39;)"></select>'
+            + '<select id="sf_f_tm" style="' + inp + '" onchange="schemeEmpFilter(&#39;tm&#39;)"></select>'
+            + '</div>'
+            + '<div style="display:flex;gap:14px;align-items:center;font-size:12px;margin-bottom:7px">'
+            + '<a onclick="schemeEmpAll(1)" style="color:var(--accent);font-weight:700;cursor:pointer">Select all shown</a>'
+            + '<a onclick="schemeEmpAll(0)" style="color:var(--text3);cursor:pointer">Clear shown</a>'
+            + '<span id="sf_shown_count" style="color:var(--text3)"></span>'
+            + '<span id="sf_sel_count" style="margin-left:auto;background:#fff7ed;color:#9a3412;font-weight:700;padding:2px 10px;border-radius:99px">none selected</span>'
+            + '</div>'
+            + '<div id="sf_emp_list" style="max-height:170px;overflow:auto"></div>'
+            + '</div>'
+            + '<div><label style="' + lbl + '">Max claims / person (blank = unlimited)</label><input id="sf_max_claims" type="number" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Max ₹ gross / person (blank = unlimited)</label><input id="sf_max_amount" type="number" style="' + inp + '"></div>'
+            + '<div style="grid-column:1/3"><label style="' + lbl + '">Internal note (optional)</label><input id="sf_notes" style="' + inp + '"></div>'
+            + '<div style="grid-column:1/3;border:1.5px solid var(--border);border-radius:11px;padding:11px 14px">'
+            + '<label style="' + lbl + '">Announce to the selected people on</label>'
+            + '<div style="display:flex;gap:22px;flex-wrap:wrap;font-size:13.5px;margin-top:4px">'
+            + '<label style="display:flex;align-items:center;gap:7px;cursor:pointer"><input type="checkbox" id="sf_nf_email" checked style="width:16px;height:16px"><i class="fas fa-envelope" style="color:var(--text3)"></i> Email</label>'
+            + '<label style="display:flex;align-items:center;gap:7px;cursor:pointer"><input type="checkbox" id="sf_nf_wa" checked style="width:16px;height:16px"><i class="fab fa-whatsapp" style="color:#16a34a"></i> WhatsApp</label>'
+            + '<label style="display:flex;align-items:center;gap:7px;cursor:pointer"><input type="checkbox" id="sf_nf_notice" checked style="width:16px;height:16px"><i class="fas fa-thumbtack" style="color:var(--accent)"></i> Notice board</label>'
+            + '</div>'
+            + '<div style="font-size:11.5px;color:var(--text3);margin-top:5px">Untick all = silent publish (the scheme still appears in claim forms and on Live Salary).</div>'
+            + '</div>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px"><button class="btn btn-outline" onclick="commModalClose()">Cancel</button><button class="btn btn-primary" id="sf_save" onclick="schemeFormSave()"><i class="fas fa-bullhorn"></i> ' + (ed ? 'Save changes' : 'Publish scheme') + '</button></div>'
+            + '</div>');
+        // rev 115g: EDIT — prefill after the modal exists (no attribute-escaping risk).
+        if (ed) {
+            var sv = function (id2, v2) { var el2 = document.getElementById(id2); if (el2 && v2 !== null && v2 !== undefined) { el2.value = v2; } };
+            sv('sf_title', ed.title);
+            var pe = document.getElementById('sf_purpose');
+            if (pe && ed.purpose) {
+                var hasP = false;
+                for (var pi = 0; pi < pe.options.length; pi++) { if (pe.options[pi].text === ed.purpose) { hasP = true; } }
+                if (!hasP) { var po = document.createElement('option'); po.text = ed.purpose; pe.add(po); }
+                pe.value = ed.purpose;
+            }
+            sv('sf_portfolio', ed.portfolio);
+            sv('sf_rate_type', ed.rateType); schemeFormRate();
+            sv('sf_rate_value', ed.rateValue);
+            sv('sf_tds', ed.tdsRate);
+            sv('sf_payout', ed.payoutMethod);
+            sv('sf_from', ed.from);
+            sv('sf_till', ed.till);
+            sv('sf_applies', ed.appliesTo);
+            sv('sf_team', ed.team);
+            sv('sf_max_claims', ed.maxClaims);
+            sv('sf_max_amount', ed.maxAmount);
+            sv('sf_notes', ed.notes);
+            (ed.employeeCodes || []).forEach(function (cd) {
+                var emp0 = ((typeof DB !== 'undefined' && DB.employees) || []).find(function (e0) { return String(e0.id) === String(cd); });
+                window.__SF_SEL[cd] = emp0 ? emp0.name : cd;
+            });
+            // Edit: restore the creator's channel choices (default: none re-announced).
+            var chs = ed.notifyChannels || [];
+            var setCh = function (id3, key) { var el3 = document.getElementById(id3); if (el3) { el3.checked = chs.indexOf(key) >= 0; } };
+            setCh('sf_nf_email', 'email'); setCh('sf_nf_wa', 'wa'); setCh('sf_nf_notice', 'notice');
+            schemeFormApplies();
+        }
+    };
+    window.schemeFormSave = function () {
+        var val = function (id) { var el = document.getElementById(id); return el ? el.value : ''; };
+        if (!val('sf_title').trim()) { if (typeof toast === 'function') { toast('Give the scheme a title'); } return; }
+        // rev 115b: selections persist across filter changes in __SF_SEL.
+        var codes = Object.keys(window.__SF_SEL || {});
+        var body = {
+            title: val('sf_title').trim(), purpose: val('sf_purpose'), portfolio: val('sf_portfolio'),
+            rate_type: val('sf_rate_type'), rate_value: val('sf_rate_value') || null,
+            tds_rate: val('sf_tds') || null, payout_method: val('sf_payout'),
+            valid_from: val('sf_from') || null, valid_till: val('sf_till') || null,
+            applies_to: val('sf_applies'), team: val('sf_team') || null,
+            employee_codes: codes,
+            max_claims: val('sf_max_claims') || null, max_amount: val('sf_max_amount') || null,
+            notes: val('sf_notes') || null,
+            notify_email: (document.getElementById('sf_nf_email') || {}).checked ? 1 : 0,
+            notify_wa: (document.getElementById('sf_nf_wa') || {}).checked ? 1 : 0,
+            notify_notice: (document.getElementById('sf_nf_notice') || {}).checked ? 1 : 0,
+            id: window.__SF_EDIT_ID || null
+        };
+        var b = document.getElementById('sf_save'); if (b) { b.disabled = true; }
+        fetch(cfg.schemesBase, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body) })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (b) { b.disabled = false; }
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Scheme published'); } commModalClose(); window.__SCHEMES = null; schemesLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not save'); }
+            })
+            .catch(function () { if (b) { b.disabled = false; } if (typeof toast === 'function') { toast('Could not save'); } });
+    };
+    // rev 116f (Ejaz): withdraw = a REAL confirmation dialog — shows how many
+    // claims exist, and the choice: keep the already-claimed in approval, or
+    // full withdraw (reject pending too). Approved claims always stay.
+    window.schemeWithdraw = function (id) {
+        var rows = (window.__SCHEMES && window.__SCHEMES.rows) || [];
+        var s = rows.find(function (x) { return String(x.id) === String(id); });
+        if (!s) { return; }
+        var pend = s.pendingClaims || 0;
+        var summary = s.claims > 0
+            ? '<div style="background:#fef3c7;border:1px solid #fde68a;border-radius:10px;padding:12px 16px;margin:12px 0;font-size:13.5px;color:#92400e">'
+                + '<b><i class="fas fa-triangle-exclamation"></i> This scheme already has ' + s.claims + ' claim(s):</b><br>'
+                + '&bull; ' + s.approved + ' approved (Rs ' + (s.approvedGross || 0) + ' gross) &mdash; these ALWAYS stay; corrections go through Clawbacks.<br>'
+                + '&bull; ' + pend + ' still awaiting approval.'
+                + '</div>'
+            : '<div style="font-size:13.5px;color:var(--text2);margin:12px 0">No claims have been raised against it yet.</div>';
+        var btns = '';
+        if (pend > 0) {
+            btns = '<button class="btn btn-outline" style="color:#92400e;border-color:#fde68a" onclick="schemeWithdrawGo(' + s.id + ',0)"><i class="fas fa-box-archive"></i> Withdraw — KEEP the ' + pend + ' pending claim(s) in approval</button>'
+                + '<button class="btn" style="background:var(--red);color:#fff" onclick="schemeWithdrawGo(' + s.id + ',1)"><i class="fas fa-ban"></i> Full withdraw — also REJECT the ' + pend + ' pending claim(s)</button>';
+        } else {
+            btns = '<button class="btn" style="background:var(--red);color:#fff" onclick="schemeWithdrawGo(' + s.id + ',0)"><i class="fas fa-ban"></i> Yes, withdraw this scheme</button>';
+        }
+        commModal('<div class="card" style="max-width:520px;width:100%;padding:24px 26px;margin:auto">'
+            + '<h3 style="margin:0 0 4px;font-size:17px">Withdraw "' + s.title + '"?</h3>'
+            + '<div style="font-size:12.5px;color:var(--text3)">It disappears from claim forms and Live Salary ribbons immediately.</div>'
+            + summary
+            + '<div style="display:flex;flex-direction:column;gap:10px;margin-top:6px">' + btns
+            + '<button class="btn btn-outline" onclick="commModalClose()">Cancel — keep the scheme running</button></div>'
+            + '</div>');
+    };
+    // rev 117: undo a mistaken withdrawal — restores withdrawal-rejected claims.
+    window.schemeReopen = function (id) {
+        if (!window.confirm('Re-open this scheme? It returns to claim forms, and claims that were rejected by the withdrawal are RESTORED to Pending.')) { return; }
+        fetch(cfg.schemesBase + '/' + id + '/reopen', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Scheme re-opened'); } window.__SCHEMES = null; schemesLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not re-open'); }
+            }).catch(function () {});
+    };
+    window.schemeWithdrawGo = function (id, rejectPending) {
+        commModalClose();
+        fetch(cfg.schemesBase + '/' + id + '/withdraw', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ reject_pending: rejectPending }) })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('Scheme withdrawn'); } window.__SCHEMES = null; schemesLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Could not withdraw'); }
+            }).catch(function () {});
+    };
+    // ---- rev 115: SCHEME PICKER on the commission claim form -----------------
+    // Active schemes for the signed-in user load once per modal open; picking
+    // one AUTO-FILLS purpose/portfolio/TDS/payout and computes the money:
+    // percent → collected-base input appears (gross = base × rate), fixed →
+    // gross fills itself, open → prefill only. Server re-validates everything.
+    window.__SCHEMES_ME = null;
+    function schemeRateText(s) {
+        if (s.rateType === 'percent') { return s.rateValue + '% of collected amount'; }
+        if (s.rateType === 'fixed') { return 'Rs ' + s.rateValue + ' per claim'; }
+        return 'amount as per entry';
+    }
+    window.schemeInjectUI = function () {
+        var rows = (window.__SCHEMES_ME && window.__SCHEMES_ME.rows) || [];
+        if (!rows.length) { return; }
+        var empSel = document.getElementById('rq_emp'); if (!empSel) { return; }
+        if (document.getElementById('sp-scheme-cell')) { return; }
+        var grid = empSel.parentNode.parentNode;
+        var cell = document.createElement('div');
+        cell.id = 'sp-scheme-cell';
+        cell.style.cssText = 'grid-column:1/3;background:#fff7ed;border:1.5px solid #fed7aa;border-radius:11px;padding:12px 14px';
+        var opts = rows.map(function (s) { return '<option value="' + s.id + '">' + s.title + ' — ' + schemeRateText(s) + (s.till ? ' (till ' + s.till + ')' : '') + '</option>'; }).join('');
+        cell.innerHTML = '<label style="font-size:11px;font-weight:700;color:#9a3412;text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px"><i class="fas fa-bullseye"></i> Claim against a scheme (optional)</label>'
+            + '<select id="sp-scheme-pick" onchange="schemePick()" style="width:100%;padding:9px 11px;border:1.5px solid #fed7aa;border-radius:9px;font-size:14px;background:#fff"><option value="">No scheme — free entry</option>' + opts + '</select>'
+            + '<div id="sp-scheme-info" style="display:none;font-size:12px;color:#9a3412;margin-top:8px"></div>';
+        grid.insertBefore(cell, grid.firstChild);
+    };
+    window.schemePick = function () {
+        var rows = (window.__SCHEMES_ME && window.__SCHEMES_ME.rows) || [];
+        var sel = document.getElementById('sp-scheme-pick');
+        var hid = document.getElementById('rqf_scheme_id');
+        var info = document.getElementById('sp-scheme-info');
+        var gEl = document.getElementById('rqf_gross_amount');
+        var id = sel ? sel.value : '';
+        var s = rows.find(function (x) { return String(x.id) === String(id); });
+        if (hid) { hid.value = s ? s.id : ''; }
+        if (!s) {
+            if (info) { info.style.display = 'none'; }
+            if (gEl) { gEl.readOnly = false; gEl.style.background = '#f8fafc'; }
+            return;
+        }
+        // Autofill the form from the scheme.
+        var pEl = document.getElementById('rqf_purpose');
+        if (pEl && s.purpose) {
+            var has = false;
+            for (var i = 0; i < pEl.options.length; i++) { if (pEl.options[i].value === s.purpose || pEl.options[i].text === s.purpose) { has = true; pEl.selectedIndex = i; } }
+            if (!has) { var op = document.createElement('option'); op.text = s.purpose; pEl.add(op); pEl.value = s.purpose; }
+        }
+        var pf = document.getElementById('rqf_portfolio'); if (pf && s.portfolio) { pf.value = s.portfolio; }
+        var td = document.getElementById('rqf_tds_rate'); if (td && s.tdsRate !== null && s.tdsRate !== undefined) { td.value = s.tdsRate; }
+        var pm = document.getElementById('rqf_payout_method'); if (pm) { pm.selectedIndex = (s.payoutMethod === 'separate') ? 1 : 0; }
+        if (info) {
+            var bits = ['Pays ' + schemeRateText(s)];
+            if (s.claimsLeft !== null && s.claimsLeft !== undefined) { bits.push(s.claimsLeft + ' claim(s) left for you'); }
+            if (s.amountLeft !== null && s.amountLeft !== undefined) { bits.push('Rs ' + s.amountLeft + ' cap remaining'); }
+            if (s.till) { bits.push('valid till ' + s.till); }
+            info.innerHTML = '<i class="fas fa-circle-info"></i> ' + bits.join(' · ');
+            info.style.display = 'block';
+        }
+        // rev 116c: the VISIBLE "Amount Collected from Customer" field drives the
+        // percent computation — gross goes read-only under a % or fixed scheme.
+        if (s.rateType === 'percent') {
+            if (gEl) { gEl.readOnly = true; gEl.style.background = '#eef2f7'; }
+            schemeBaseCalc();
+        } else if (s.rateType === 'fixed') {
+            if (gEl) { gEl.value = s.rateValue; gEl.readOnly = true; gEl.style.background = '#eef2f7'; }
+            rqCommCalc();
+        } else {
+            if (gEl) { gEl.readOnly = false; gEl.style.background = '#f8fafc'; }
+        }
+    };
+    window.schemeBaseCalc = function () {
+        var rows = (window.__SCHEMES_ME && window.__SCHEMES_ME.rows) || [];
+        var sel = document.getElementById('sp-scheme-pick');
+        var s = rows.find(function (x) { return String(x.id) === String(sel ? sel.value : ''); });
+        if (!s || s.rateType !== 'percent') { return; }
+        var base = Number((document.getElementById('rqf_base_amount') || {}).value || 0);
+        var gEl = document.getElementById('rqf_gross_amount');
+        if (gEl) { gEl.value = base > 0 ? Math.round(base * s.rateValue) / 100 : ''; }
+        rqCommCalc();
+    };
+    // rev 115h: the picker follows the SELECTED employee (an Admin entering for
+    // Asha must see ASHA's schemes — the signed-in admin has no employee record).
+    window.schemeFetchFor = function (empName) {
+        var url = cfg.schemesBase + '/for-me' + (empName ? ('?employee=' + encodeURIComponent(empName)) : '');
+        fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                window.__SCHEMES_ME = j;
+                // Employee changed → drop any previous scheme choice + unlock gross.
+                var old = document.getElementById('sp-scheme-cell');
+                if (old && old.parentNode) { old.parentNode.removeChild(old); }
+                var hid = document.getElementById('rqf_scheme_id'); if (hid) { hid.value = ''; }
+                var bHid = document.getElementById('rqf_base_amount'); if (bHid) { bHid.value = ''; }
+                var gEl = document.getElementById('rqf_gross_amount'); if (gEl) { gEl.readOnly = false; gEl.style.background = '#f8fafc'; }
+                schemeInjectUI();
+            })
+            .catch(function () {});
+    };
+    // rev 116: PAYMENT PROOF upload box (screenshot / deposit slip) — required
+    // server-side whenever the money did not come as cash to the office.
+    window.commProofInjectUI = function () {
+        var empSel = document.getElementById('rq_emp'); if (!empSel) { return; }
+        if (document.getElementById('sp-proof-cell')) { return; }
+        var grid = empSel.parentNode.parentNode;
+        var cell = document.createElement('div');
+        cell.id = 'sp-proof-cell';
+        cell.style.cssText = 'grid-column:1/3;border:1.5px dashed var(--border);border-radius:11px;padding:11px 14px';
+        cell.innerHTML = '<label style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:5px"><i class="fas fa-receipt"></i> Payment proof — screenshot / deposit slip (image or PDF)</label>'
+            + '<input type="file" id="sp-proof-file" accept="image/*,.pdf" onchange="commProofUpload()" style="font-size:13px">'
+            + '<div id="sp-proof-status" style="font-size:12px;color:var(--text3);margin-top:5px">Optional — Accounts verifies against the bank&#39;s payments-received list; attaching a proof speeds your confirmation up.</div>';
+        grid.appendChild(cell);
+    };
+    window.commProofUpload = function () {
+        var f = document.getElementById('sp-proof-file');
+        var st = document.getElementById('sp-proof-status');
+        if (!f || !f.files || !f.files[0]) { return; }
+        if (st) { st.innerHTML = 'Uploading…'; }
+        var fd = new FormData();
+        fd.append('file', f.files[0]);
+        fetch(cfg.requestsBase + '/commissions/proof-upload', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (j && j.ok) {
+                    var hid = document.getElementById('rqf_proof_path'); if (hid) { hid.value = j.path; }
+                    if (st) { st.innerHTML = '<span style="color:#166534;font-weight:700"><i class="fas fa-circle-check"></i> Proof attached</span>'; }
+                } else {
+                    if (st) { st.innerHTML = '<span style="color:#b91c1c">' + ((j && j.error) || 'Upload failed') + '</span>'; }
+                }
+            })
+            .catch(function () { if (st) { st.innerHTML = '<span style="color:#b91c1c">Upload failed — retry</span>'; } });
+    };
+    // rev 116d: show/hide the collection-evidence fields by claim type.
+    window.commClaimTypeToggle = function () {
+        var sel = document.getElementById('rqf_claim_type');
+        var simple = !!(sel && sel.value.toLowerCase().indexOf('simple') >= 0);
+        ['customer_name', 'account_ref', 'collection_type', 'collected_at', 'collection_location', 'collection_mode', 'base_amount'].forEach(function (k) {
+            var el = document.getElementById('rqf_' + k);
+            if (el && el.parentNode) { el.parentNode.style.display = simple ? 'none' : ''; }
+        });
+        var pc = document.getElementById('sp-proof-cell'); if (pc) { pc.style.display = simple ? 'none' : ''; }
+    };
+    // rev 116: Accounts confirmation — the stage BEFORE manager approval.
+    window.commAccounts = function (id, action) {
+        var note = '';
+        if (action === 'flag') {
+            note = window.prompt('What is wrong with this collection? (the agent and manager see this)', '');
+            if (note === null) { return; }
+        } else if (!window.confirm('Confirm that this money has actually been received by the company?')) { return; }
+        fetch(cfg.requestsBase + '/commissions/' + id + '/accounts', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action, note: note }) })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Done'); } requestLoad('commissions'); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Action failed'); }
+            }).catch(function () {});
+    };
+    (function () {
+        var prev = window.reqApplyOpen;
+        window.reqApplyOpen = function (navId) {
+            prev(navId);
+            if (navId !== 'commissions') { return; }
+            var empSel = document.getElementById('rq_emp');
+            if (empSel && !empSel.__schemeWired) {
+                empSel.__schemeWired = true;
+                empSel.addEventListener('change', function () { schemeFetchFor(empSel.value || ''); });
+            }
+            schemeFetchFor(empSel ? (empSel.value || '') : '');
+            commProofInjectUI();
+        };
+    })();
     window.reqApplySave = function (navId) {
         var rc = RQ_MAP[navId]; if (!rc) { return; }
         var emp = (document.getElementById('rq_emp') || {}).value || '';
@@ -1789,9 +2378,10 @@ CSS;
     window.commBulkTemplate = function () {
         var nl = String.fromCharCode(10);
         var lines = [
-            'Emp Code or Name,Month,Purpose,Portfolio / Bank,Gross Amount,TDS %,Payout Date,Payout Method (salary/separate),Description',
-            'EMP101,May 2026,EMI Collection,HDFC Two-Wheeler,8000,5,2026-07-10,salary,22 EMIs collected - Nellore branch',
-            'EMP102,May 2026,Settlement / OTS,ICICI Personal Loan,12500,,2026-07-10,separate,OTS closure incentive'
+            'Emp Code or Name,Month,Claim Kind (collection/simple),Purpose,Customer,Account No / ID,Collection Type,Collected On,Location,Mode (office/deposited/direct/online),Collected Amount,Portfolio / Bank,Gross Commission,TDS %,Payout Date,Payout Method (salary/separate),Description',
+            'EMP101,May 2026,collection,EMI Collection,Ramesh Kumar,LN-448812,EMI,2026-05-28 16:30,Nellore,deposited,42000,HDFC Two-Wheeler,840,5,2026-07-10,salary,22nd EMI collected',
+            'EMP102,May 2026,collection,Settlement / OTS,Sunita Devi,CC-90211,Settlement,2026-05-30 11:00,Guntur,direct,125000,ICICI Personal Loan,12500,,2026-07-10,separate,OTS closure incentive',
+            'EMP103,May 2026,simple,Target Bonus,,,,,,,,,5000,,2026-07-10,salary,Q1 bucket target achieved'
         ];
         var blob = new Blob([lines.join(nl)], { type: 'text/csv' });
         var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'smartprs-commissions-template.csv'; a.click();
@@ -1803,7 +2393,7 @@ CSS;
         m.innerHTML = '<div class="card" style="max-width:560px;width:100%;padding:0">'
             + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:18px">Upload Commission Entries</h3><button class="btn btn-outline btn-sm" onclick="commBulkClose()"><i class="fas fa-xmark"></i></button></div>'
             + '<div style="padding:22px">'
-            + '<div style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:12px">Excel or CSV with columns: <b>Emp Code or Name, Month, Purpose, Portfolio / Bank, Gross Amount, TDS %, Payout Date, Payout Method, Description</b>. TDS % blank = 5% auto. Payout Method: <b>salary</b> = in the payslip of the payout month; <b>separate</b> = paid on its own dates through the Ledger. Every row lands as <b>Pending</b> with that employee&#39;s reporting manager. Up to 1,000 rows.</div>'
+            + '<div style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:12px">Excel or CSV with columns: <b>Emp Code or Name, Month, Claim Kind (collection/simple), Purpose, Customer, Account No / ID, Collection Type, Collected On, Location, Mode, Collected Amount, Portfolio / Bank, Gross Commission, TDS %, Payout Date, Payout Method, Description</b>. <b>collection</b> rows = customer money collected (Accounts must confirm before approval); <b>simple</b> rows = target / bonus / incentive (leave customer columns blank — straight to manager approval). TDS % blank = 5% auto. Mode: office / deposited / direct / online. Employees uploading their own claims: every row is created for YOU automatically. Up to 1,000 rows.</div>'
             + '<a onclick="commBulkTemplate()" style="cursor:pointer;color:#4f46e5;font-size:13px;font-weight:600"><i class="fas fa-download"></i> Download template (CSV)</a>'
             + '<div style="margin:14px 0"><input type="file" id="commBulkFile" accept=".xlsx,.xls,.csv,text/csv" style="width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:13px;background:#f8fafc"></div>'
             + '<div id="commBulkMsg" style="font-size:12.5px;line-height:1.6;color:var(--text2)"></div>'
@@ -1833,7 +2423,18 @@ CSS;
                             var k = String(h).toLowerCase();
                             var val = String(r[h]).trim();
                             if (val === '') { return; }
-                            if (!o.employee && (k.indexOf('emp') >= 0 || k.indexOf('name') >= 0 || k.indexOf('code') >= 0)) { o.employee = val; }
+                            // rev 116c: collection evidence columns — matched BEFORE
+                            // the employee rule ("Customer" contains no emp/code, but
+                            // order still matters for name/amount overlaps).
+                            if (k.indexOf('claim') >= 0) { o.claim_type = val; }
+                            else if (k.indexOf('account') >= 0 || k.indexOf('cc no') >= 0) { o.account_ref = val; }
+                            else if (k.indexOf('customer') >= 0 && k.indexOf('amount') < 0) { o.customer_name = val; }
+                            else if (k.indexOf('collected on') >= 0 || k.indexOf('collected at') >= 0) { o.collected_at = val; }
+                            else if (k.indexOf('collect') >= 0 && k.indexOf('amount') >= 0) { var ca = Number(val.replace(/[^0-9.]/g, '')); if (ca > 0) { o.base_amount = ca; } }
+                            else if (k.indexOf('collection type') >= 0 || k.indexOf('what was') >= 0) { o.collection_type = val; }
+                            else if (k.indexOf('location') >= 0) { o.collection_location = val; }
+                            else if (k.indexOf('mode') >= 0 && k.indexOf('method') < 0) { o.collection_mode = val; }
+                            else if (!o.employee && (k.indexOf('emp') >= 0 || k.indexOf('name') >= 0 || k.indexOf('code') >= 0)) { o.employee = val; }
                             else if (k.indexOf('method') >= 0) { o.payout_method = val; }
                             else if (k.indexOf('payout') >= 0) { o.payout_date = val; }
                             else if (k.indexOf('month') >= 0) { o.month = val; }
@@ -1843,7 +2444,9 @@ CSS;
                             else if (k.indexOf('tds') >= 0) { var t = Number(val.replace(/[^0-9.]/g, '')); if (!isNaN(t)) { o.tds_rate = t; } }
                             else if (k.indexOf('desc') >= 0 || k.indexOf('note') >= 0 || k.indexOf('remark') >= 0) { o.description = val; }
                         });
-                        if (o.employee && o.gross > 0) { out.push(o); }
+                        // rev 116d: employee may be blank — agents' own uploads are
+                        // forced to themselves server-side.
+                        if (o.gross > 0) { out.push(o); }
                     });
                     if (!out.length) { setMsg('<span style="color:var(--red)">No usable rows found. Each row needs at least an employee and a gross amount &gt; 0. Download the template to see the expected columns.</span>'); return; }
                     if (out.length > 1000) { out = out.slice(0, 1000); }
@@ -3342,8 +3945,19 @@ CSS;
                 + '<span style="opacity:.65;display:block;font-size:11.5px">' + (en.detail || '') + '</span></span>'
                 + '<b style="color:' + (pending || info ? 'rgba(255,255,255,.55)' : col) + ';white-space:nowrap">' + en.sign + ' ' + inr(en.amount) + '</b></div>';
         }).join('');
-        return '<div class="card" style="margin-bottom:16px;background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff">'
-            + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'
+        // rev 115 (Ejaz): active incentive SCHEMES ribbon — orange corner strip
+        // on the navy card so every agent sees what they can earn right now.
+        var schemes = d.schemes || [];
+        var ribbon = '';
+        if (schemes.length) {
+            var s0 = schemes[0];
+            ribbon = '<div style="position:absolute;top:0;right:0;background:#f97316;color:#fff;font-size:11.5px;font-weight:700;padding:6px 14px;border-radius:0 14px 0 12px;max-width:46%;cursor:pointer" onclick="go(&#39;commissions&#39;)" title="Open Commission Entries to claim">'
+                + '<i class="fas fa-bullseye" style="margin-right:5px"></i>' + s0.title + ' &mdash; ' + s0.rate + (s0.till ? ' &middot; till ' + s0.till : '')
+                + (schemes.length > 1 ? ' &middot; +' + (schemes.length - 1) + ' more' : '')
+                + '</div>';
+        }
+        return '<div class="card" style="margin-bottom:16px;background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff;position:relative;overflow:hidden">' + ribbon
+            + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px' + (schemes.length ? ';margin-top:14px' : '') + '">'
             + '<div><div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;opacity:.7"><i class="fas fa-bolt" style="margin-right:6px"></i>Live Salary &mdash; ' + e.name + ' (' + e.code + ')</div>'
             + '<div style="font-size:32px;font-weight:800;margin-top:2px">' + inr(d.net) + '</div>'
             + '<div style="font-size:12px;opacity:.75">earned till ' + m.today + ' &middot; ' + m.factorPct + '% of ' + m.monthLabel + ' &middot; projection ' + inr(m.fullMonthNet) + '</div></div>'
@@ -6038,9 +6652,24 @@ CSS;
             minCompanies: minCo,
             curSeats: sub.seats || 1,
             curCompanies: sub.companies || 1,
-            cycle: (sub.cycle === 'halfyear' || sub.cycle === 'annual') ? sub.cycle : 'quarterly'
+            cycle: (sub.cycle === 'halfyear' || sub.cycle === 'annual') ? sub.cycle : 'quarterly',
+            coupon: ''
         };
         msRenderDialog();
+        msQuote();
+    };
+    window.msCoupon = function () {
+        var st = window.__MSR; if (!st) { return; }
+        var el = document.getElementById('ms-coupon');
+        st.coupon = el ? el.value.replace(/ /g, '').toUpperCase() : '';
+        if (el) { el.value = st.coupon; }
+        msQuote();
+    };
+    window.msCouponClear = function () {
+        var st = window.__MSR; if (!st) { return; }
+        st.coupon = '';
+        st.noAuto = 1;   // rev 113: user removed the offer — stop auto-applying
+        var el = document.getElementById('ms-coupon'); if (el) { el.value = ''; }
         msQuote();
     };
     function msRenderDialog() {
@@ -6075,13 +6704,14 @@ CSS;
             + '<div><label style="' + lbl + '">Companies</label><input type="number" min="' + (st.minCompanies || 1) + '" max="100" value="' + (st.companies || 1) + '" style="' + inp + '" onchange="msSetCompanies(this.value)" onkeyup="msSetCompanies(this.value)"><div style="font-size:11px;color:var(--text3);margin-top:3px">1 included; extra ₹1,000/mo each</div></div>'
             + '<div><label style="' + lbl + '">Advance period</label>' + (up ? '<div style="' + inp + ';background:#eef2f7;color:var(--text3)">' + msCycleLabel(st.cycle) + ' (current)</div>' : '<select style="' + inp + '" onchange="msSetCycle(this.value)">' + cycOpts + '</select>') + '</div>'
             + '</div>'
+            + ((up || !(d.couponsEnabled || st.coupon)) ? '' : '<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center"><input id="ms-coupon" placeholder="Coupon code (optional)" value="' + (st.coupon || '') + '" style="' + inp + ';flex:1;text-transform:uppercase" maxlength="40"><button class="btn" onclick="msCoupon()" style="border:1.5px solid var(--accent);color:var(--accent);background:#fff;font-weight:700">Apply</button>' + (st.coupon ? '<a onclick="msCouponClear()" style="font-size:12px;color:var(--text3);cursor:pointer;text-decoration:underline">Remove</a>' : '') + '</div>')
             + '<div id="ms-quote" style="border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin-bottom:14px;font-size:13.5px;color:var(--text2)">Calculating…</div>'
             + '<button class="btn btn-primary" id="ms-paybtn" onclick="msPay()" style="width:100%"><i class="fas fa-lock"></i> Pay securely</button>', true);
     }
     window.msQuote = function () {
         var st = window.__MSR; if (!st) { return; }
         var q = document.getElementById('ms-quote'); if (q) { q.innerHTML = 'Calculating…'; }
-        msPost('/quote', { plan_id: st.plan_id, seats: st.seats, companies: st.companies || 1, cycle: st.cycle, mode: st.mode || 'renew' }).then(function (j) {
+        msPost('/quote', { plan_id: st.plan_id, seats: st.seats, companies: st.companies || 1, cycle: st.cycle, mode: st.mode || 'renew', coupon: (st.mode === 'upgrade') ? '' : (st.coupon || ''), no_auto: st.noAuto ? 1 : 0 }).then(function (j) {
             var q2 = document.getElementById('ms-quote'); if (!q2) { return; }
             if (!j.ok) { q2.innerHTML = '<span style="color:var(--red)">' + (j.error || 'Could not price this combination') + '</span>'; return; }
             var s = j.summary || {};
@@ -6102,6 +6732,11 @@ CSS;
             if (s.company_fee > 0) { h += row('Includes additional companies: ' + (s.companies - 1) + ' x 1,000', inr(s.company_fee) + '/mo'); }
             h += row('Billing period', s.months + ' months');
             if (s.discount > 0) { h += row('Advance discount', '-' + Math.round(s.discount * 100) + '%'); }
+            if (s.coupon_discount > 0) {
+                // rev 113: auto-applied exclusive offers sync the state so msPay sends the code.
+                if (s.coupon_code && !st.coupon) { st.coupon = s.coupon_code; var ci = document.getElementById('ms-coupon'); if (ci) { ci.value = s.coupon_code; } }
+                h += row((s.coupon_auto ? 'Your exclusive offer ' : 'Coupon ') + (s.coupon_code || '') + ' <a onclick="msCouponClear()" style="font-size:11px;color:var(--text3);cursor:pointer;text-decoration:underline">Remove</a>', '<span style="color:var(--green)">-' + inr(s.coupon_discount) + '</span>');
+            }
             h += row('Subtotal', inr(s.amount));
             h += row('GST (18%)', inr(s.tax));
             h += row('Payable now', inr(s.total), true);
@@ -6111,7 +6746,7 @@ CSS;
     window.msPay = function () {
         var st = window.__MSR; if (!st) { return; }
         var b = document.getElementById('ms-paybtn'); if (b) { b.disabled = true; }
-        msPost('/renew/order', { plan_id: st.plan_id, seats: st.seats, companies: st.companies || 1, cycle: st.cycle, mode: st.mode || 'renew' }).then(function (j) {
+        msPost('/renew/order', { plan_id: st.plan_id, seats: st.seats, companies: st.companies || 1, cycle: st.cycle, mode: st.mode || 'renew', coupon: (st.mode === 'upgrade') ? '' : (st.coupon || ''), no_auto: st.noAuto ? 1 : 0 }).then(function (j) {
             if (!j.ok) { if (typeof toast === 'function') { toast(j.error || 'Could not start the payment'); } if (b) { b.disabled = false; } return; }
             msEnsureRzp(function () {
                 var rz = new Razorpay({
@@ -6237,8 +6872,18 @@ CSS;
             ? '<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.25)"><span style="font-size:11px;letter-spacing:1px;text-transform:uppercase;opacity:.75">Projected incl. pending commissions</span>'
               + '<div style="font-size:24px;font-weight:800">' + inr(d.projectedNet || d.net) + ' <span style="font-size:12px;font-weight:600;background:#fef3c7;color:#92400e;padding:2px 10px;border-radius:99px;vertical-align:middle">+ ' + inr(pendC) + ' awaiting approval</span></div></div>'
             : '';
-        var big = '<div class="card" style="text-align:center;margin-bottom:14px;background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff">'
-            + '<div style="font-size:12px;letter-spacing:1px;text-transform:uppercase;opacity:.75">Net salary earned till today (approved only)</div>'
+        // rev 115: orange schemes ribbon — "what you can earn right now".
+        var lsSchemes = d.schemes || [];
+        var lsRibbon = '';
+        if (lsSchemes.length) {
+            var ls0 = lsSchemes[0];
+            lsRibbon = '<div style="position:absolute;top:0;right:0;background:#f97316;color:#fff;font-size:11.5px;font-weight:700;padding:6px 14px;border-radius:0 14px 0 12px;max-width:46%;cursor:pointer" onclick="go(&#39;commissions&#39;)" title="Open Commission Entries to claim">'
+                + '<i class="fas fa-bullseye" style="margin-right:5px"></i>' + ls0.title + ' &mdash; ' + ls0.rate + (ls0.till ? ' &middot; till ' + ls0.till : '')
+                + (lsSchemes.length > 1 ? ' &middot; +' + (lsSchemes.length - 1) + ' more' : '')
+                + '</div>';
+        }
+        var big = '<div class="card" style="text-align:center;margin-bottom:14px;background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff;position:relative;overflow:hidden">' + lsRibbon
+            + '<div style="font-size:12px;letter-spacing:1px;text-transform:uppercase;opacity:.75' + (lsSchemes.length ? ';margin-top:12px' : '') + '">Net salary earned till today (approved only)</div>'
             + '<div style="font-size:40px;font-weight:800;margin:6px 0">' + inr(d.net) + '</div>'
             + '<div style="font-size:12.5px;opacity:.8">' + m.factorPct + '% of the month &middot; full-month projection: ' + inr(m.fullMonthNet) + ' net (' + inr(m.fullMonthGross) + ' gross)</div>'
             + projLine

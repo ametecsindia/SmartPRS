@@ -55,6 +55,7 @@
             <a href="{{ route('landing.editor') }}" class="@yield('nav_landing')">Landing CMS</a>
             <a href="{{ route('admin.leads') }}" class="@yield('nav_leads')">Leads</a>
             <a href="{{ route('admin.quotations') }}" class="@yield('nav_quotes')">Quotations</a>
+            <a href="{{ route('admin.coupons') }}" class="@yield('nav_coupons')">Coupons</a>
             <a href="{{ route('admin.onprem') }}" class="@yield('nav_onprem')">On-Prem Clients</a>
             <a href="{{ route('admin.releases') }}" class="@yield('nav_releases')">Releases</a>
             <a href="{{ route('admin.staff') }}" class="@yield('nav_staff')">Platform Staff</a>

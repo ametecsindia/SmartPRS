@@ -107,6 +107,16 @@ class SignupController extends Controller
             } catch (\Throwable $e) {
             }
         }
+        // rev 112: discount coupons.
+        if (! Schema::hasColumn('signups', 'coupon_code')) {
+            try {
+                Schema::table('signups', function (Blueprint $t) {
+                    $t->string('coupon_code', 40)->nullable();
+                    $t->decimal('coupon_discount', 12, 2)->default(0);
+                });
+            } catch (\Throwable $e) {
+            }
+        }
         SaasController::ensureGstCols();
     }
 
@@ -125,6 +135,9 @@ class SignupController extends Controller
         return view('signup', [
             'plans' => $this->activePlans(),
             'pick' => (string) $request->query('plan', 'Growth'),
+            // rev 113b: coupon box shows only when public coupons are live;
+            // exclusive offers reveal it themselves on email match.
+            'couponsEnabled' => \App\Services\CouponService::publicCouponsExist('signup'),
         ]);
     }
 
@@ -147,6 +160,7 @@ class SignupController extends Controller
                 'state' => ['required', 'string', 'max:60'],
                 'gstin' => ['nullable', 'string', 'max:20', 'regex:/^[0-9]{2}[A-Z0-9]{13}$/i'],
                 'subdomain' => ['nullable', 'string', 'max:30'],
+                'coupon' => ['nullable', 'string', 'max:40'],   // rev 112: discount coupon
             ], [
                 'gstin.regex' => 'GSTIN must be 15 characters, starting with the 2-digit state code (e.g. 36AAHCT0971F1ZB).',
                 'state.required' => 'Please select your state — it decides how GST appears on your tax invoice.',
@@ -183,18 +197,29 @@ class SignupController extends Controller
 
             // SERVER-side price — never trust the browser's numbers.
             $price = BillingController::priceFor($plan, (int) $v['seats'], $v['cycle'], $companies);
+            // rev 112: coupon — validated server-side, applied AFTER the cycle discount.
+            $couponCode = null;
+            if (! empty($v['coupon'])) {
+                [$coupon, $cErr] = \App\Services\CouponService::validate($v['coupon'], (int) $plan->id, $v['cycle'], 'signup', $email);
+                if ($cErr) {
+                    return response()->json(['ok' => false, 'error' => $cErr], 422);
+                }
+                $price = \App\Services\CouponService::apply($price, $coupon);
+                $couponCode = $coupon->code;
+            }
             $paise = (int) round($price['total'] * 100);
 
             $uuid = (string) Str::uuid();
-            $signupId = DB::table('signups')->insertGetId([
+            $signupId = DB::table('signups')->insertGetId(ApprovalService::safeRow('signups', [
                 'uuid' => $uuid, 'company' => $v['company'], 'admin_name' => $v['admin_name'],
                 'admin_email' => $email, 'mobile' => $v['mobile'] ?? null,
                 'gstin' => $gstin, 'state' => $v['state'], 'subdomain' => $slugReq ?: null,
                 'plan_id' => $plan->id, 'seats' => (int) $v['seats'], 'companies' => $companies, 'cycle' => $v['cycle'],
                 'amount' => $price['amount'], 'tax' => $price['tax'],
+                'coupon_code' => $couponCode, 'coupon_discount' => $price['coupon_discount'] ?? 0,
                 'terms_accepted_at' => now(),
                 'status' => 'pending', 'created_at' => now(), 'updated_at' => now(),
-            ]);
+            ]));
 
             $resp = Http::withBasicAuth($creds['key'], $creds['secret'])
                 ->asForm()->post('https://api.razorpay.com/v1/orders', [
@@ -275,14 +300,24 @@ class SignupController extends Controller
             $end = now()->addMonths($price['months']);
             $cycleLabel = ['quarterly' => 'Quarterly (3 months)', 'halfyear' => 'Half-yearly (6 months)', 'annual' => 'Annual (12 months)'][$s->cycle] ?? $s->cycle;
             $fmt = fn ($n) => '₹'.number_format((float) $n, 2);
+            // rev 112: the signup row holds the COUPON-DISCOUNTED amount/tax (what
+            // was actually paid); $price stays the FULL rate for the subscription.
+            $couponDisc = (float) ($s->coupon_discount ?? 0);
+            $paidAmount = $couponDisc > 0 ? (float) $s->amount : $price['amount'];
+            $paidTax = $couponDisc > 0 ? (float) $s->tax : $price['tax'];
             $paymentLines = [
                 'Plan' => ($plan->name ?? 'Plan').' — includes up to '.($plan->seat_max ?? '—').' employees',
                 'Employees' => $s->seats.' (total across all your companies)',
                 'Companies' => $sCompanies.($sCompanies > 1 ? ' (1 included + '.($sCompanies - 1).' × ₹1,000/mo)' : ' (included)'),
                 'Billing period' => $cycleLabel.($price['discount'] > 0 ? ' · '.($price['discount'] * 100).'% advance discount applied' : ''),
-                'Subscription amount' => $fmt($price['amount']),
-                'GST (18%)' => $fmt($price['tax']),
-                'Total paid' => $fmt($price['total']),
+            ];
+            if ($couponDisc > 0) {
+                $paymentLines['Coupon ('.$s->coupon_code.')'] = '− '.$fmt($couponDisc);
+            }
+            $paymentLines += [
+                'Subscription amount' => $fmt($paidAmount),
+                'GST (18%)' => $fmt($paidTax),
+                'Total paid' => $fmt(round($paidAmount + $paidTax, 2)),
                 'Payment reference' => $paymentId,
                 'Active until' => $end->format('d M Y'),
             ];
@@ -314,11 +349,28 @@ class SignupController extends Controller
             ]));
 
             // 3) Invoice (created due, then marked paid with the gateway txn).
+            //    rev 112: with a coupon, the invoice must show what was ACTUALLY
+            //    charged (discounted) — the subscription itself keeps full rate.
             $inv = BillingController::createInvoiceForTenant($tid);
-            DB::table('invoices')->where('id', $inv->id)->update(ApprovalService::safeRow('invoices', [
-                'gateway_order_id' => $orderId, 'updated_at' => now(),
-            ]));
+            $invPatch = ['gateway_order_id' => $orderId, 'updated_at' => now()];
+            if ($couponDisc > 0) {
+                $invPatch['amount'] = $paidAmount;
+                $invPatch['tax'] = $paidTax;
+            }
+            DB::table('invoices')->where('id', $inv->id)->update(ApprovalService::safeRow('invoices', $invPatch));
+            $inv = DB::table('invoices')->where('id', $inv->id)->first();
             BillingController::recordPayment($inv, 'razorpay', 'razorpay', $paymentId);
+            // Coupon redemption — confirmed payment only.
+            if ($couponDisc > 0 && ! empty($s->coupon_code)) {
+                try {
+                    $cpn = DB::table('coupons')->where('code', $s->coupon_code)->first();
+                    if ($cpn) {
+                        \App\Services\CouponService::redeem($cpn, 'signup', $couponDisc, $s->admin_email, $tid, $s->company);
+                    }
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('signup coupon redeem: '.$e->getMessage());
+                }
+            }
 
             // Payment-receipt email with the GST tax-invoice PDF attached
             // (platform SMTP; best-effort — the workspace is already live).
@@ -433,6 +485,81 @@ class SignupController extends Controller
         return $v;
     }
 
+    /**
+     * rev 112: POST /signup/coupon-check — live validation for the signup page.
+     * Returns the discounted summary so the quote box can update instantly.
+     */
+    public function couponCheck(Request $request)
+    {
+        try {
+            $v = $request->validate([
+                'coupon' => ['required', 'string', 'max:40'],
+                'plan_id' => ['required', 'integer'],
+                'seats' => ['required', 'integer', 'min:1', 'max:100000'],
+                'companies' => ['nullable', 'integer', 'min:1', 'max:100'],
+                'cycle' => ['required', 'in:quarterly,halfyear,annual'],
+                'email' => ['nullable', 'email', 'max:191'],
+            ]);
+            $plan = DB::table('plans')->where('id', $v['plan_id'])->where('status', 'active')->first();
+            if (! $plan) {
+                return response()->json(['ok' => false, 'error' => 'Plan not found.'], 422);
+            }
+            [$coupon, $err] = \App\Services\CouponService::validate($v['coupon'], (int) $plan->id, $v['cycle'], 'signup', $v['email'] ?? null);
+            if ($err) {
+                return response()->json(['ok' => false, 'error' => $err], 422);
+            }
+            $price = BillingController::priceFor($plan, (int) $v['seats'], $v['cycle'], max(1, (int) ($v['companies'] ?? 1)));
+            $price = \App\Services\CouponService::apply($price, $coupon);
+            $label = $coupon->type === 'flat' ? '₹'.number_format((float) $coupon->value).' off' : rtrim(rtrim(number_format((float) $coupon->value, 2), '0'), '.').'% off';
+
+            return response()->json([
+                'ok' => true, 'summary' => $price, 'code' => $coupon->code, 'label' => $label,
+                // type+value let the page recompute the display when seats/cycle change;
+                // the ORDER is always re-priced and re-validated server-side.
+                'ctype' => $coupon->type, 'cvalue' => (float) $coupon->value,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['ok' => false, 'error' => implode(' ', collect($e->errors())->flatten()->all())], 422);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * rev 113: POST /signup/exclusive-check — the cart "catches" the email and
+     * looks for an exclusive offer sent to it; if found it is AUTO-APPLIED.
+     */
+    public function exclusiveCheck(Request $request)
+    {
+        try {
+            $v = $request->validate([
+                'email' => ['required', 'email', 'max:191'],
+                'plan_id' => ['required', 'integer'],
+                'seats' => ['required', 'integer', 'min:1', 'max:100000'],
+                'companies' => ['nullable', 'integer', 'min:1', 'max:100'],
+                'cycle' => ['required', 'in:quarterly,halfyear,annual'],
+            ]);
+            $plan = DB::table('plans')->where('id', $v['plan_id'])->where('status', 'active')->first();
+            if (! $plan) {
+                return response()->json(['ok' => false]);
+            }
+            $coupon = \App\Services\CouponService::forEmail($v['email'], (int) $plan->id, $v['cycle'], 'signup');
+            if (! $coupon) {
+                return response()->json(['ok' => false]);
+            }
+            $price = BillingController::priceFor($plan, (int) $v['seats'], $v['cycle'], max(1, (int) ($v['companies'] ?? 1)));
+            $price = \App\Services\CouponService::apply($price, $coupon);
+            $label = $coupon->type === 'flat' ? '₹'.number_format((float) $coupon->value).' off' : rtrim(rtrim(number_format((float) $coupon->value, 2), '0'), '.').'% off';
+
+            return response()->json([
+                'ok' => true, 'summary' => $price, 'code' => $coupon->code, 'label' => $label,
+                'ctype' => $coupon->type, 'cvalue' => (float) $coupon->value, 'exclusive' => true,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false]);
+        }
+    }
+
     /** POST /signup/quote — create a quotation, email the PDF + public pay link. */
     public function quote(Request $request)
     {
@@ -451,6 +578,24 @@ class SignupController extends Controller
                 return response()->json(['ok' => false, 'error' => 'Plan not found.'], 422);
             }
             $price = BillingController::priceFor($plan, (int) $v['seats'], $v['cycle'], $companies);
+            // rev 113: coupon on quotations — typed code wins; otherwise the email
+            // is caught and any exclusive offer auto-applies. LOCKED into the quote.
+            $couponCode = null;
+            $reqCoupon = trim((string) $request->input('coupon', ''));
+            if ($reqCoupon !== '') {
+                [$coupon, $cErr] = \App\Services\CouponService::validate($reqCoupon, (int) $plan->id, $v['cycle'], 'signup', $email);
+                if ($cErr) {
+                    return response()->json(['ok' => false, 'error' => $cErr], 422);
+                }
+                $price = \App\Services\CouponService::apply($price, $coupon);
+                $couponCode = $coupon->code;
+            } else {
+                $auto = \App\Services\CouponService::forEmail($email, (int) $plan->id, $v['cycle'], 'signup');
+                if ($auto) {
+                    $price = \App\Services\CouponService::apply($price, $auto);
+                    $couponCode = $auto->code;
+                }
+            }
 
             // rev 108: optional client-chosen web address (validated lightly here;
             // final uniqueness is re-checked at provisioning with auto fallback).
@@ -462,15 +607,16 @@ class SignupController extends Controller
             $uuid = (string) Str::uuid();
             $token = Str::random(48);
             $quoteNo = 'QUO-'.now()->format('Ym').'-'.str_pad((string) (DB::table('signups')->count() + 1), 4, '0', STR_PAD_LEFT);
-            $signupId = DB::table('signups')->insertGetId([
+            $signupId = DB::table('signups')->insertGetId(ApprovalService::safeRow('signups', [
                 'uuid' => $uuid, 'company' => $v['company'], 'admin_name' => $v['admin_name'],
                 'admin_email' => $email, 'mobile' => $v['mobile'] ?? null,
                 'gstin' => $gstin, 'state' => $v['state'], 'subdomain' => $slugReq ?: null,
                 'plan_id' => $plan->id, 'seats' => (int) $v['seats'], 'companies' => $companies, 'cycle' => $v['cycle'],
                 'amount' => $price['amount'], 'tax' => $price['tax'],
+                'coupon_code' => $couponCode, 'coupon_discount' => $price['coupon_discount'] ?? 0,
                 'status' => 'quoted', 'quote_token' => $token, 'quote_no' => $quoteNo, 'quoted_at' => now(),
                 'created_at' => now(), 'updated_at' => now(),
-            ]);
+            ]));
 
             // Email the quotation PDF + the public pay link (best-effort).
             $link = url('/quote/'.$token);
@@ -483,17 +629,19 @@ class SignupController extends Controller
                     'subject' => 'Your SmartPRS quotation '.$quoteNo.' — '.$v['company'],
                     'heading' => 'SmartPRS quotation for '.$v['company'],
                     'intro' => 'Thank you for your interest in SmartPRS by Ametecs — the complete HR, payroll and field-force platform for India\'s collections & recovery industry. Please find your quotation attached. When approved, you (or your finance team) can complete payment securely and your workspace is created instantly using the button below.',
-                    'lines' => [
+                    'lines' => array_filter([
                         'Quotation' => $quoteNo,
                         'Plan' => ($plan->name ?? 'Plan').' — all 16 modules',
                         'Employees' => (string) $v['seats'],
                         'Companies' => (string) $companies,
                         'Billing period' => $cycleLabel,
+                        // rev 113: the discount is stated CLEARLY on the quotation.
+                        'Discount (coupon '.($couponCode ?: '—').')' => $couponCode ? '− ₹'.number_format((float) ($price['coupon_discount'] ?? 0), 2) : null,
                         'Subscription amount' => '₹'.number_format($price['amount'], 2),
                         'GST (18%)' => '₹'.number_format($price['tax'], 2),
                         'Total payable' => '₹'.number_format($price['total'], 2),
                         'Valid until' => now()->addDays(self::QUOTE_VALID_DAYS)->format('d M Y'),
-                    ],
+                    ]),
                     'cta_label' => 'Pay securely & create workspace',
                     'cta_url' => $link,
                     'attach_b64' => base64_encode($pdf->output()),
@@ -516,6 +664,27 @@ class SignupController extends Controller
         }
     }
 
+    /**
+     * rev 113: the price a quotation is LOCKED at. A coupon captured at quote
+     * time (typed or exclusive auto-applied) stays on the quote — the signups
+     * row holds the discounted amount/tax, which always win over a recompute.
+     */
+    private static function quoteLockedPrice(object $s, object $plan): array
+    {
+        $price = BillingController::priceFor($plan, (int) $s->seats, $s->cycle, max(1, (int) ($s->companies ?? 1)));
+        $disc = (float) ($s->coupon_discount ?? 0);
+        if ($disc > 0) {
+            $price['amount_before_coupon'] = $price['amount'];
+            $price['coupon_code'] = $s->coupon_code;
+            $price['coupon_discount'] = $disc;
+            $price['amount'] = (float) $s->amount;
+            $price['tax'] = (float) $s->tax;
+            $price['total'] = round($price['amount'] + $price['tax'], 2);
+        }
+
+        return $price;
+    }
+
     /** Load a quote by its public token (must still be payable). */
     private function findQuote(string $token)
     {
@@ -532,7 +701,7 @@ class SignupController extends Controller
             abort(404);
         }
         $plan = DB::table('plans')->where('id', $s->plan_id)->first();
-        $price = BillingController::priceFor($plan, (int) $s->seats, $s->cycle, max(1, (int) ($s->companies ?? 1)));
+        $price = self::quoteLockedPrice($s, $plan);   // rev 113: coupon locked into the quote
         $expired = $s->quoted_at ? \Illuminate\Support\Carbon::parse($s->quoted_at)->addDays(self::QUOTE_VALID_DAYS)->isPast() : false;
 
         return view('quote-public', [
@@ -567,7 +736,7 @@ class SignupController extends Controller
                 return response()->json(['ok' => false, 'error' => 'This quotation has already been paid.'], 422);
             }
             $plan = DB::table('plans')->where('id', $s->plan_id)->first();
-            $price = BillingController::priceFor($plan, (int) $s->seats, $s->cycle, max(1, (int) ($s->companies ?? 1)));
+            $price = self::quoteLockedPrice($s, $plan);   // rev 113: pay link honours the quoted (discounted) figure
             $paise = (int) round($price['total'] * 100);
             $creds = BillingController::razorpayCreds();
             if (! $creds) {
@@ -630,7 +799,7 @@ class SignupController extends Controller
         $s = DB::table('signups')->where('id', $signupId)->first();
         $plan = DB::table('plans')->where('id', $s->plan_id)->first();
         $companies = max(1, (int) ($s->companies ?? 1));
-        $price = BillingController::priceFor($plan, (int) $s->seats, $s->cycle, $companies);
+        $price = self::quoteLockedPrice($s, $plan);   // rev 113: discount shown clearly on the PDF
         $seller = (new BillingController())->publicSellerProfile();
         $intra = BillingController::buyerIsIntraState($s, $seller);
 

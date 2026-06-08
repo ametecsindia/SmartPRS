@@ -120,6 +120,16 @@ input.fi:focus,select.fi:focus{outline:none;border-color:var(--accent)}
         <div class="plans" id="plans"></div>
         <label class="fl">Advance period</label>
         <div class="cycles" id="cycles"></div>
+        {{-- rev 112/113b: discount coupon — hidden unless public coupons are live
+             in the backend; an exclusive email match reveals it automatically --}}
+        <div id="cpnwrap" style="display:{{ ($couponsEnabled ?? false) ? 'block' : 'none' }}">
+          <label class="fl">Have a coupon code?</label>
+          <div style="display:flex;gap:8px">
+            <input class="fi" id="f_coupon" placeholder="e.g. LAUNCH25" maxlength="40" style="text-transform:uppercase;margin-bottom:0;flex:1">
+            <button type="button" id="cpnbtn" onclick="applyCoupon()" style="background:#fff;color:var(--accent);border:1.5px solid var(--accent);border-radius:9px;padding:0 18px;font-weight:700;cursor:pointer;font-family:inherit">Apply</button>
+          </div>
+          <div id="cpnmsg" style="display:none;margin-top:7px;font-size:13px;border-radius:8px;padding:9px 12px"></div>
+        </div>
         <div class="quote" id="quote"></div>
         <div class="terms-row">
           <input type="checkbox" id="f_terms">
@@ -152,16 +162,17 @@ input.fi:focus,select.fi:focus{outline:none;border-color:var(--accent)}
       <h4>2. Pricing &amp; billing</h4>
       <p>Prices are as displayed at checkout, exclusive of GST (18%), which is added on the invoice. The minimum billing period is 3 months, payable in advance. Half-yearly advance carries a 10% discount and annual advance a 25% discount, applied to the invoice value. Every plan includes one company; each additional company in your group is charged a flat ₹1,000 per month. The subscribed employee count applies to your account as a whole, across all your companies. A GST tax invoice is generated and emailed for every payment.</p>
       <h4>3. Refund policy</h4>
-      <p><b>7-day money-back guarantee:</b> if you are not satisfied with SmartPRS, write to sales@ametecsindia.com within 7 days of your first payment and we will refund the full amount paid, no questions asked.</p>
+      <p><b>7-day money-back guarantee:</b> if you are not satisfied with SmartPRS, write to support@ametecsindia.com within 7 days of your first payment and we will refund the full amount paid, no questions asked.</p>
       <p>After the first 7 days, fees for the advance period already invoiced are non-refundable; pro-rata refunds are not provided for unused months, seats, or early cancellation. Your workspace remains active until the end of the paid period. Refunds, where due, are processed to the original payment method within 7–10 working days.</p>
       <h4>4. Your data</h4>
-      <p>Your data belongs to you. We process it solely to provide the service, in line with applicable Indian law including the DPDP Act, 2023. On termination you may export your data, and we will delete it from active systems within 30 days of the paid period ending.</p>
+      <p>Your data belongs to you. We process it solely to provide the service, in line with applicable Indian law including the DPDP Act, 2023. On termination you may export your data; it is retained for 90 days after the paid period ends (so you can export or reactivate) and then permanently deleted.</p>
       <h4>5. Acceptable use &amp; availability</h4>
-      <p>You agree to use SmartPRS lawfully, including compliance with RBI guidelines applicable to collections and recovery operations. We target high availability but the service is provided "as is"; planned maintenance is notified in advance. Ametecs' total liability is limited to the fees paid for the current billing period.</p>
+      <p>You agree to use SmartPRS lawfully, including compliance with RBI guidelines applicable to collections and recovery operations. We target high availability but the service is provided "as is"; planned maintenance is notified in advance. Ametecs' total liability is limited to the fees paid in the 3 months preceding the claim.</p>
       <h4>6. Renewal, suspension &amp; termination</h4>
       <p>Subscriptions renew at the end of each advance period and a renewal invoice is emailed. Non-payment may lead to suspension after reasonable notice. Either party may terminate with effect from the end of the current paid period.</p>
       <h4>7. General</h4>
-      <p>These terms are governed by the laws of India, with courts at Hyderabad, Telangana having jurisdiction. For any question, write to sales@ametecsindia.com.</p>
+      <p>These terms are governed by the laws of India, with courts at Hyderabad, Telangana having jurisdiction. For any question, write to support@ametecsindia.com.</p>
+      <p style="margin-top:10px;"><b>Full versions:</b> this is a summary for quick reading. The complete documents govern: <a href="{{ url('/terms-and-conditions') }}" target="_blank">Terms &amp; Conditions</a> · <a href="{{ url('/refund-policy') }}" target="_blank">Refund Policy</a> · <a href="{{ url('/privacy-policy') }}" target="_blank">Privacy Policy</a> · <a href="{{ url('/data-protection') }}" target="_blank">Data Protection</a> · <a href="{{ url('/support-policy') }}" target="_blank">Support Policy</a>.</p>
     </div>
     <div class="tfoot">
       <button class="tbtn gh" onclick="closeTerms()">Close</button>
@@ -221,10 +232,71 @@ function renderQuote(){
   if (q.companies > 1) { h += '<div class="row"><span>Additional companies: '+(q.companies-1)+' × ₹1,000</span><b>'+inr(q.coFee)+'/mo</b></div>'; }
   h += '<div class="row"><span>Billing period</span><b>'+q.months+' months</b></div>';
   if (q.disc > 0) { h += '<div class="row"><span>Advance discount</span><b style="color:#16a34a">−'+(q.disc*100)+'%</b></div>'; }
+  // rev 112: coupon line — display recomputed locally; the order is re-priced server-side.
+  if (state.coupon) {
+    var cd = state.coupon.ctype === 'flat' ? Math.min(state.coupon.cvalue, q.amount) : Math.round(q.amount * state.coupon.cvalue) / 100;
+    cd = Math.round(cd * 100) / 100;
+    q.amount = Math.round((q.amount - cd) * 100) / 100;
+    q.tax = Math.round(q.amount * GST) / 100;
+    q.total = Math.round((q.amount + q.tax) * 100) / 100;
+    h += '<div class="row"><span>Coupon ' + state.coupon.code + ' (' + state.coupon.label + ')</span><b style="color:#16a34a">−' + inr(cd) + '</b></div>';
+  }
   h += '<div class="row"><span>Subtotal</span><b>'+inr(q.amount)+'</b></div>';
   h += '<div class="row"><span>GST (18%)</span><b>'+inr(q.tax)+'</b></div>';
   h += '<div class="total"><span>Payable now</span><span>'+inr(q.total)+'</span></div>';
   document.getElementById('quote').innerHTML = h;
+}
+function cpnMsg(ok, text){
+  var m = document.getElementById('cpnmsg');
+  m.style.display = 'block';
+  m.style.background = ok ? '#dcfce7' : '#fee2e2';
+  m.style.color = ok ? '#166534' : '#991b1b';
+  m.style.border = '1px solid ' + (ok ? '#bbf7d0' : '#fecaca');
+  m.innerHTML = text;
+}
+function applyCoupon(){
+  var code = document.getElementById('f_coupon').value.trim().toUpperCase();
+  if (!code) { state.coupon = null; document.getElementById('cpnmsg').style.display = 'none'; renderQuote(); return; }
+  var b = document.getElementById('cpnbtn'); b.disabled = true;
+  post('{{ url('/signup/coupon-check') }}', {
+    coupon: code, plan_id: state.plan,
+    seats: parseInt(document.getElementById('f_seats').value, 10) || 0,
+    companies: Math.max(1, parseInt(document.getElementById('f_companies').value, 10) || 1),
+    cycle: state.cycle, email: document.getElementById('f_email').value.trim() || null
+  }).then(function(j){
+    b.disabled = false;
+    if (!j.ok) { state.coupon = null; cpnMsg(false, j.error || 'This coupon code is not valid.'); renderQuote(); return; }
+    state.coupon = { code: j.code, label: j.label, ctype: j.ctype, cvalue: j.cvalue };
+    cpnMsg(true, '<i class="fas fa-circle-check"></i> Coupon <b>' + j.code + '</b> applied — ' + j.label + '. <a onclick="removeCoupon()" style="color:#166534;font-weight:700;cursor:pointer;text-decoration:underline">Remove</a>');
+    renderQuote();
+  }).catch(function(){ b.disabled = false; cpnMsg(false, 'Network error — please retry.'); });
+}
+function removeCoupon(){
+  state.coupon = null;
+  state.exclDismissed = true;   // user said no — never auto-apply again this visit
+  document.getElementById('f_coupon').value = '';
+  document.getElementById('cpnmsg').style.display = 'none';
+  renderQuote();
+}
+// rev 113: the cart CATCHES the email — if an exclusive offer was sent to it,
+// the discount applies automatically (removable).
+function exclusiveCheck(){
+  if (state.coupon || state.exclDismissed) { return; }
+  var email = document.getElementById('f_email').value.trim();
+  if (!email || email.indexOf('@') < 1) { return; }
+  post('{{ url('/signup/exclusive-check') }}', {
+    email: email, plan_id: state.plan,
+    seats: parseInt(document.getElementById('f_seats').value, 10) || 0,
+    companies: Math.max(1, parseInt(document.getElementById('f_companies').value, 10) || 1),
+    cycle: state.cycle
+  }).then(function(j){
+    if (!j.ok || state.coupon || state.exclDismissed) { return; }
+    state.coupon = { code: j.code, label: j.label, ctype: j.ctype, cvalue: j.cvalue };
+    document.getElementById('cpnwrap').style.display = 'block';   // rev 113b: exclusive match reveals the box
+    document.getElementById('f_coupon').value = j.code;
+    cpnMsg(true, '<i class="fas fa-gift"></i> <b>Your exclusive offer was applied automatically</b> — ' + j.label + ' (code ' + j.code + ', sent to your email). <a onclick="removeCoupon()" style="color:#166534;font-weight:700;cursor:pointer;text-decoration:underline">Remove</a>');
+    renderQuote();
+  }).catch(function(){});
 }
 function showErr(msg){ var e = document.getElementById('err'); e.textContent = msg; e.style.display = 'block'; }
 function openTerms(){ document.getElementById('termsov').classList.add('open'); }
@@ -247,7 +319,8 @@ function startCheckout(){
     gstin: document.getElementById('f_gstin').value.trim().toUpperCase(),
     subdomain: (document.getElementById('f_slug') ? document.getElementById('f_slug').value.trim().toLowerCase() : ''),
     plan_id: state.plan, seats: parseInt(document.getElementById('f_seats').value, 10) || 0,
-    companies: Math.max(1, parseInt(document.getElementById('f_companies').value, 10) || 1), cycle: state.cycle
+    companies: Math.max(1, parseInt(document.getElementById('f_companies').value, 10) || 1), cycle: state.cycle,
+    coupon: state.coupon ? state.coupon.code : ''
   };
   if (!body.company || !body.admin_name || !body.admin_email) { showErr('Please fill the company name, your name and your email.'); b.disabled = false; return; }
   if (!body.state) { showErr('Please select your state — it decides how GST appears on your tax invoice.'); b.disabled = false; return; }
@@ -308,6 +381,7 @@ function sendQuote(){
   document.getElementById('err').style.display = 'none';
   document.getElementById('quoteok').style.display = 'none';
   var body = collectForm();
+  body.coupon = state.coupon ? state.coupon.code : '';   // rev 113: coupon locked into the quotation
   if (!body.company || !body.admin_name || !body.admin_email) { showErr('Please fill the company name, your name and your email — the quotation is sent to that email.'); return; }
   if (!body.state) { showErr('Please select your state so the quotation shows the correct GST.'); return; }
   var b = document.getElementById('quotebtn'); b.disabled = true; var old = b.innerHTML; b.innerHTML = 'Sending…';
@@ -326,6 +400,9 @@ function sendQuote(){
   renderPlans(); renderCycles(); renderQuote();
   document.getElementById('f_seats').addEventListener('input', renderQuote);
   document.getElementById('f_companies').addEventListener('input', renderQuote);
+  // rev 113: catch the email → auto-apply any exclusive offer sent to it.
+  document.getElementById('f_email').addEventListener('blur', exclusiveCheck);
+  document.getElementById('f_email').addEventListener('change', exclusiveCheck);
 })();
 </script>
 </body>

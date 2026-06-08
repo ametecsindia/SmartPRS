@@ -32,7 +32,7 @@ use Illuminate\Support\Str;
  */
 class BillingController extends Controller
 {
-    private const GST = 18.0;   // %
+    public const GST = 18.0;   // % (public rev 112: CouponService recomputes tax after discount)
 
     private function guard(Request $request)
     {
