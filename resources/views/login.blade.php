@@ -9,6 +9,28 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="stylesheet" href="/css/smartprs.css">
     <link rel="icon" type="image/png" href="{{ asset('images/logo-icon.png') }}">
+    <style>
+      /* rev 120 (mobile fix): the desktop two-column login did NOT collapse on a
+         phone — the form was pushed half off-screen. Stack it: a slim navy brand
+         bar on top, the form full-width below. */
+      html,body{overflow-x:hidden;}
+      @media (max-width: 860px){
+        #login-page{flex-direction:column !important;min-height:100vh;}
+        .login-left{width:100% !important;min-height:auto !important;height:auto !important;
+                    flex:0 0 auto !important;padding:30px 20px 22px !important;text-align:center;}
+        .login-features{display:none !important;}      /* hide the 3 feature rows on small screens */
+        .login-brand img{width:190px !important;margin:0 auto 4px !important;}
+        .login-brand p{margin:0 !important;}
+        .login-right{width:100% !important;flex:1 1 auto !important;padding:30px 18px 36px !important;}
+        .login-form-wrap{width:100% !important;max-width:440px !important;margin:0 auto !important;}
+        .login-form-wrap h2{font-size:26px;}
+      }
+      @media (max-width: 420px){
+        .login-left{padding:24px 16px 18px !important;}
+        .login-brand img{width:160px !important;}
+        .login-right{padding:24px 14px 30px !important;}
+      }
+    </style>
 </head>
 <body>
 <div id="login-page">

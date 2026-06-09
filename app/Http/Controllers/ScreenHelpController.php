@@ -1522,6 +1522,15 @@ class ScreenHelpController extends Controller
                 'r' => ['Admin / HR — any scheme incl. company-wide', 'Managers & Team Leaders — schemes for their own people', 'Employees — see and claim what applies to them'],
                 'rel' => 'Also see: Commission Entries, Live Salary, Commission Calculator',
             ],
+            'mobile-devices' => [
+                'm' => 'Administration', 't' => 'Mobile Devices', 'g' => 'Approve the phones that may use the app',
+                'w' => 'When an employee installs the SmartPRS app and enters your company web address, their phone appears here as Pending. You approve it once — then they can sign in and use everything, including GPS attendance punch. Only an approved device gets in, so a lost or unknown phone never reaches your data.',
+                'f' => [['fa-mobile-screen', 'Pending / approved / rejected devices'], ['fa-check', 'Approve a device'], ['fa-ban', 'Reject or revoke (lost phone)'], ['fa-hashtag', 'Match by the code shown on the phone'], ['fa-bell', 'Push-enabled indicator']],
+                's' => ['An employee enters your web address in the app; their device shows here as Pending with a short code.', 'Confirm it is really their phone (the same code shows on their screen), then tap Approve.', 'The phone unlocks within a few seconds and they sign in.', 'If a phone is lost or stolen, tap Revoke — it loses access on its next check.'],
+                'tip' => 'The device gate is your anti-fraud lock — approve deliberately, and revoke the moment a phone goes missing. No background tracking is used; punch GPS is foreground-only.',
+                'r' => ['Admin / HR'],
+                'rel' => 'Also see: Users, Roles & Permissions',
+            ],
             'commission-calc' => [
                 'm' => 'Compensation & Claims', 't' => 'Commission Calculator', 'g' => 'Bulk compute from collection sheets',
                 'w' => 'Upload a CSV of collections and let the engine compute payouts — flat percentage, slab rates, or per-portfolio rates, with optional target gates. Preview everything, then commit the approved lines into Commission Entries.',

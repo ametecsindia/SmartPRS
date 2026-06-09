@@ -37,6 +37,13 @@
         /* ---- nav ---- */
         nav{position:sticky;top:0;z-index:50;background:rgba(10,22,40,.85);backdrop-filter:blur(14px);border-bottom:1px solid rgba(255,255,255,.06);}
         nav .wrap{display:flex;align-items:center;justify-content:space-between;height:70px;}
+        /* rev 120: mobile hamburger menu */
+        .nav-burger{display:none;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.2);color:#fff;border-radius:10px;width:44px;height:44px;font-size:19px;cursor:pointer;align-items:center;justify-content:center;}
+        .mobile-menu{display:none;flex-direction:column;background:rgba(10,22,40,.98);backdrop-filter:blur(14px);border-top:1px solid rgba(255,255,255,.08);padding:8px clamp(16px,4vw,24px) 18px;}
+        .mobile-menu a{padding:14px 6px;color:rgba(255,255,255,.88);font-size:16px;font-weight:600;border-bottom:1px solid rgba(255,255,255,.07);}
+        .mobile-menu a:last-child{border-bottom:none;}
+        .mobile-menu .mm-cta{margin-top:10px;background:var(--accent);color:#fff;text-align:center;border-radius:11px;border:none;}
+        body.mm-open .mobile-menu{display:flex;}
         .logo{display:flex;align-items:center;gap:11px;font-weight:800;font-size:19px;color:#fff;}
         .logo .mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#ea580c);display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(249,115,22,.4);}
         .logo b{color:var(--accent2);font-weight:800;}
@@ -167,7 +174,8 @@
             .hero::before{background:linear-gradient(180deg,rgba(15,29,51,.9),rgba(15,29,51,.82));}
         }
         @media(max-width:620px){
-            .navlinks a:not(.btn){display:none;}
+            .navlinks{display:none;}        /* rev 120: replaced by the hamburger menu */
+            .nav-burger{display:inline-flex;}
             .hero h1{font-size:36px;letter-spacing:-1px;}
             .hero p{font-size:17px;}
             h2{font-size:29px;}
@@ -192,6 +200,18 @@
                 <a href="{{ route('login') }}" class="btn btn-ghost">Sign in</a>
                 <a href="#contact" class="btn btn-accent">{{ $c['hero']['cta'] }}</a>
             </div>
+            {{-- rev 120: mobile hamburger — on phones the nav links had nowhere to go. --}}
+            <button class="nav-burger" aria-label="Menu" onclick="document.body.classList.toggle('mm-open')"><i class="fas fa-bars"></i></button>
+        </div>
+        <div class="mobile-menu" onclick="document.body.classList.remove('mm-open')">
+            <a href="#about">Why SmartPRS</a>
+            <a href="#features">Features</a>
+            <a href="#how">How it works</a>
+            <a href="#pricing">Pricing</a>
+            <a href="{{ url('/demo') }}" style="color:var(--accent);font-weight:700;">Live Demo</a>
+            <a href="#faq">FAQ</a>
+            <a href="{{ route('login') }}">Sign in</a>
+            <a href="#contact" class="mm-cta">{{ $c['hero']['cta'] }} →</a>
         </div>
     </nav>
 

@@ -58,6 +58,19 @@ if (! $spOnPrem) {
 Route::get('/offer/{token}', [App\Http\Controllers\OfferAcceptController::class, 'show'])->name('offer.show');
 Route::post('/offer/{token}/accept', [App\Http\Controllers\OfferAcceptController::class, 'accept'])->name('offer.accept');
 
+// rev 119: MOBILE APP device gate — public API consumed by the hybrid app
+// BEFORE login (no session/cookie → CSRF-exempt, like the webhooks). Tenant is
+// resolved by host (custom domain) or the workspace slug the app sends.
+Route::post('/api/mobile/register', [App\Http\Controllers\MobileDeviceController::class, 'register'])
+    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+    ->middleware('throttle:60,1')->name('api.mobile.register');
+Route::post('/api/mobile/status', [App\Http\Controllers\MobileDeviceController::class, 'status'])
+    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+    ->middleware('throttle:120,1')->name('api.mobile.status');
+Route::post('/api/mobile/push-token', [App\Http\Controllers\MobileDeviceController::class, 'pushToken'])
+    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
+    ->middleware('throttle:30,1')->name('api.mobile.push');
+
 // Public off-roll agent email verification (no login — secured by the token).
 Route::get('/agent/verify/{token}', [App\Http\Controllers\OffrollAgentController::class, 'verifyEmail'])->name('agent.verify');
 
@@ -457,6 +470,12 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/master/{type}/import', [App\Http\Controllers\MasterController::class, 'import'])->name('app.master.import');
     Route::get('/app/master/{type}/template', [App\Http\Controllers\MasterController::class, 'template'])->name('app.master.template');
     Route::post('/app/master/{type}/{id}/delete', [App\Http\Controllers\MasterController::class, 'delete'])->name('app.master.delete');
+    // rev 119: mobile device approval (tenant admin/HR).
+    Route::get('/app/mobile-devices/list', [App\Http\Controllers\MobileDeviceController::class, 'index'])->name('app.mobiledevices');
+    Route::post('/app/mobile-devices/{id}/approve', [App\Http\Controllers\MobileDeviceController::class, 'approve'])->name('app.mobiledevices.approve');
+    Route::post('/app/mobile-devices/{id}/reject', [App\Http\Controllers\MobileDeviceController::class, 'reject'])->name('app.mobiledevices.reject');
+    Route::post('/app/mobile-devices/{id}/revoke', [App\Http\Controllers\MobileDeviceController::class, 'revoke'])->name('app.mobiledevices.revoke');
+
     Route::get('/app/{screen?}', [AppController::class, 'show'])->name('app');
 
     // Legacy first-pass native module pages are superseded by the /app prototype

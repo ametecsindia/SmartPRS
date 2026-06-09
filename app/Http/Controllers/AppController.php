@@ -120,6 +120,7 @@ class AppController extends Controller
             'approvalsUrl' => route('app.approvals'),
             'requestsBase' => url('/app/requests'),   // + /{module}  and  /{module}/{id}/decide
             'schemesBase' => url('/app/schemes'),     // rev 115: + /for-me, /{id}/withdraw
+            'mobileDevBase' => url('/app/mobile-devices'),  // rev 119: + /list, /{id}/approve|reject|revoke
             'masterBase' => url('/app/master'),       // + /{type}, /{type}/{id}/delete
             'cocUrl' => url('/app/code-of-conduct'),   // Code of Conduct read + acknowledge (+ /ack)
             'incentiveBase' => url('/app/incentive'),   // commission/incentive calc: /template /calculate /commit
@@ -194,6 +195,12 @@ class AppController extends Controller
         // (first </head>, last </body>) — never a blind replace-all.
         $style = <<<CSS
 <style>
+/* rev 120: kill horizontal page scroll on phones — nothing should be wider than
+   the viewport. The min-width:0 lets flex children actually shrink (the classic
+   cause of a row that refuses to fit). */
+html,body{max-width:100%;overflow-x:hidden;}
+.main-wrap,.content,.topbar{min-width:0;max-width:100%;}
+.content{overflow-x:hidden;}
 #login-page{display:none!important}
 #smartprs-burger{display:inline-flex}
 #smartprs-mlogo{display:none}
@@ -223,9 +230,18 @@ class AppController extends Controller
 #sp-search{min-width:80px}
 @media (max-width: 1350px) and (min-width: 901px){
   .topbar{padding:0 14px;gap:10px}
-  .topbar-actions{gap:8px}
+  .topbar-actions{gap:8px;min-width:0}
   #sp-search{width:130px !important}
   .topbar-actions .csub{display:none}
+  /* rev 120: in this narrow-desktop band (e.g. a ~990px window) the company
+     switcher + avatar + logout were colliding and clipping. Let the company name
+     shrink to an ellipsis so the action buttons always stay fully on screen. */
+  .topbar-actions .company{min-width:0 !important;flex:0 1 180px !important;max-width:180px}
+}
+@media (max-width: 1120px) and (min-width: 901px){
+  /* no room for the search box here — drop it so nothing clips off the right */
+  #sp-search-wrap,.topbar-search,#sp-search{display:none !important}
+  .topbar-actions .company{flex:0 1 150px !important;max-width:150px}
 }
 @media (max-width: 900px){
   .sidebar{transform:translateX(-100%);transition:transform .25s ease;z-index:120}
@@ -242,22 +258,52 @@ class AppController extends Controller
   .kpi{padding:14px}
   .kpi h3{font-size:19px}
   .content{padding:14px !important}
-  .topbar{height:auto;min-height:56px;padding:8px 10px;gap:8px}
-  .topbar > div:first-child{min-width:0}
-  .breadcrumb{display:none}
-  .page-title{display:none}
-  #smartprs-mlogo{display:inline-flex !important;align-items:center;gap:8px}
-  .topbar-actions{gap:8px}
-  .topbar-search{display:none !important}
-  .topbar-actions .topbar-btn:not(.sp-keep){display:none !important}   /* hide bell/import/export; keep logout */
-  .topbar-actions .csub{display:none}                    /* compact company switcher */
-  .topbar-actions .company{max-width:48vw;padding:6px 10px}
-  .topbar-actions .cname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
-  .cdrop{max-width:80vw}
-  .page-header{flex-direction:column;align-items:flex-start;gap:10px}
+  /* rev 120: TOPBAR must never overflow on a phone. Keep only the essentials
+     (burger, mobile logo, Punch In, company icon, profile, logout); hide search,
+     breadcrumb, title, bell, import/export. Reduce padding + shrink-to-fit. */
+  .topbar{height:auto !important;min-height:54px;padding:8px 10px !important;gap:8px !important;overflow:hidden;flex-wrap:nowrap;}
+  .topbar > div:first-child{min-width:0;flex:0 1 auto;overflow:hidden;}
+  .breadcrumb,.page-title{display:none !important;}
+  #smartprs-mlogo{display:inline-flex !important;align-items:center;gap:6px;flex:0 0 auto;}
+  #smartprs-mlogo b{display:none !important;}   /* rev 121: the "SmartPRS" wordmark was clipping to "S" — keep just the icon on phones */
+  .topbar-actions{gap:8px !important;min-width:0;flex:1 1 auto;justify-content:flex-end;}
+  #sp-search-wrap,.topbar-search{display:none !important;}
+  .topbar-actions .topbar-btn:not(.sp-keep){display:none !important;}
+  .topbar-actions .csub{display:none !important;}
+  .topbar-actions .company{max-width:34vw;padding:6px 9px;flex:0 1 auto;min-width:0;}
+  /* rev 121: the company chip must NOT collapse — when it shrank to ~18px the GRP
+     icon spilled out and the avatar overlapped it. Lock the icon to its size. */
+  .topbar-actions .company .cico{flex:0 0 auto !important;}
+  .topbar-actions .company .cname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;}
+  .cdrop{max-width:84vw;}
+  .pg-head,.page-header{flex-direction:column;align-items:flex-start;gap:10px;}
+  .pg-actions{margin-left:0 !important;width:100%;}
+}
+@media (max-width: 430px){
+  /* very narrow: company switcher shows only its icon, Punch In text trims */
+  .topbar-actions .company .cname,.topbar-actions .company i.fa-chevron-down{display:none !important;}
+  /* rev 121: icon-only, but DON'T let it shrink (that caused the GRP/avatar overlap) */
+  .topbar-actions .company{max-width:none;padding:6px 8px;flex:0 0 auto !important;overflow:hidden;}
 }
 @media (max-width: 600px){
   th,td{padding:9px 10px !important}
+  /* rev 120 (mobile/app): entry & detail MODALS use fixed 2/3-col field grids set
+     inline; on a phone they cram. Force every grid inside any *-modal (req-modal,
+     comm-modal, ms-modal, etc.) to a single column so fields stack and stay tappable.
+     rev 121: overriding grid-template-columns:1fr did NOT collapse these inline grids
+     (verified live in-browser — the inline 2-col value stuck). Switching the display
+     to a flex column reliably stacks the children full-width on every modal. */
+  div[id$="-modal"] [style*="grid-template-columns"]{display:flex !important;flex-direction:column !important;align-items:stretch !important;}
+  div[id$="-modal"] [style*="grid-template-columns"] > *{width:100% !important;min-width:0 !important;}
+  div[id$="-modal"] .card{max-width:100% !important;padding:18px 16px !important;}
+  /* register/action cells wrap their buttons instead of forcing a wide row */
+  td [class*="btn"]{margin-bottom:4px;}
+}
+/* rev 120: any data table sitting directly in a .card scrolls sideways on small
+   screens rather than blowing out the page width (most are already wrapped; this
+   is the safety net for any that aren't). */
+@media (max-width: 900px){
+  .card > table, .card > .tbl{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
 }
 /* --- rev 66 UX polish: motion & interaction ONLY (palette, layout, fonts, icons unchanged) --- */
 input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
@@ -357,6 +403,7 @@ CSS;
         safe(function () { injectAdminLinks(cfg); });
         safe(function () { wirePlatformNavIcons(); });
         safe(function () { injectMySubNav(cfg); });
+        safe(function () { injectMobileDevNav(cfg); });
         safe(function () { injectTransfersNav(); });
         safe(function () { injectLiveSalaryNav(cfg); });
         safe(function () { injectPayLedgerNav(); });
@@ -461,7 +508,7 @@ CSS;
         kb: ['kb', 'faqs', 'training-programs', 'training-records', 'training-content', 'code-of-conduct', 'helpdesk', 'letters-offer', 'letters-increment', 'letters-warning', 'letters-relieving', 'letters-templates', 'notice', 'messages', 'send-message'],
         reports: ['reports', 'activity-logs'],
         assets: ['assets'],
-        settings: ['companies', 'departments', 'designations', 'branches', 'banks', 'users', 'roles', 'settings', 'fin-year', 'my-subscription', 'branding', 'company-emails', 'wa-settings', 'wa-templates', 'sms-settings', 'sms-templates', 'approvals-inbox'],
+        settings: ['companies', 'departments', 'designations', 'branches', 'banks', 'users', 'roles', 'settings', 'fin-year', 'my-subscription', 'branding', 'company-emails', 'wa-settings', 'wa-templates', 'sms-settings', 'sms-templates', 'approvals-inbox', 'mobile-devices'],
         saas: ['tenants', 'plans', 'subscriptions', 'invoices', 'payments', 'gateways', 'feature-flags']
     };
     // Resolve the current login's saved perms object from DB.roles (match by the
@@ -785,6 +832,22 @@ CSS;
         d.textContent = 'My Subscription';
         anchor.parentNode.insertBefore(d, anchor.nextSibling);
         anchor.parentNode.__mySubNav = true;
+    }
+    // rev 119: "Mobile Devices" nav under Administration (admin/HR) — approve the
+    // phones that may use the SmartPRS app. Boot-JS injection, no app.html edit.
+    function injectMobileDevNav(cfg) {
+        if (cfg.role !== 'Admin' && cfg.role !== 'Super Admin') { return; }
+        var anchor = document.querySelector('.nav-item[data-id="users"]')
+            || document.querySelector('.nav-item[data-id="roles"]')
+            || document.querySelector('.nav-item[data-id="settings"]');
+        if (!anchor || !anchor.parentNode || anchor.parentNode.__mobDevNav) { return; }
+        var d = document.createElement('div');
+        d.className = 'nav-item';
+        d.setAttribute('data-id', 'mobile-devices');
+        d.setAttribute('onclick', "go('mobile-devices',this)");
+        d.textContent = 'Mobile Devices';
+        anchor.parentNode.insertBefore(d, anchor.nextSibling);
+        anchor.parentNode.__mobDevNav = true;
     }
     // rev 77: "Transfers" nav under People (boot-JS injection — no app.html
     // edit). Branch + master↔subsidiary company moves with approval + register.
@@ -1199,6 +1262,7 @@ CSS;
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['my-subscription']) { SCREENS['my-subscription'] = { title: 'My Subscription', type: 'custom' }; } } catch (e) {}
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['transfers']) { SCREENS['transfers'] = { title: 'Employee Transfers', type: 'custom' }; } } catch (e) {}
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['pay-ledger']) { SCREENS['pay-ledger'] = { title: 'Salary & Commission Ledger', type: 'custom' }; } } catch (e) {}
+        try { if (typeof SCREENS !== 'undefined' && !SCREENS['mobile-devices']) { SCREENS['mobile-devices'] = { title: 'Mobile Devices', type: 'custom' }; } } catch (e) {}
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['wa-templates']) { SCREENS['wa-templates'] = { title: 'WhatsApp Templates', type: 'custom' }; } } catch (e) {}
         // Money/HR request modules → real DB + hierarchy approval (generic engine).
         try {
@@ -1224,6 +1288,7 @@ CSS;
             if (id === 'code-of-conduct') { return codeOfConductScreen(); }
             if (id === 'late-policy') { return latePolicyScreen(); }
             if (id === 'incentive-schemes') { return schemesScreen(); }
+            if (id === 'mobile-devices') { return mobileDevicesScreen(); }
             if (id === 'commission-calc') { return commissionCalcScreen(); }
             if (id === 'fin-year') { return finYearScreen(); }
             if (id === 'my-subscription') { return mySubScreen(); }
@@ -1806,6 +1871,64 @@ CSS;
         if (!(rt >= 0 && rt <= 100)) { rt = 5; }
         var net = g > 0 ? Math.round((g - (g * rt / 100)) * 100) / 100 : 0;
         var a = document.getElementById('rq_amount'); if (a) { a.value = net > 0 ? net : ''; }
+    };
+    // ---- rev 119: MOBILE DEVICES approval screen -----------------------------
+    window.__MOBDEV = null;
+    function mobDevLoad() {
+        fetch(cfg.mobileDevBase + '/list', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__MOBDEV = j; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__MOBDEV = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    function mobDevChip(st) {
+        var m = { pending: ['#fef3c7', '#92400e', 'PENDING'], approved: ['#dcfce7', '#166534', 'APPROVED'], rejected: ['#fee2e2', '#991b1b', 'REJECTED'] };
+        var c = m[st] || m.pending;
+        return '<span style="background:' + c[0] + ';color:' + c[1] + ';font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px">' + c[2] + '</span>';
+    }
+    function mobileDevicesScreen() {
+        var d = window.__MOBDEV;
+        if (!d) { setTimeout(function () { if (!window.__MOBDEV) { mobDevLoad(); } }, 10); return pghead('Mobile Devices', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading devices…</div></div>'; }
+        var rows = d.rows || [];
+        var body = rows.map(function (x) {
+            var act = '';
+            if (x.status === 'pending' || x.status === 'rejected') {
+                act += '<button class="btn btn-primary btn-sm" onclick="mobDevDecide(' + x.id + ',&#39;approve&#39;)"><i class="fas fa-check"></i> Approve</button> ';
+            }
+            if (x.status === 'pending') {
+                act += '<button class="btn btn-outline btn-sm" onclick="mobDevDecide(' + x.id + ',&#39;reject&#39;)" style="color:var(--red)">Reject</button>';
+            }
+            if (x.status === 'approved') {
+                act += '<button class="btn btn-outline btn-sm" onclick="mobDevDecide(' + x.id + ',&#39;revoke&#39;)" style="color:var(--red)"><i class="fas fa-ban"></i> Revoke</button>';
+            }
+            return '<tr>'
+                + '<td><b>' + (x.deviceName || 'Mobile device') + '</b><div style="font-size:11px;color:var(--text3)">' + (x.platform || '') + (x.host ? ' · ' + x.host : '') + (x.hasPush ? ' · <i class="fas fa-bell" title="push enabled"></i>' : '') + '</div></td>'
+                + '<td><span style="font-family:monospace;font-size:13px;background:#f1f5f9;padding:2px 8px;border-radius:6px">' + (x.code || '—') + '</span></td>'
+                + '<td style="font-size:12.5px;color:var(--text2)">' + (x.registered || '') + (x.lastSeen ? '<div style="font-size:11px;color:var(--text3)">seen ' + x.lastSeen + '</div>' : '') + '</td>'
+                + '<td>' + mobDevChip(x.status) + (x.status === 'approved' && x.approvedBy ? '<div style="font-size:11px;color:#166534">by ' + x.approvedBy + '</div>' : '') + (x.status === 'rejected' && x.rejectReason ? '<div style="font-size:11px;color:#991b1b">' + x.rejectReason + '</div>' : '') + '</td>'
+                + '<td style="white-space:nowrap">' + act + '</td>'
+                + '</tr>';
+        }).join('');
+        return pghead('Mobile Devices', 'Approve the phones that may use the SmartPRS app. Only an approved device can sign in and punch — revoke a lost phone to lock it out instantly.', '<button class="btn btn-outline" onclick="window.__MOBDEV=null;mobDevLoad()"><i class="fas fa-rotate"></i> Refresh</button>')
+            + '<div class="card" style="padding:0;overflow-x:auto"><table class="tbl" style="width:100%"><thead><tr><th>Device</th><th>Code</th><th>Registered</th><th>Status</th><th></th></tr></thead><tbody>'
+            + (body || '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:34px">No devices yet. When an employee enters your web address in the SmartPRS app, their phone appears here for approval.</td></tr>')
+            + '</tbody></table></div>';
+    }
+    window.mobDevDecide = function (id, action) {
+        var body = {};
+        if (action === 'reject') {
+            var reason = window.prompt('Reason for rejecting (the phone shows this):', '');
+            if (reason === null) { return; }
+            body.reason = reason;
+        } else if (action === 'revoke') {
+            if (!window.confirm('Revoke this device? It loses access on its next check (use for a lost/stolen phone).')) { return; }
+            action = 'revoke'; body.reason = 'Access revoked by your administrator.';
+        } else if (!window.confirm('Approve this device? It unlocks on the phone within a few seconds.')) { return; }
+        fetch(cfg.mobileDevBase + '/' + id + '/' + action, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body) })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Done'); } window.__MOBDEV = null; mobDevLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Action failed'); }
+            }).catch(function () {});
     };
     // ---- rev 115: COMMISSION & INCENTIVE SCHEMES screen ----------------------
     window.__SCHEMES = null;
@@ -3951,13 +4074,13 @@ CSS;
         var ribbon = '';
         if (schemes.length) {
             var s0 = schemes[0];
-            ribbon = '<div style="position:absolute;top:0;right:0;background:#f97316;color:#fff;font-size:11.5px;font-weight:700;padding:6px 14px;border-radius:0 14px 0 12px;max-width:46%;cursor:pointer" onclick="go(&#39;commissions&#39;)" title="Open Commission Entries to claim">'
-                + '<i class="fas fa-bullseye" style="margin-right:5px"></i>' + s0.title + ' &mdash; ' + s0.rate + (s0.till ? ' &middot; till ' + s0.till : '')
+            ribbon = '<div style="background:#f97316;color:#fff;font-size:12px;font-weight:700;padding:9px 14px;margin:-18px -22px 14px;border-radius:14px 14px 0 0;cursor:pointer;line-height:1.35" onclick="go(&#39;commissions&#39;)" title="Open Commission Entries to claim">'
+                + '<i class="fas fa-bullseye" style="margin-right:6px"></i>' + s0.title + ' &mdash; ' + s0.rate + (s0.till ? ' &middot; till ' + s0.till : '')
                 + (schemes.length > 1 ? ' &middot; +' + (schemes.length - 1) + ' more' : '')
                 + '</div>';
         }
-        return '<div class="card" style="margin-bottom:16px;background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff;position:relative;overflow:hidden">' + ribbon
-            + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px' + (schemes.length ? ';margin-top:14px' : '') + '">'
+        return '<div class="card" style="margin-bottom:16px;background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff;overflow:hidden">' + ribbon
+            + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'
             + '<div><div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;opacity:.7"><i class="fas fa-bolt" style="margin-right:6px"></i>Live Salary &mdash; ' + e.name + ' (' + e.code + ')</div>'
             + '<div style="font-size:32px;font-weight:800;margin-top:2px">' + inr(d.net) + '</div>'
             + '<div style="font-size:12px;opacity:.75">earned till ' + m.today + ' &middot; ' + m.factorPct + '% of ' + m.monthLabel + ' &middot; projection ' + inr(m.fullMonthNet) + '</div></div>'
@@ -3972,9 +4095,10 @@ CSS;
         var bar = document.querySelector('.topbar-actions') || document.querySelector('.topbar');
         if (!bar || document.getElementById('sp-search')) { return; }
         var wrap = document.createElement('div');
+        wrap.id = 'sp-search-wrap';   // rev 120: so mobile CSS can hide the whole search on small screens
         wrap.style.cssText = 'position:relative;margin-right:8px';
         var inp = document.createElement('input');
-        inp.id = 'sp-search'; inp.type = 'search'; inp.placeholder = 'Search employees…'; inp.className = 'sp-keep';
+        inp.id = 'sp-search'; inp.type = 'search'; inp.placeholder = 'Search employees…';
         inp.style.cssText = 'padding:7px 11px;border:1px solid var(--border);border-radius:8px;font-size:13px;width:180px;background:#fff';
         var dd = document.createElement('div');
         dd.id = 'sp-search-dd';
@@ -6872,18 +6996,19 @@ CSS;
             ? '<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.25)"><span style="font-size:11px;letter-spacing:1px;text-transform:uppercase;opacity:.75">Projected incl. pending commissions</span>'
               + '<div style="font-size:24px;font-weight:800">' + inr(d.projectedNet || d.net) + ' <span style="font-size:12px;font-weight:600;background:#fef3c7;color:#92400e;padding:2px 10px;border-radius:99px;vertical-align:middle">+ ' + inr(pendC) + ' awaiting approval</span></div></div>'
             : '';
-        // rev 115: orange schemes ribbon — "what you can earn right now".
+        // rev 120: orange schemes ribbon — a CLEAN full-width strip at the top of
+        // the card (was an absolute box that overlapped the heading on phones).
         var lsSchemes = d.schemes || [];
         var lsRibbon = '';
         if (lsSchemes.length) {
             var ls0 = lsSchemes[0];
-            lsRibbon = '<div style="position:absolute;top:0;right:0;background:#f97316;color:#fff;font-size:11.5px;font-weight:700;padding:6px 14px;border-radius:0 14px 0 12px;max-width:46%;cursor:pointer" onclick="go(&#39;commissions&#39;)" title="Open Commission Entries to claim">'
-                + '<i class="fas fa-bullseye" style="margin-right:5px"></i>' + ls0.title + ' &mdash; ' + ls0.rate + (ls0.till ? ' &middot; till ' + ls0.till : '')
+            lsRibbon = '<div style="background:#f97316;color:#fff;font-size:12px;font-weight:700;padding:9px 14px;margin:-18px -22px 16px;border-radius:14px 14px 0 0;cursor:pointer;line-height:1.35" onclick="go(&#39;commissions&#39;)" title="Open Commission Entries to claim">'
+                + '<i class="fas fa-bullseye" style="margin-right:6px"></i>' + ls0.title + ' &mdash; ' + ls0.rate + (ls0.till ? ' &middot; till ' + ls0.till : '')
                 + (lsSchemes.length > 1 ? ' &middot; +' + (lsSchemes.length - 1) + ' more' : '')
                 + '</div>';
         }
-        var big = '<div class="card" style="text-align:center;margin-bottom:14px;background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff;position:relative;overflow:hidden">' + lsRibbon
-            + '<div style="font-size:12px;letter-spacing:1px;text-transform:uppercase;opacity:.75' + (lsSchemes.length ? ';margin-top:12px' : '') + '">Net salary earned till today (approved only)</div>'
+        var big = '<div class="card" style="text-align:center;margin-bottom:14px;background:linear-gradient(135deg,#0f1d33,#1e3a5f);color:#fff;overflow:hidden">' + lsRibbon
+            + '<div style="font-size:12px;letter-spacing:1px;text-transform:uppercase;opacity:.75">Net salary earned till today (approved only)</div>'
             + '<div style="font-size:40px;font-weight:800;margin:6px 0">' + inr(d.net) + '</div>'
             + '<div style="font-size:12.5px;opacity:.8">' + m.factorPct + '% of the month &middot; full-month projection: ' + inr(m.fullMonthNet) + ' net (' + inr(m.fullMonthGross) + ' gross)</div>'
             + projLine
