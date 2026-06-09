@@ -250,8 +250,15 @@ class LetterController extends Controller
             'photo' => $photo,
         ]);
 
-        // Inline preview in the browser tab; users can save from the PDF viewer.
-        return $pdf->stream('idcard-'.$code.'.pdf');
+        // Desktop opens this in a new tab for preview (inline). Mobile browsers and
+        // the app webview can't reliably render an inline PDF in a popup tab, so when
+        // the client asks with ?dl=1 we force a real download (Content-Disposition:
+        // attachment) which works on phones. rev 122.
+        $fname = 'idcard-'.$code.'.pdf';
+        if ($request->boolean('dl')) {
+            return $pdf->download($fname);
+        }
+        return $pdf->stream($fname);
     }
 
     /** Upload/replace an employee photo (used by the ID card + directory). */

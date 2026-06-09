@@ -279,6 +279,17 @@ html,body{max-width:100%;overflow-x:hidden;}
   .pg-head,.page-header{flex-direction:column;align-items:flex-start;gap:10px;}
   .pg-actions{margin-left:0 !important;width:100%;}
 }
+@media (max-width: 900px){
+  /* rev 122: Geo-Fence map. Leaflet gives its panes/controls z-index up to ~1000;
+     because the map element isn't its own stacking context those leaked ABOVE the
+     mobile nav drawer (z-index 120) — the map painted over the open menu. isolate it
+     so all its internal z-indexes are contained below the drawer. Also stack the
+     rule list above a full-width map (no min-width overflow) on phones. Desktop is
+     untouched (this whole block only applies <=900px, where the drawer exists). */
+  .geo-split{flex-direction:column !important;}
+  .geo-list{width:100% !important;min-width:0 !important;max-height:240px !important;border-right:none !important;border-bottom:1px solid var(--border) !important;}
+  #geo-map{min-width:0 !important;width:100% !important;height:380px !important;isolation:isolate;position:relative;z-index:0;}
+}
 @media (max-width: 430px){
   /* very narrow: company switcher shows only its icon, Punch In text trims */
   .topbar-actions .company .cname,.topbar-actions .company i.fa-chevron-down{display:none !important;}
@@ -298,6 +309,32 @@ html,body{max-width:100%;overflow-x:hidden;}
   div[id$="-modal"] .card{max-width:100% !important;padding:18px 16px !important;}
   /* register/action cells wrap their buttons instead of forcing a wide row */
   td [class*="btn"]{margin-bottom:4px;}
+  /* rev 122: master tables (Training Programs, FAQs, Escalations, …) are 6-8 cols
+     wide and scrolled sideways on phones, cramming long text (Description/Answer)
+     into a tiny column. On phones ONLY, stack each record into a card: hide the
+     header row and lay each cell out as "LABEL : value". Long cells go full-width
+     and justified so the text reads edge-to-edge. Tablet/desktop keep the table. */
+  table.mc-table, table.mc-table tbody, table.mc-table tr, table.mc-table td{display:block;width:auto;}
+  table.mc-table thead{display:none;}
+  table.mc-table tr{padding:6px 2px;border-top:1px solid var(--border);}
+  table.mc-table tr:first-child{border-top:none;}
+  table.mc-table td{border:none !important;padding:6px 14px !important;display:flex;gap:14px;align-items:baseline;min-width:0 !important;font-size:13px;}
+  table.mc-table td::before{content:attr(data-label);flex:0 0 38%;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;color:var(--text3);}
+  table.mc-table td.mc-longtext{display:block;}
+  table.mc-table td.mc-longtext::before{display:block;margin-bottom:5px;flex:none;}
+  table.mc-table td.mc-longtext{text-align:justify;-webkit-hyphens:auto;hyphens:auto;line-height:1.55;}
+  table.mc-table td.mc-actions{justify-content:flex-end;gap:18px;padding-top:10px !important;}
+  table.mc-table td.mc-actions::before{display:none;}
+  table.mc-table td.mc-actions:empty{display:none;}
+  /* rev 122: "How SmartPRS Works" — its cards sit in an inline 2-col grid that
+     crammed the text into a ~12-char column on phones. On mobile ONLY, stack to a
+     single card per row with clear spacing (flex column reliably overrides the
+     inline display:grid). Tablet/desktop keep the original 2-up grid untouched. */
+  .hiw-grid{display:flex !important;flex-direction:column !important;gap:16px !important;}
+  .hiw-grid .hiw-card{margin-bottom:0 !important;}
+  /* full-width column now reads well; justify the body with hyphenation so the
+     right edge is tidy without the ragged gaps justify usually causes */
+  .hiw-body{text-align:justify;-webkit-hyphens:auto;hyphens:auto;}
 }
 /* rev 120: any data table sitting directly in a .card scrolls sideways on small
    screens rather than blowing out the page width (most are already wrapped; this
@@ -329,6 +366,16 @@ html{scroll-behavior:smooth}
    screen that sets its own inline padding — including the padding:0 full-bleed
    table cards — automatically overrides this (inline styles win). --- */
 .card{padding:18px 22px}
+/* rev 122: themed in-app prompt (replaces the native browser prompt() that showed
+   the ugly "the page at smartprs.com says" box). High z-index so it sits above the
+   drawer, modals and the map. */
+.sp-prompt-ov{position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:100000;display:flex;align-items:center;justify-content:center;padding:18px;animation:sp-fade .15s ease}
+.sp-prompt-card{background:#fff;border-radius:16px;width:100%;max-width:420px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.32);animation:sp-pop .2s cubic-bezier(.16,.84,.44,1)}
+.sp-prompt-title{font-weight:700;font-size:17px;color:var(--text);margin-bottom:6px}
+.sp-prompt-msg{font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5}
+.sp-prompt-input{width:100%;border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-size:14px;font-family:inherit;box-sizing:border-box;color:var(--text);background:var(--bg2,#f8fafc)}
+.sp-prompt-input:focus{border-color:var(--accent);outline:none;background:#fff}
+.sp-prompt-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
 </style>
 <link rel="icon" type="image/png" href="/images/logo-icon.png">
 CSS;
@@ -1578,15 +1625,59 @@ CSS;
                 else if (typeof toast === 'function') { toast((d && d.error) || 'Could not apply'); }
             }).catch(function () { if (typeof toast === 'function') { toast('Could not apply'); } });
     };
+    // rev 122: themed, async replacement for window.prompt() — returns a Promise that
+    // resolves to the entered string, or null if cancelled (same contract as prompt).
+    window.spPrompt = function (o) {
+        o = o || {};
+        return new Promise(function (resolve) {
+            var ov = document.createElement('div');
+            ov.className = 'sp-prompt-ov';
+            var okStyle = o.danger ? ' style="background:var(--red);border-color:var(--red)"' : '';
+            var ph = (o.placeholder || '').replace(/"/g, '&quot;');
+            var fieldHtml = o.multiline
+                ? '<textarea class="sp-prompt-input" id="sp-prompt-input" rows="3" placeholder="' + ph + '"></textarea>'
+                : '<input class="sp-prompt-input" id="sp-prompt-input" type="text" placeholder="' + ph + '">';
+            ov.innerHTML = '<div class="sp-prompt-card" role="dialog">'
+                + '<div class="sp-prompt-title">' + (o.title || '') + '</div>'
+                + (o.message ? '<div class="sp-prompt-msg">' + o.message + '</div>' : '')
+                + fieldHtml
+                + '<div class="sp-prompt-actions">'
+                + '<button class="btn btn-outline" id="sp-prompt-cancel">' + (o.cancelText || 'Cancel') + '</button>'
+                + '<button class="btn btn-primary" id="sp-prompt-ok"' + okStyle + '>' + (o.okText || 'OK') + '</button>'
+                + '</div></div>';
+            document.body.appendChild(ov);
+            var inp = ov.querySelector('#sp-prompt-input');
+            if (o.value) { inp.value = o.value; }
+            setTimeout(function () { try { inp.focus(); } catch (e) {} }, 30);
+            var done = false;
+            function close(val) { if (done) { return; } done = true; if (ov.parentNode) { ov.parentNode.removeChild(ov); } resolve(val); }
+            ov.querySelector('#sp-prompt-cancel').onclick = function () { close(null); };
+            ov.querySelector('#sp-prompt-ok').onclick = function () { close(inp.value); };
+            ov.addEventListener('mousedown', function (e) { if (e.target === ov) { close(null); } });
+            inp.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape') { close(null); }
+                if (e.key === 'Enter' && !o.multiline) { e.preventDefault(); close(inp.value); }
+            });
+        });
+    };
     window.leaveDecide = function (id, action) {
-        var remarks = window.prompt((action === 'approve' ? 'Approve' : 'Reject') + ' this leave — remarks (optional):', '');
-        if (remarks === null) { return; }
-        fetch(cfg.leaveDecideUrl + '/' + id + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action, remarks: remarks }) })
-            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-            .then(function (res) {
-                if (res.ok && res.j && res.j.ok) { if (typeof toast === 'function') { toast('Leave ' + res.j.status); } leaveLoad(); window.__APPROVALS = null; }
-                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Action failed'); }
-            }).catch(function () { if (typeof toast === 'function') { toast('Action failed'); } });
+        var isApprove = action === 'approve';
+        window.spPrompt({
+            title: isApprove ? 'Approve leave' : 'Reject leave',
+            message: isApprove ? 'Add an optional remark for the employee, then approve.' : 'Add an optional reason the employee will see, then reject.',
+            placeholder: 'Remarks (optional)',
+            okText: isApprove ? 'Approve' : 'Reject',
+            danger: !isApprove,
+            multiline: true
+        }).then(function (remarks) {
+            if (remarks === null) { return; }
+            fetch(cfg.leaveDecideUrl + '/' + id + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action, remarks: remarks }) })
+                .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+                .then(function (res) {
+                    if (res.ok && res.j && res.j.ok) { if (typeof toast === 'function') { toast('Leave ' + res.j.status); } leaveLoad(); window.__APPROVALS = null; }
+                    else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Action failed'); }
+                }).catch(function () { if (typeof toast === 'function') { toast('Action failed'); } });
+        });
     };
     // ---- Approvals Inbox (real pending items awaiting the logged-in user) -----
     window.__APPROVALS = null;
@@ -3543,10 +3634,10 @@ CSS;
         var te = teEsc;
         var p = d.profile || {};
         var prof = '<div style="display:flex;align-items:center;gap:14px">'
-            + '<img src="' + (p.photo || cfg.myPhotoUrl) + '?t=' + Date.now() + '" onerror="this.onerror=null;this.src=window.__DEFAULT_AVATAR" style="width:56px;height:56px;border-radius:50%;object-fit:cover;background:#f1f5f9">'
-            + '<div><div style="font-weight:700;font-size:15px">' + te(p.name) + ' <span style="color:var(--text3);font-weight:400;font-size:12px">' + te(p.emp_code) + '</span></div>'
-            + '<div style="font-size:12.5px;color:var(--text2)">' + (te(p.designation) || '—') + (p.department ? ' · ' + te(p.department) : '') + '</div>'
-            + '<div style="font-size:12px;color:var(--text3)">' + te(p.email) + (p.joined ? ' · joined ' + String(p.joined).slice(0, 10) : '') + '</div></div></div>';
+            + '<img src="' + (p.photo || cfg.myPhotoUrl) + '?t=' + Date.now() + '" onerror="this.onerror=null;this.src=window.__DEFAULT_AVATAR" style="flex:0 0 auto;width:56px;height:56px;border-radius:50%;object-fit:cover;background:#f1f5f9">'
+            + '<div style="min-width:0;flex:1"><div style="font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + te(p.name) + ' <span style="color:var(--text3);font-weight:400;font-size:12px">' + te(p.emp_code) + '</span></div>'
+            + '<div style="font-size:12.5px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (te(p.designation) || '—') + (p.department ? ' · ' + te(p.department) : '') + '</div>'
+            + '<div style="font-size:12px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + te(p.email) + (p.joined ? ' · joined ' + String(p.joined).slice(0, 10) : '') + '</div></div></div>';
         var att = d.attendance || {};
         var attHtml = '<div style="font-size:13px">Present this month (' + te(att.month) + '): <b>' + (att.present || 0) + '</b> day(s)' + (att.last_punch ? ' · last punch ' + te(att.last_punch) : '') + '</div>';
         var pays = (d.payslips && d.payslips.length) ? d.payslips.map(function (s) {
@@ -3559,7 +3650,7 @@ CSS;
         var no = (d.notices && d.notices.length) ? d.notices.map(function (n) {
             return '<div style="padding:6px 0;border-top:1px solid var(--border)"><div style="font-weight:600;font-size:13px">' + te(n.title) + (n.date ? ' <span style="color:var(--text3);font-size:11px;font-weight:400">' + String(n.date).slice(0, 10) + '</span>' : '') + '</div>' + (n.body ? '<div style="font-size:12px;color:var(--text2)">' + te(n.body) + '</div>' : '') + '</div>';
         }).join('') : '';
-        return '<div style="max-width:760px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+        return '<div style="max-width:760px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px">'
             + essCard('My profile', prof) + essCard('My attendance', attHtml)
             + essCard('My recent payslips', pays) + essCard('My recent leave', lv)
             + '</div>' + (no ? essCard('Notice board', no) : '') + '</div>';
@@ -4294,15 +4385,15 @@ CSS;
                 + '<div style="font-size:12px;color:var(--text3);margin-top:2px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (strict ? '#dc2626' : '#f59e0b') + ';margin-right:5px"></span>' + (r.start || '—') + ' · ' + (r.radius_km || '?') + ' km · ' + (r.outside || '—') + '</div></div>';
         }).join('') : '<div style="padding:24px;text-align:center;color:var(--text3);font-size:13px">No geofence rules yet.<br>Add them under <b>Geo-Fence Rules</b>.</div>';
         return pghead('Geo-Fence Map', rows.length + ' rule(s) · click an employee to zoom; red = strict, amber = lenient', manageBtn)
-            + '<div class="card" style="padding:0;overflow:hidden"><div style="display:flex;flex-wrap:wrap">'
-            + '<div style="width:260px;min-width:220px;border-right:1px solid var(--border);overflow:auto;max-height:560px">' + list + '</div>'
+            + '<div class="card" style="padding:0;overflow:hidden"><div class="geo-split" style="display:flex;flex-wrap:wrap">'
+            + '<div class="geo-list" style="width:260px;min-width:220px;border-right:1px solid var(--border);overflow:auto;max-height:560px">' + list + '</div>'
             + '<div id="geo-map" style="flex:1;min-width:320px;height:560px;background:#eef2f7"></div>'
             + '</div></div>';
     }
     // ---- How It Works: in-app guide to the key modules ------------------------
     function howItWorksScreen() {
         var card = function (icon, color, title, body) {
-            return '<div class="card" style="margin-bottom:0;padding:18px 20px"><div style="display:flex;align-items:flex-start;gap:14px"><div style="flex:0 0 auto;width:38px;height:38px;border-radius:10px;background:' + color + '22;color:' + color + ';display:flex;align-items:center;justify-content:center;font-size:16px"><i class="fas ' + icon + '"></i></div><div><div style="font-weight:700;font-size:14px;margin-bottom:3px">' + title + '</div><div style="font-size:12.5px;color:var(--text2);line-height:1.55">' + body + '</div></div></div></div>';
+            return '<div class="card hiw-card" style="margin-bottom:0;padding:18px 20px"><div class="hiw-head" style="display:flex;align-items:flex-start;gap:14px"><div style="flex:0 0 auto;width:38px;height:38px;border-radius:10px;background:' + color + '22;color:' + color + ';display:flex;align-items:center;justify-content:center;font-size:16px"><i class="fas ' + icon + '"></i></div><div style="min-width:0"><div style="font-weight:700;font-size:14px;margin-bottom:3px">' + title + '</div><div class="hiw-body" style="font-size:12.5px;color:var(--text2);line-height:1.55">' + body + '</div></div></div></div>';
         };
         var cards = [
             card('fa-fingerprint', '#10b981', 'Attendance &amp; Geo-fence', 'Staff punch in/out from the app, the desktop/mobile app, or a ZKTeco device (register it under Biometric Devices, set its IP, then Sync). Field staff can be GPS-fenced under Geo-Fence Rules — a punch outside the allowed area is blocked. The Attendance Report flags late arrivals (L1/L2/L3) and over-budget breaks per each company Late Policy.'),
@@ -4317,7 +4408,7 @@ CSS;
             card('fa-bullhorn', '#f97316', 'Messaging &amp; Notices', 'Broadcast to staff by Email, SMS or WhatsApp (configure providers under settings). Notice Board posts appear on everyone dashboard.')
         ];
         return pghead('How SmartPRS Works', 'A quick guide to each module — for admins and employees', '')
-            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:980px">' + cards.join('') + '</div>'
+            + '<div class="hiw-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:980px">' + cards.join('') + '</div>'
             + '<div style="max-width:980px;margin-top:14px;font-size:12px;color:var(--text3)">Tip: most config screens (Late Policy, Salary Structure, Points Rules) have an in-form guide — open Add/Edit to see worked examples.</div>';
     }
     // ---- Tests engine: question bank (admin) + take-test + auto-score ---------
@@ -6224,7 +6315,7 @@ CSS;
             var chk = canDel ? '<td style="' + cs + ';width:40px;text-align:center;vertical-align:middle;padding:8px 6px"><input type="checkbox" class="idsel" value="' + String(code).replace(/"/g, '&quot;') + '" onchange="idSelCount()" style="width:15px;height:15px;cursor:pointer;vertical-align:middle"></td>' : '';
             return '<tr>' + chk + '<td style="' + cs + ';font-weight:600;vertical-align:middle">' + av + (e.name || '') + '</td><td style="' + cs + ';vertical-align:middle">' + code + '</td><td style="' + cs + ';vertical-align:middle">' + (e.designation || '') + '</td><td style="' + cs + ';text-align:right;white-space:nowrap;vertical-align:middle">'
                 + '<a onclick="openPhotoModal(' + "'" + code + "'" + ')" style="cursor:pointer;color:#0891b2;font-size:12px;margin-right:16px"><i class="fas fa-camera"></i> Set Photo</a>'
-                + '<a href="' + cfg.idcardBase + '/' + encodeURIComponent(code) + '/pdf" target="_blank" rel="noopener" style="color:#4f46e5;font-size:12px;text-decoration:none"><i class="fas fa-id-card"></i> ID Card PDF</a></td></tr>';
+                + (function () { var u = cfg.idcardBase + '/' + encodeURIComponent(code) + '/pdf'; var st = 'color:#4f46e5;font-size:12px;text-decoration:none'; var isMob = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || ''); return isMob ? '<a href="' + u + '?dl=1" download="idcard-' + code + '.pdf" rel="noopener" style="' + st + '"><i class="fas fa-id-card"></i> ID Card PDF</a>' : '<a href="' + u + '" target="_blank" rel="noopener" style="' + st + '"><i class="fas fa-id-card"></i> ID Card PDF</a>'; })() + '</td></tr>';
         }).join('');
         var delBtn = canDel ? '<button id="idDelBtn" class="btn btn-outline btn-sm" style="color:var(--red);display:none" onclick="idDelSel()"><i class="fas fa-trash"></i> Delete selected (<span id="idDelN">0</span>)</button>' : '';
         return pghead('ID Cards', emps.length + ' employee(s) · upload a photo, then generate a printable ID card', delBtn)
@@ -7449,18 +7540,22 @@ CSS;
                 else if (f.type === 'date') { disp = String(raw).slice(0, 10); }
                 else if (f.src === 'emp') { disp = empNameLink(String(raw)); }   // rev 86: profile popup
                 else { disp = String(raw); }
-                return '<td style="' + c + (i === 0 ? ';font-weight:600' : '') + '">' + disp + '</td>';
+                // rev 122: long text (Description, FAQ Answer, etc.) gets more width
+                // and is justified — full-width when the row stacks into a card on mobile.
+                var isTextarea = f.type === 'textarea';
+                var isLong = isTextarea || (typeof raw === 'string' && raw.length > 60);
+                return '<td data-label="' + f.l + '"' + (isLong ? ' class="mc-longtext"' : '') + ' style="' + c + (i === 0 ? ';font-weight:600' : '') + (isTextarea ? ';min-width:300px' : '') + '">' + disp + '</td>';
             }).join('');
             var ra = mc.rowAction ? '<a href="' + (cfg[mc.rowAction.cfg] || '') + '/' + r.id + mc.rowAction.suffix + '" target="_blank" rel="noopener" title="' + mc.rowAction.label + '" style="color:#4f46e5;font-size:12px;margin-right:16px;text-decoration:none;white-space:nowrap"><i class="fas fa-file-pdf"></i> ' + mc.rowAction.label + '</a>' : '';
             if (mc.rowEmail) { ra += '<a onclick="letterEmail(' + r.id + ')" title="Email this letter to the recipient" style="cursor:pointer;color:#0891b2;font-size:12px;margin-right:16px;white-space:nowrap"><i class="fas fa-paper-plane"></i> Email</a>'; }
             if (mc.rowAcceptLink) { ra += '<a onclick="letterAcceptLink(' + r.id + ')" title="Email the candidate an offer-acceptance link" style="cursor:pointer;color:#16a34a;font-size:12px;margin-right:16px;white-space:nowrap"><i class="fas fa-link"></i> Acceptance link</a>'; }
             if (mc.rowPost) { ra += '<a onclick="masterRowPost(' + "'" + (cfg[mc.rowPost.cfg] || '') + '/' + r.id + mc.rowPost.suffix + "'" + ')" title="' + mc.rowPost.label + '" style="cursor:pointer;color:#0891b2;font-size:12px;margin-right:16px;white-space:nowrap"><i class="fas ' + (mc.rowPost.icon || 'fa-bolt') + '"></i> ' + mc.rowPost.label + '</a>'; }
             if (mc.rowFn) { ra += '<a onclick="' + mc.rowFn + '(' + r.id + ')" title="' + (mc.rowFnLabel || '') + '" style="cursor:pointer;color:#7c3aed;font-size:12px;margin-right:16px;white-space:nowrap"><i class="fas ' + (mc.rowFnIcon || 'fa-id-card') + '"></i> ' + (mc.rowFnLabel || '') + '</a>'; }
-            var act = canManage ? '<td style="' + c + ';white-space:nowrap;text-align:right">' + ra + '<i class="fas fa-pen" title="Edit" style="cursor:pointer;color:var(--text2);margin-right:14px" onclick="masterEdit(\'' + type + '\',' + r.id + ')"></i><i class="fas fa-trash" title="Delete" style="cursor:pointer;color:var(--red)" onclick="masterDelete(\'' + type + '\',' + r.id + ')"></i></td>' : (ra ? '<td style="' + c + ';text-align:right">' + ra + '</td>' : '<td></td>');
+            var act = canManage ? '<td class="mc-actions" data-label="Actions" style="' + c + ';white-space:nowrap;text-align:right">' + ra + '<i class="fas fa-pen" title="Edit" style="cursor:pointer;color:var(--text2);margin-right:14px" onclick="masterEdit(\'' + type + '\',' + r.id + ')"></i><i class="fas fa-trash" title="Delete" style="cursor:pointer;color:var(--red)" onclick="masterDelete(\'' + type + '\',' + r.id + ')"></i></td>' : (ra ? '<td class="mc-actions" data-label="Actions" style="' + c + ';text-align:right">' + ra + '</td>' : '<td class="mc-actions"></td>');
             return '<tr>' + cells + act + '</tr>';
         }).join('');
         return pghead(mc.title, rows.length + ' record(s) · ' + mc.sub, addBtn)
-            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + '<div class="card" style="padding:0;overflow:auto"><table class="mc-table" style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
             + (rows.length ? body : '<tr><td colspan="' + (lcols.length + 1) + '" style="padding:36px;text-align:center;color:var(--text3)">No records yet. Click the button above to add one.</td></tr>')
             + '</tbody></table></div>';
     }
