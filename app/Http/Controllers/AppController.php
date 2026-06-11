@@ -792,9 +792,37 @@ CSS;
         ov.id = 'smartprs-ov';
         ov.onclick = function () { document.body.classList.remove('nav-open'); };
         document.body.appendChild(ov);
-        // Close the drawer after choosing a menu item.
+        // rev 124: drawer close/stay rule, made bulletproof on mobile.
+        //  • Tapping a SUBMENU ITEM (a .nav-item[data-id] leaf) navigates and
+        //    closes the drawer.
+        //  • Tapping a MAIN MENU ITEM (a .nav-item.nav-group header, no data-id)
+        //    only expands/collapses its submenu — the drawer must STAY open and
+        //    not slide left. We re-assert nav-open just after the click so that
+        //    even an older deployed prototype (whose handlers might close it)
+        //    cannot slide the menu away on a group tap.
         var sb = document.querySelector('.sidebar');
-        if (sb) { sb.addEventListener('click', function (e) { if (e.target.closest('.nav-item')) { document.body.classList.remove('nav-open'); } }); }
+        if (sb) {
+            sb.addEventListener('click', function (e) {
+                var leaf = e.target.closest('.nav-item[data-id]');
+                var grp = e.target.closest('.nav-item.nav-group');
+                if (leaf) {
+                    document.body.classList.remove('nav-open');
+                } else if (grp && window.innerWidth <= 900) {
+                    setTimeout(function () { document.body.classList.add('nav-open'); }, 0);
+                }
+            });
+        }
+        // rev 122: strict accordion — opening one group auto-closes every other
+        // open group. Redefined here (boot runs after the prototype) so the
+        // behaviour is guaranteed regardless of the prototype file's version.
+        window.toggleSub = function (subId, el) {
+            var sub = document.getElementById(subId);
+            if (!sub) { return; }
+            var isOpen = sub.classList.contains('open');
+            document.querySelectorAll('.nav-sub.open').forEach(function (s) { s.classList.remove('open'); });
+            document.querySelectorAll('.nav-item.nav-group.open').forEach(function (n) { n.classList.remove('open'); });
+            if (!isOpen) { sub.classList.add('open'); if (el) { el.classList.add('open'); } }
+        };
     }
     // Add super-admin admin-panel links (Laravel pages) into the SaaS Platform sidebar section.
     // rev 113c (Ejaz screenshot): the native SaaS Platform nav items have no
@@ -6166,6 +6194,43 @@ CSS;
         m.onclick = function (e) { if (e.target === m) { offrollClose(); } };
     }
     window.offrollClose = function () { var m = document.getElementById('offroll-modal'); if (m) { m.remove(); } };
+    // rev 122: in-app document viewer. The old "View" link was a plain
+    // <a target="_blank">, which the mobile webview treated as a full-page
+    // navigation — it replaced the SPA with the raw image and, on return,
+    // reloaded the app to a default screen (looked like a redirect to FAQs)
+    // and broke the menu. Now we FETCH the file as a blob and show it in an
+    // overlay ABOVE the KYC modal, so nothing ever navigates. Closing the
+    // viewer just removes the overlay and leaves the KYC modal + menu intact.
+    window.offrollViewDoc = function (id, slot, label) {
+        var url = cfg.offrollAgentBase + '/' + id + '/file/' + slot;
+        var ov = document.getElementById('offroll-doc-viewer') || (function () { var x = document.createElement('div'); x.id = 'offroll-doc-viewer'; document.body.appendChild(x); return x; })();
+        ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.85);z-index:9500;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:16px;box-sizing:border-box;overflow:auto';
+        ov.innerHTML = '<div style="width:100%;max-width:760px;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;color:#fff">'
+            + '<b style="font-size:14px">' + (label || 'Document') + '</b>'
+            + '<button type="button" class="btn btn-sm" style="background:#fff;color:#0f172a" onclick="offrollCloseDoc()"><i class="fas fa-xmark"></i> Close</button></div>'
+            + '<div id="offroll-doc-body" style="flex:1;width:100%;max-width:760px;display:flex;align-items:center;justify-content:center;color:#fff;text-align:center">Loading…</div>';
+        ov.onclick = function (e) { if (e.target === ov) { offrollCloseDoc(); } };
+        fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { if (!r.ok) { throw new Error('http ' + r.status); } return r.blob(); })
+            .then(function (blob) {
+                if (window.__offrollDocBlobUrl) { try { URL.revokeObjectURL(window.__offrollDocBlobUrl); } catch (e) {} }
+                var bu = URL.createObjectURL(blob);
+                window.__offrollDocBlobUrl = bu;
+                var body = document.getElementById('offroll-doc-body'); if (!body) { return; }
+                if (/pdf/i.test(blob.type)) {
+                    body.innerHTML = '<iframe src="' + bu + '" style="width:100%;height:82vh;border:0;background:#fff;border-radius:8px"></iframe>';
+                } else if (/^image\//i.test(blob.type) || !blob.type) {
+                    body.innerHTML = '<img src="' + bu + '" alt="' + (label || '') + '" style="max-width:100%;max-height:82vh;border-radius:8px;object-fit:contain;background:#fff">';
+                } else {
+                    body.innerHTML = '<a href="' + bu + '" download style="color:#fff;text-decoration:underline;font-size:14px"><i class="fas fa-download"></i> Download file</a>';
+                }
+            })
+            .catch(function () { var body = document.getElementById('offroll-doc-body'); if (body) { body.textContent = 'Could not load this document. Please try again.'; } });
+    };
+    window.offrollCloseDoc = function () {
+        var ov = document.getElementById('offroll-doc-viewer'); if (ov) { ov.remove(); }
+        if (window.__offrollDocBlobUrl) { try { URL.revokeObjectURL(window.__offrollDocBlobUrl); } catch (e) {} window.__offrollDocBlobUrl = null; }
+    };
     window.offrollKyc = function (id) {
         fetch(cfg.offrollAgentBase + '/' + id + '/profile', { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
             .then(function (r) { return r.json(); }).then(function (j) {
@@ -6175,15 +6240,19 @@ CSS;
     };
     function offrollKycRender(p) {
         var inp = recruitInp(), lbl = recruitLbl();
+        var photoPlaceholder = '<div style="width:88px;height:88px;border-radius:10px;border:1.5px dashed var(--border);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:26px"><i class="fas fa-user"></i></div>';
+        // rev 123: a broken/missing photo file must fall back to the placeholder
+        // (onerror) instead of showing the browser's ugly broken-image icon, and
+        // clicking the photo opens it in the same in-app viewer as the documents.
         var photo = p.photo_url
-            ? '<img src="' + p.photo_url + '?t=' + Date.now() + '" style="width:88px;height:88px;border-radius:10px;object-fit:cover;border:1px solid var(--border)">'
-            : '<div style="width:88px;height:88px;border-radius:10px;border:1.5px dashed var(--border);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:26px"><i class="fas fa-user"></i></div>';
+            ? '<img src="' + p.photo_url + '?t=' + Date.now() + '" onclick="offrollViewDoc(' + p.id + ', &#39;photo&#39;, &#39;Photo&#39;)" onerror="this.outerHTML=&#39;' + photoPlaceholder.replace(/'/g, '&#39;').replace(/"/g, '&quot;') + '&#39;" style="width:88px;height:88px;border-radius:10px;object-fit:cover;border:1px solid var(--border);cursor:pointer" title="Click to view">'
+            : photoPlaceholder;
         var emailBadge = p.email_verified ? '<span style="color:#16a34a;font-weight:700;font-size:11px">✓ Verified</span>' : '<span style="color:#f59e0b;font-weight:700;font-size:11px">Not verified</span>';
         var docRows = OFFROLL_DOCS.map(function (dd) {
             var slot = dd[0], lab = dd[1]; var has = p.docs && p.docs[slot];
             return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">'
                 + '<div style="flex:1;font-size:13px">' + lab + ' ' + (has ? '<span style="color:#16a34a;font-size:11px;font-weight:700">✓ Uploaded</span>' : '<span style="color:var(--text3);font-size:11px">— not uploaded</span>') + '</div>'
-                + (has ? '<a href="' + cfg.offrollAgentBase + '/' + p.id + '/file/' + slot + '" target="_blank" rel="noopener" style="color:#3b82f6;font-size:12px">View</a>' : '')
+                + (has ? '<button type="button" onclick="offrollViewDoc(' + p.id + ', &#39;' + slot + '&#39;, &#39;' + lab + '&#39;)" style="background:none;border:0;cursor:pointer;color:#3b82f6;font-size:12px;padding:0;font-family:inherit">View</button>' : '')
                 + '<label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0">' + (has ? 'Replace' : 'Upload') + '<input type="file" accept="image/*,application/pdf" style="display:none" onchange="offrollUploadFile(' + p.id + ', ' + "'" + slot + "'" + ', this)"></label>'
                 + '</div>';
         }).join('');
