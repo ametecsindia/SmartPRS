@@ -490,6 +490,8 @@ CSS;
         // rev 103: on-premise edition gating (SmartPRS-L1/L2/L3).
         safe(function () { wireEditionLockdown(); });
         safe(function () { wireScreenHelp(); });
+        // rev 129: mirror the ⓘ help icon at the in-content heading on phones.
+        safe(function () { wireMobilePageHelp(); });
         safe(function () { if (cfg.tour) { setTimeout(function () { try { spTourStart(); } catch (e) {} }, 1400); } });
         safe(function () { wireResponsive(); });
         safe(function () { wirePunch(cfg); });
@@ -6131,6 +6133,37 @@ CSS;
             window.go = function () { var r = _g.apply(this, arguments); setTimeout(place, 60); return r; };
             window.go.__helpWrapped = true;
         }
+    }
+    // rev 129 (Ejaz): on PHONES the breadcrumb is hidden, so the topbar ⓘ is
+    // gone — mirror the SAME help icon next to the in-content page heading
+    // (.pg-title). Same popup (spHelpOpen). Mobile only; removed on desktop.
+    function mobilePageHelpIcon() {
+        if (window.innerWidth > 900) {
+            document.querySelectorAll('.sp-help-mob').forEach(function (x) { x.remove(); });
+            return;
+        }
+        var t = document.querySelector('#host .pg-head .pg-title')
+            || document.querySelector('#host .page-header h2')
+            || document.querySelector('#host .page-header h1');
+        if (!t || t.querySelector('.sp-help-mob')) { return; }
+        var b = document.createElement('i');
+        b.className = 'fas fa-circle-info sp-help-mob';
+        b.title = 'How this screen works';
+        b.style.cssText = 'margin-left:8px;color:#94a3b8;cursor:pointer;font-size:15px;vertical-align:middle';
+        b.onclick = function (e) { e.stopPropagation(); spHelpOpen(); };
+        t.appendChild(b);
+    }
+    function wireMobilePageHelp() {
+        if (window.__mobHelpWired) { return; }
+        window.__mobHelpWired = true;
+        var host = document.getElementById('host');
+        var pend;
+        var run = function () { clearTimeout(pend); pend = setTimeout(function () { try { mobilePageHelpIcon(); } catch (e) {} }, 40); };
+        if (host && window.MutationObserver) {
+            new MutationObserver(run).observe(host, { childList: true, subtree: true });
+        }
+        window.addEventListener('resize', run);
+        run(); setTimeout(run, 300); setTimeout(run, 900);
     }
     window.spHelpOpen = function () {
         var id = '';
