@@ -24,8 +24,9 @@
         <table>
             <tr>
                 <td>
-                    @if (!empty($brand['logo']))
-                        <img src="{{ $brand['logo'] }}" style="max-height:34px;max-width:120px;object-fit:contain;vertical-align:middle;">
+                    @php $logoSrc = $brand['logo_file'] ?? ($brand['logo'] ?? ''); @endphp
+                    @if (!empty($logoSrc))
+                        <img src="{{ $logoSrc }}" style="max-height:34px;max-width:120px;object-fit:contain;vertical-align:middle;">
                     @endif
                     <div class="brand" style="color: {{ $brand['color'] ?? '#f97316' }};">{{ $brand['display_name'] ?? ($company->name ?? 'SmartPRS') }}</div>
                     <div class="muted">{{ $company->name ?? 'SmartPRS' }}</div>

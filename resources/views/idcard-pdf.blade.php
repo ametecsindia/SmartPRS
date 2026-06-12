@@ -1,6 +1,7 @@
 <?php
     $color = $brand['color'] ?? '#f97316';
     $brandName = $brand['display_name'] ?? ($company ?? 'SmartPRS');
+    $brandLogo = $brand['logo_file'] ?? ($brand['logo'] ?? '');   // rev 131: company logo
     $initials = collect(explode(' ', (string) $e->name))->map(fn ($p) => mb_substr($p, 0, 1))->take(2)->implode('');
 ?>
 <!DOCTYPE html>
@@ -30,6 +31,9 @@
 <body>
 <div class="card">
     <div class="top">
+        @if(!empty($brandLogo))
+            <img src="{{ $brandLogo }}" style="max-height:34px;max-width:150px;object-fit:contain;margin-bottom:5px;">
+        @endif
         <div class="co">{{ $brandName }}</div>
         <div class="sub">Employee ID Card</div>
     </div>

@@ -314,6 +314,9 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/billing/invoices/email', [App\Http\Controllers\BillingController::class, 'emailInvoiceNow'])->name('app.billing.invoices.email');
     Route::get('/app/branding', [App\Http\Controllers\ConfigController::class, 'brandingIndex'])->name('app.branding');
     Route::post('/app/branding', [App\Http\Controllers\ConfigController::class, 'brandingSave'])->name('app.branding.save');
+    // rev 131: company logo UPLOAD (multipart) + serve (in-app <img>; PDFs read the local file).
+    Route::post('/app/branding/logo', [App\Http\Controllers\ConfigController::class, 'brandingLogoUpload'])->name('app.branding.logo.upload');
+    Route::get('/app/branding/logo/{companyId}', [App\Http\Controllers\ConfigController::class, 'brandingLogoServe'])->name('app.branding.logo');
     Route::get('/app/attendance-report/logs/{code}/{date}', [App\Http\Controllers\AttendanceReportController::class, 'logs'])->name('app.attreport.logs');
     Route::post('/app/attendance-report/rating', [App\Http\Controllers\AttendanceReportController::class, 'saveRating'])->name('app.attreport.rating');
     Route::get('/app/state', [App\Http\Controllers\AppStateController::class, 'show'])->name('app.state');

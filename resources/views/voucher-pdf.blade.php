@@ -44,6 +44,8 @@
             <div class="t">SALARY VOUCHER</div>
             <div class="m">{{ $monthLabel }}</div>
         </div>
+        @php $brandLogo = $brand['logo_file'] ?? ($brand['logo'] ?? ''); @endphp
+        @if(!empty($brandLogo))<img src="{{ $brandLogo }}" style="max-height:34px;max-width:150px;object-fit:contain;margin-bottom:4px;"><br>@endif
         <h1>{{ $brandName }}</h1>
         <div class="sub">{{ $company->name ?? '' }}@if($tagline) · {{ $tagline }}@endif</div>
     </div>

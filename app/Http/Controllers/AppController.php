@@ -108,6 +108,7 @@ class AppController extends Controller
             'mailTestUrl' => route('app.mail.test'),
             'brandingUrl' => route('app.branding'),
             'brandingSaveUrl' => route('app.branding.save'),
+            'brandingLogoUrl' => route('app.branding.logo.upload'),
             'empImportUrl' => route('app.employees.import'),
             'empTemplateUrl' => route('app.employees.template'),
             'stateUrl' => route('app.state'),
@@ -1139,7 +1140,25 @@ CSS;
         if (av) {
             var parts = name.trim().split(/[^A-Za-z]+/).filter(function (x) { return x.length; });
             var ini = (parts[0] ? parts[0][0] : '') + (parts[1] ? parts[1][0] : '');
-            av.textContent = (ini || name.slice(0, 2)).toUpperCase();
+            var initials = (ini || name.slice(0, 2)).toUpperCase();
+            av.textContent = initials;
+            // rev 130 (Ejaz): show the logged-in user's PROFILE PHOTO in the
+            // sidebar card when they have one; keep the initials as the fallback
+            // (a user with no photo simply keeps the coloured initials avatar).
+            if (cfg.myPhotoUrl) {
+                var probe = new Image();
+                probe.onload = function () {
+                    av.textContent = '';
+                    av.style.overflow = 'hidden';
+                    var img = document.createElement('img');
+                    img.src = probe.src;
+                    img.alt = name;
+                    img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block';
+                    av.appendChild(img);
+                };
+                probe.onerror = function () {};
+                probe.src = cfg.myPhotoUrl + '?t=' + Date.now();
+            }
         }
         card.__wired = true;
     }
@@ -8375,7 +8394,12 @@ CSS;
                 + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
                 + '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Display name</label><input id="br_name_' + c.id + '" value="' + (b.display_name || '').replace(/"/g, '&quot;') + '" style="' + inp + '"></div>'
                 + '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Brand colour</label><input id="br_color_' + c.id + '" type="color" value="' + (b.color || '#f97316') + '" style="width:100%;height:40px;border:1.5px solid var(--border);border-radius:9px;background:#fff"></div>'
-                + '<div style="grid-column:1/3"><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Logo image URL</label><input id="br_logo_' + c.id + '" value="' + (b.logo || '').replace(/"/g, '&quot;') + '" placeholder="https://…/logo.png" style="' + inp + '"></div>'
+                + '<div style="grid-column:1/3"><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Company logo</label>'
+                + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+                + (d.canManage ? '<label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0"><i class="fas fa-upload"></i> Upload logo<input type="file" accept="image/*" style="display:none" onchange="brandingUploadLogo(&#39;' + c.id + '&#39;, this)"></label>' : '')
+                + '<span style="font-size:11.5px;color:var(--text3)">PNG/JPG, up to 2&nbsp;MB. Appears on payslips, ID cards and every company document.</span>'
+                + '</div></div>'
+                + '<div style="grid-column:1/3"><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">…or paste a logo image URL</label><input id="br_logo_' + c.id + '" value="' + (b.logo || '').replace(/"/g, '&quot;') + '" placeholder="https://…/logo.png" style="' + inp + '"></div>'
                 + '<div style="grid-column:1/3"><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">Tagline</label><input id="br_tag_' + c.id + '" value="' + (b.tagline || '').replace(/"/g, '&quot;') + '" style="' + inp + '"></div>'
                 + '</div>'
                 + (d.canManage ? '<div style="text-align:right;margin-top:12px"><button class="btn btn-primary btn-sm" onclick="brandingSave(\'' + c.id + '\')"><i class="fas fa-check"></i> Save</button></div>' : '')
@@ -8384,6 +8408,18 @@ CSS;
         if (!(d.companies || []).length) { cards = '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No companies found for this tenant.</div></div>'; }
         return pghead('Company Branding', 'Logo, colour and display name per company', '') + cards;
     }
+    // rev 131: upload a company logo file (stored locally; used by app + every PDF).
+    window.brandingUploadLogo = function (cid, input) {
+        var f = input && input.files && input.files[0]; if (!f) { return; }
+        if (f.size > 2 * 1024 * 1024) { if (typeof toast === 'function') { toast('Logo too large — keep it under 2 MB'); } input.value = ''; return; }
+        var fd = new FormData(); fd.append('company_id', cid); fd.append('logo', f);
+        if (typeof toast === 'function') { toast('Uploading logo…'); }
+        fetch(cfg.brandingLogoUrl, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
+            .then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) { window.__BRANDING = null; if (typeof toast === 'function') { toast('Logo uploaded — it now appears on documents'); } if (typeof render === 'function') { render(); } }
+                else if (typeof toast === 'function') { toast((d && d.error) || 'Upload failed — admin only'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Upload failed'); } });
+    };
     window.brandingSave = function (cid) {
         var g = function (p) { var e = document.getElementById(p + cid); return e ? e.value : ''; };
         var payload = { company_id: cid, display_name: g('br_name_'), color: g('br_color_'), logo: g('br_logo_'), tagline: g('br_tag_') };

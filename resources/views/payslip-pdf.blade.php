@@ -32,8 +32,9 @@
         <table>
             <tr>
                 <td style="width:46px;">
-                    @if (!empty($brand['logo']))
-                        <img src="{{ $brand['logo'] }}" style="max-height:38px;max-width:120px;object-fit:contain;">
+                    @php $logoSrc = $brand['logo_file'] ?? ($brand['logo'] ?? ''); @endphp
+                    @if (!empty($logoSrc))
+                        <img src="{{ $logoSrc }}" style="max-height:38px;max-width:120px;object-fit:contain;">
                     @else
                         <div class="logo" style="background: {{ $brand['color'] ?? '#f97316' }};">{{ strtoupper(substr($brand['display_name'] ?? 'S', 0, 1)) }}</div>
                     @endif

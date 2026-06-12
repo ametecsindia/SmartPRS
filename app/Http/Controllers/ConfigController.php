@@ -226,13 +226,76 @@ class ConfigController extends Controller
         $c = DB::table('companies')->where('id', $companyId)->first();
         $saved = $map[(string) $companyId] ?? [];
 
+        // rev 131: an UPLOADED logo is stored locally (logo_stored = relative
+        // path under storage/app/public). For the app we serve it via a URL; for
+        // PDFs we hand DomPDF the ABSOLUTE local path (logo_file) so it renders
+        // reliably. A manually-typed external URL still works as a fallback.
+        $stored = $saved['logo_stored'] ?? null;
+        $logoFile = null;
+        $logoUrl = $saved['logo'] ?? ($c->logo_path ?? '');
+        if ($stored && is_file(storage_path('app/public/'.$stored))) {
+            $logoFile = storage_path('app/public/'.$stored);
+            $logoUrl = url('/app/branding/logo/'.$companyId);
+        }
+
         return [
             'display_name' => $saved['display_name'] ?? ($c->name ?? 'SmartPRS'),
             'color' => $saved['color'] ?? ($c->color ?? '#f97316'),
-            'logo' => $saved['logo'] ?? ($c->logo_path ?? ''),
+            'logo' => $logoUrl,
+            'logo_file' => $logoFile,          // local path for PDFs (null if none uploaded)
             'tagline' => $saved['tagline'] ?? '',
             'name' => $c->name ?? 'SmartPRS',
         ];
+    }
+
+    /** POST /app/branding/logo — upload a company logo file (image, <=2MB). */
+    public function brandingLogoUpload(Request $request)
+    {
+        abort_unless($this->canManage($request), 403);
+        $tenantId = $request->user()->tenant_id;
+        $v = $request->validate([
+            'company_id' => ['required'],
+            'logo' => ['required', 'file', 'mimes:png,jpg,jpeg,gif,webp', 'max:2048'],
+        ]);
+        $cid = (string) $v['company_id'];
+        // company must belong to this tenant
+        $exists = DB::table('companies')->where('id', $cid)
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))->exists();
+        abort_unless($exists, 404);
+
+        $ext = strtolower($request->file('logo')->getClientOriginalExtension() ?: 'png');
+        $rel = 'branding/'.($tenantId ?? 0).'/'.$cid.'-'.time().'.'.$ext;
+        $request->file('logo')->storeAs('public/branding/'.($tenantId ?? 0), basename($rel));
+
+        $map = self::get($tenantId, 'branding');
+        $map[$cid] = array_merge($map[$cid] ?? [], [
+            'logo_stored' => $rel,
+            'logo' => url('/app/branding/logo/'.$cid),
+        ]);
+        // keep display_name/color/tagline defaults if first save
+        $map[$cid]['display_name'] = $map[$cid]['display_name'] ?? '';
+        $map[$cid]['color'] = $map[$cid]['color'] ?? '#f97316';
+        $map[$cid]['tagline'] = $map[$cid]['tagline'] ?? '';
+        self::put($tenantId, 'branding', $map);
+
+        DB::table('companies')->where('id', $cid)
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->update(['logo_path' => $map[$cid]['logo'], 'updated_at' => now()]);
+
+        return response()->json(['ok' => true, 'logo' => $map[$cid]['logo'].'?t='.time()]);
+    }
+
+    /** GET /app/branding/logo/{companyId} — serve the uploaded company logo. */
+    public function brandingLogoServe(Request $request, $companyId)
+    {
+        $tenantId = $request->user()->tenant_id;
+        $map = self::get($tenantId, 'branding');
+        $rel = $map[(string) $companyId]['logo_stored'] ?? null;
+        $full = $rel ? storage_path('app/public/'.$rel) : null;
+        abort_unless($full && is_file($full), 404);
+        $mime = function_exists('mime_content_type') ? mime_content_type($full) : 'image/png';
+
+        return response()->file($full, ['Content-Type' => $mime]);
     }
 
     /** Whole branding map (companyId → brand) for the frontend to switch live. */
@@ -293,12 +356,24 @@ class ConfigController extends Controller
         ]);
         $cid = (string) $v['company_id'];
         $map = self::get($tenantId, 'branding');
+        // rev 131: preserve an UPLOADED logo across a Save. A typed URL overrides
+        // the upload; otherwise the stored file (and its served URL) is kept.
+        $existing = $map[$cid] ?? [];
+        $typedUrl = trim((string) ($v['logo'] ?? ''));
+        $stored = $existing['logo_stored'] ?? null;
+        if ($typedUrl !== '' && strpos($typedUrl, '/app/branding/logo/') === false) {
+            $stored = null;   // the admin chose an external URL instead of the upload
+        }
+        $logoUrl = $stored ? url('/app/branding/logo/'.$cid) : $typedUrl;
         $map[$cid] = [
             'display_name' => $v['display_name'] ?? '',
             'color' => $v['color'] ?: '#f97316',
-            'logo' => $v['logo'] ?? '',
+            'logo' => $logoUrl,
             'tagline' => $v['tagline'] ?? '',
         ];
+        if ($stored) {
+            $map[$cid]['logo_stored'] = $stored;
+        }
         self::put($tenantId, 'branding', $map);
 
         // Reflect colour + logo onto the company record so PDFs/landing can use them.
