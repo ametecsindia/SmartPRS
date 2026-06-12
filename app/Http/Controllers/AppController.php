@@ -376,6 +376,28 @@ html{scroll-behavior:smooth}
 .sp-prompt-input{width:100%;border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-size:14px;font-family:inherit;box-sizing:border-box;color:var(--text);background:var(--bg2,#f8fafc)}
 .sp-prompt-input:focus{border-color:var(--accent);outline:none;background:#fff}
 .sp-prompt-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+/* rev 126 (Ejaz): PHONE header (<=900) — Punch as an ICON only (a tap shows the
+   labelled action to confirm), and the company switcher shows a building ICON
+   in place of "GRP" (tap opens the company list). Desktop is untouched. */
+@media (max-width: 900px){
+  #sp-punch-btn #punch_top_lbl{display:none !important}
+  #sp-punch-btn{width:38px !important;min-width:38px;padding:0 !important;justify-content:center}
+  #sp-punch-btn.punch-out{background:var(--red) !important}
+  /* rev 128 (Ejaz): LEFT cluster = hamburger · logo · punch · company
+     (building icon + "Companies" label); RIGHT = logout · profile. The right
+     group is pushed over by margin-left:auto on the logout form. Mobile only. */
+  .topbar-actions{justify-content:flex-start !important;gap:8px !important}
+  .topbar-actions .company{order:2;max-width:44vw}
+  .topbar-actions .company .cico{font-size:0 !important}
+  .topbar-actions .company .cico::before{font-family:"Font Awesome 6 Free";font-weight:900;content:"\\f1ad";font-size:13px}
+  .topbar-actions .company .cname{display:block !important;font-size:13px;max-width:32vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .topbar-actions .company .csub,.topbar-actions .company i.fa-chevron-down{display:none !important}
+  .topbar-actions #sp-punch-btn{order:1}
+  .topbar-actions #sp-logout-form{order:3;margin-left:auto !important}
+  .topbar-actions #sp-account-btn{order:4}
+  #sp-bell-wrap{display:none !important}
+  .topbar-actions .topbar-avatar{display:none !important}
+}
 </style>
 <link rel="icon" type="image/png" href="/images/logo-icon.png">
 CSS;
@@ -458,6 +480,8 @@ CSS;
         // rev 107: on-prem "Updates & Licence" under Administration.
         safe(function () { injectUpdatesNav(cfg); });
         safe(function () { wireSidebarLogo(); });
+        // rev 125: icons + connector tree on every submenu (re-run for late items).
+        safe(function () { decorateSubmenuIcons(); setTimeout(decorateSubmenuIcons, 900); setTimeout(decorateSubmenuIcons, 2600); });
         safe(function () { wireUserCard(cfg); });
         safe(function () { wireSubBanner(cfg); });
         // rev 97: public live demo — guided tour + floating restart button.
@@ -1019,6 +1043,67 @@ CSS;
                 else { if (msg) { msg.textContent = ''; } alert((j && j.error) || 'Update failed — nothing was changed.'); }
             }).catch(function () { if (msg) { msg.textContent = ''; } alert('Update failed — check the connection and try again.'); });
     };
+    // rev 125 (Ejaz, approved Taurus-style menu): every SUBMENU leaf gets its
+    // own icon + a connector-tree look, in SmartPRS navy + orange. CONTENT,
+    // structure and the existing GROUP icons are untouched — we only decorate
+    // the .nav-item[data-id] leaves inside each .nav-sub. Idempotent; the
+    // delayed re-runs catch nav items injected late (live-salary, pay-ledger,
+    // transfers, my-subscription, wa-templates, sys-updates...).
+    var SUB_ICONS = {
+        'dashboard': 'fa-gauge-high', 'live-salary': 'fa-bolt', 'platform-dashboard': 'fa-gauge-high',
+        'ai-assistant': 'fa-robot', 'how-it-works': 'fa-circle-question', 'notifications': 'fa-bell', 'approvals-inbox': 'fa-inbox',
+        'emp-list': 'fa-address-book', 'emp-add': 'fa-user-plus', 'teams': 'fa-people-group', 'idcard': 'fa-id-card',
+        'documents': 'fa-folder-open', 'onboarding-board': 'fa-clipboard-check', 'exits': 'fa-door-open', 'transfers': 'fa-right-left',
+        'recruitment': 'fa-user-tie', 'bgv': 'fa-user-shield',
+        'att-daily': 'fa-calendar-check', 'att-report': 'fa-table-list', 'att-manual': 'fa-pen-to-square',
+        'att-zkteco': 'fa-fingerprint', 'biometric-devices': 'fa-fingerprint', 'geofence': 'fa-map-location-dot',
+        'geofence-list': 'fa-draw-polygon', 'late-policy': 'fa-business-time',
+        'leave-apply': 'fa-calendar-day', 'leave-types': 'fa-list-ul', 'holidays': 'fa-umbrella-beach',
+        'salary-setup': 'fa-sitemap', 'salary-schedules': 'fa-calendar-days', 'salary-gen': 'fa-gears',
+        'salary-approval': 'fa-check-double', 'payslip': 'fa-file-invoice-dollar', 'pay-ledger': 'fa-book',
+        'deductions': 'fa-money-bill-transfer', 'payout-recon': 'fa-scale-balanced', 'pay-cycle': 'fa-arrows-spin',
+        'pf-esic': 'fa-shield-halved', 'pt': 'fa-landmark', 'tds': 'fa-file-invoice', 'tds-returns': 'fa-file-arrow-up', 'gratuity': 'fa-gift',
+        'expenses': 'fa-receipt', 'advance': 'fa-hand-holding-dollar', 'loans': 'fa-building-columns', 'bonus-enc': 'fa-coins',
+        'increments': 'fa-arrow-trend-up', 'commissions': 'fa-percent', 'commission-calc': 'fa-calculator',
+        'clawbacks': 'fa-rotate-left', 'incentive-schemes': 'fa-bullseye',
+        'performance': 'fa-chart-line', 'points-rules': 'fa-list-check', 'points-ledger': 'fa-book-open',
+        'points-scores': 'fa-ranking-star', 'awards': 'fa-trophy', 'tests': 'fa-clipboard-question',
+        'test-reports': 'fa-file-lines', 'test-results': 'fa-square-poll-vertical',
+        'training-programs': 'fa-graduation-cap', 'training-records': 'fa-list-check', 'training-content': 'fa-book',
+        'faqs': 'fa-circle-question', 'kb': 'fa-book-open', 'code-of-conduct': 'fa-scale-balanced',
+        'letters-offer': 'fa-file-signature', 'letters-increment': 'fa-file-arrow-up', 'letters-warning': 'fa-triangle-exclamation',
+        'letters-relieving': 'fa-file-export', 'letters-templates': 'fa-file-lines',
+        'offroll-agents': 'fa-user-shield', 'agent-auth': 'fa-id-badge', 'compliance-alerts': 'fa-triangle-exclamation',
+        'escalations': 'fa-headset', 'roster': 'fa-route', 'complaints': 'fa-comment-dots',
+        'notice': 'fa-bullhorn', 'messages': 'fa-comments', 'send-message': 'fa-paper-plane', 'helpdesk': 'fa-headset',
+        'sms-settings': 'fa-comment-sms', 'sms-templates': 'fa-comment-dots', 'wa-settings': 'fa-comment-dots', 'wa-templates': 'fa-comment-medical',
+        'reports': 'fa-chart-pie', 'attrition': 'fa-user-minus', 'activity-logs': 'fa-clock-rotate-left',
+        'users': 'fa-user-gear', 'roles': 'fa-user-lock', 'settings': 'fa-gear', 'fin-year': 'fa-calendar-days',
+        'branding': 'fa-palette', 'company-emails': 'fa-envelope', 'assets': 'fa-box-archive', 'my-subscription': 'fa-receipt', 'sys-updates': 'fa-cloud-arrow-down',
+        'companies': 'fa-building', 'departments': 'fa-diagram-project', 'designations': 'fa-id-card-clip', 'branches': 'fa-code-branch', 'banks': 'fa-building-columns',
+        'tenants': 'fa-building-user', 'plans': 'fa-tags', 'subscriptions': 'fa-arrows-rotate', 'invoices': 'fa-file-invoice', 'payments': 'fa-indian-rupee-sign', 'gateways': 'fa-credit-card'
+    };
+    function decorateSubmenuIcons() {
+        if (!document.getElementById('sp-subic-css')) {
+            var st = document.createElement('style');
+            st.id = 'sp-subic-css';
+            st.textContent = '.sidebar .nav-sub{margin-left:19px;border-left:1.5px solid rgba(255,255,255,.10)}'
+                + '.sidebar .nav-sub .nav-item{padding-left:20px;position:relative}'
+                + '.sidebar .nav-sub .nav-item::before{content:"";position:absolute;left:0;top:50%;width:9px;height:1.5px;background:rgba(255,255,255,.13)}'
+                + '.sidebar .nav-sub .nav-item i.sp-subic{width:16px;text-align:center;font-size:12.5px;color:rgba(255,255,255,.55);flex-shrink:0}'
+                + '.sidebar .nav-sub .nav-item:hover i.sp-subic{color:#fff}'
+                + '.sidebar .nav-sub .nav-item.active i.sp-subic{color:var(--accent)}';
+            document.head.appendChild(st);
+        }
+        document.querySelectorAll('.sidebar .nav-sub .nav-item[data-id]').forEach(function (el) {
+            if (el.querySelector('i')) { return; }
+            var id = el.getAttribute('data-id');
+            var ic = SUB_ICONS[id] || 'fa-angle-right';
+            var i = document.createElement('i');
+            i.className = 'fas ' + ic + ' sp-subic';
+            el.insertBefore(i, el.firstChild);
+        });
+    }
     // rev 91: REAL Ametecs logo in the sidebar (Ejaz's file, public/images/logo.png).
     // Done in boot JS (not app.html) — the prototype file is replaced wholesale on
     // deploys and this keeps the swap in one reviewable place. The old bolt+text
@@ -8126,17 +8211,46 @@ CSS;
                 var txt = d.next === 'in' ? 'Punch In' : 'Punch Out';
                 if (lbl) { lbl.textContent = txt; }
                 if (top) { top.textContent = txt; }
+                // rev 126: remember the next action + tint the phone icon
+                // (red once punched in, so a glance tells you Punch Out is next).
+                window.__PUNCH_NEXT = d.next;
+                var pbtn = document.getElementById('sp-punch-btn');
+                if (pbtn) { pbtn.classList.toggle('punch-out', d.next === 'out'); pbtn.title = txt; }
             }).catch(function () {});
     }
+    // rev 126: phone-only punch confirm — one labelled pill (green Punch In /
+    // red Punch Out) anchored under the icon; a tap performs the punch. Tapping
+    // the icon again, or anywhere outside, closes it.
+    window.punchPopover = function (btn) {
+        var ex = document.getElementById('sp-punch-pop'); if (ex) { ex.remove(); return; }
+        var isIn = (window.__PUNCH_NEXT || 'in') === 'in';
+        var pop = document.createElement('div');
+        pop.id = 'sp-punch-pop';
+        pop.style.cssText = 'position:fixed;z-index:9000;background:#fff;border:1px solid var(--border);border-radius:13px;box-shadow:0 14px 34px rgba(15,23,42,.22);padding:6px';
+        pop.innerHTML = '<button type="button" id="sp-punch-go" style="display:flex;align-items:center;gap:10px;border:none;border-radius:10px;padding:12px 22px;font-size:15px;font-weight:700;cursor:pointer;width:100%;white-space:nowrap;'
+            + (isIn ? 'background:#dcfce7;color:#16a34a' : 'background:#fee2e2;color:#dc2626') + '">'
+            + '<i class="fas ' + (isIn ? 'fa-right-to-bracket' : 'fa-right-from-bracket') + '"></i> ' + (isIn ? 'Punch In' : 'Punch Out') + '</button>';
+        document.body.appendChild(pop);
+        var r = btn.getBoundingClientRect();
+        pop.style.top = (r.bottom + 8) + 'px';
+        pop.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+        document.getElementById('sp-punch-go').onclick = function (e) { e.stopPropagation(); pop.remove(); punchDo(); };
+        setTimeout(function () {
+            var close = function (ev) { if (!pop.contains(ev.target) && ev.target !== btn && !btn.contains(ev.target)) { pop.remove(); document.removeEventListener('click', close); } };
+            document.addEventListener('click', close);
+        }, 0);
+    };
     // Topbar punch button (always available, any screen).
     function wirePunch(cfg) {
         var bar = document.querySelector('.topbar-actions');
         if (!bar || bar.__punchWired) { return; }
         var b = document.createElement('button');
-        b.className = 'topbar-btn sp-keep'; b.title = 'Punch In / Out';
+        b.className = 'topbar-btn sp-keep'; b.id = 'sp-punch-btn'; b.title = 'Punch In / Out';
         b.style.cssText = 'width:auto;padding:0 12px;gap:6px;background:var(--accent);color:#fff';
         b.innerHTML = '<i class="fas fa-fingerprint"></i> <span id="punch_top_lbl">Punch</span>';
-        b.onclick = function () { punchDo(); };
+        // rev 126: phones show the icon only — a tap opens the labelled confirm
+        // (Punch In / Punch Out); desktop keeps the direct one-click punch.
+        b.onclick = function () { if (window.innerWidth <= 900) { punchPopover(b); } else { punchDo(); } };
         bar.insertBefore(b, bar.firstChild);
         bar.__punchWired = true;
         punchRefreshLabel();
@@ -8149,6 +8263,7 @@ CSS;
         if (!bar || bar.__bellWired) { return; }
         var wrap = document.createElement('div');
         wrap.className = 'sp-keep';
+        wrap.id = 'sp-bell-wrap';
         wrap.style.cssText = 'position:relative';
         wrap.innerHTML = '<button class="topbar-btn" id="sp-bell" title="Notifications"><i class="fas fa-bell"></i><span id="sp-bell-dot" style="display:none;position:absolute;top:3px;right:3px;min-width:16px;height:16px;padding:0 3px;background:var(--red);color:#fff;border-radius:9px;font-size:10px;line-height:16px;text-align:center;font-weight:700"></span></button>'
             + '<div id="sp-bell-panel" style="display:none;position:absolute;right:0;top:44px;width:340px;max-height:420px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 30px rgba(15,23,42,.18);z-index:300"></div>';
@@ -8625,6 +8740,7 @@ CSS;
         var bar = document.querySelector('.topbar-actions') || document.querySelector('.topbar');
         if (bar) {
             var f = document.createElement('form');
+            f.id = 'sp-logout-form';
             f.method = 'POST'; f.action = cfg.logoutUrl; f.style.cssText = 'display:inline;margin-left:6px';
             f.innerHTML = '<input type="hidden" name="_token" value="' + cfg.csrf + '">' +
                 '<button type="submit" class="topbar-btn sp-keep" title="Sign out"><i class="fas fa-right-from-bracket"></i></button>';
