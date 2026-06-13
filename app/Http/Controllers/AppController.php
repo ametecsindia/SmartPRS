@@ -400,7 +400,12 @@ html{scroll-behavior:smooth}
   .topbar-actions .topbar-avatar{display:none !important}
 }
 </style>
-<link rel="icon" type="image/png" href="/images/logo-icon.png">
+<link rel="icon" type="image/png" href="/app-icon.png?s=64">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/app.webmanifest">
+<meta name="theme-color" content="#0c1929">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="SmartPRS">
 CSS;
         if (($h = strpos($html, '</head>')) !== false) {
             $html = substr($html, 0, $h).$style.substr($html, $h);

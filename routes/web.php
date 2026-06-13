@@ -173,6 +173,15 @@ Route::middleware('guest')->group(function () {
 
 Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
 
+// rev 132: DYNAMIC WEB/PWA app icon + manifest — built from the logged-in
+// tenant's uploaded branding logo (falls back to the SmartPRS icon). Public so
+// the browser can fetch them while adding to the home screen; they read the
+// session to resolve the company.
+Route::get('/app-icon.png', [App\Http\Controllers\AppIconController::class, 'icon'])->name('appicon');
+Route::get('/apple-touch-icon.png', [App\Http\Controllers\AppIconController::class, 'appleTouchIcon']);
+Route::get('/apple-touch-icon-precomposed.png', [App\Http\Controllers\AppIconController::class, 'appleTouchIcon']);
+Route::get('/app.webmanifest', [App\Http\Controllers\AppIconController::class, 'manifest'])->name('webmanifest');
+
 Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Middleware\EnsureSubscriptionActive::class, App\Http\Middleware\DemoWriteGuard::class, App\Http\Middleware\EditionGuard::class])->group(function () {
     // rev 107: ON-PREM activation + Administration → Updates (admin-guarded
     // inside the controllers; LicenseGate forces unactivated installs here).
