@@ -32,6 +32,10 @@ class OnpremClientController extends Controller
                 'invoice_no' => fn ($t) => $t->string('invoice_no', 30)->nullable(),
                 'invoice_token' => fn ($t) => $t->string('invoice_token', 64)->nullable(),
                 'gateway_order_id' => fn ($t) => $t->string('gateway_order_id', 64)->nullable(),
+                // rev140 — Super-Admin-set licence validity (drives amc_expires_on
+                // at key generation, which the on-prem LC login gate enforces).
+                'licence_term_months' => fn ($t) => $t->integer('licence_term_months')->nullable(),
+                'licence_expires_on' => fn ($t) => $t->date('licence_expires_on')->nullable(),
             ] as $col => $def) {
                 if (! \Illuminate\Support\Facades\Schema::hasColumn('onprem_clients', $col)) {
                     \Illuminate\Support\Facades\Schema::table('onprem_clients', $def);
@@ -66,6 +70,31 @@ class OnpremClientController extends Controller
         return $c->price > 0 && (float) $c->paid_total >= self::totals($c)['total'];
     }
 
+    /**
+     * rev140 — the licence expiry date the Super Admin chose for this client.
+     * Priority: an explicit expiry date (if set and not already past) → a
+     * duration in months from today → a one-year default (back-compat).
+     * This becomes licences.amc_expires_on, which the on-prem login LC gate
+     * reads to decide access.
+     */
+    public static function resolveExpiry(object $c): string
+    {
+        $today = now()->toDateString();
+        $exp = $c->licence_expires_on ?? null;
+        if ($exp) {
+            $d = substr((string) $exp, 0, 10);
+            if ($d >= $today) {
+                return $d;
+            }
+        }
+        $months = (int) ($c->licence_term_months ?? 0);
+        if ($months > 0) {
+            return now()->addMonths($months)->toDateString();
+        }
+
+        return now()->addYear()->toDateString();
+    }
+
     public function index(Request $request)
     {
         $this->guard($request);
@@ -85,6 +114,7 @@ class OnpremClientController extends Controller
     {
         $this->guard($request);
         LicenseService::ensureTables();
+        self::ensureSaleCols();
         $v = $request->validate([
             'id' => ['nullable', 'integer'],
             'company' => ['required', 'string', 'max:190'],
@@ -98,6 +128,10 @@ class OnpremClientController extends Controller
             'employee_band' => ['nullable', 'string', 'max:30'],
             'price' => ['nullable', 'numeric', 'min:0'],
             'amc_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            // rev140 — how long the client may use the app: a duration in
+            // months, OR an exact expiry date (the date wins if both given).
+            'licence_term_months' => ['nullable', 'integer', 'min:1', 'max:120'],
+            'licence_expires_on' => ['nullable', 'date'],
             'notes' => ['nullable', 'string', 'max:4000'],
         ]);
         $row = $v;
@@ -170,7 +204,7 @@ class OnpremClientController extends Controller
             return redirect()->route('admin.onprem')->with('success', 'Key NOT generated: payment is partial (₹'.number_format((float) $c->paid_total).' of ₹'.number_format(self::totals($c)['total']).' incl. GST). Tick "Activate on partial payment" if you approve.');
         }
 
-        $amcExpiry = now()->addYear()->toDateString();   // first year of AMC from issue
+        $amcExpiry = self::resolveExpiry($c);   // rev140 — Super-Admin-chosen validity
         $key = LicenseService::issue($id, $c->edition, $amcExpiry);
 
         // Email the key + activation steps (fail-soft; key stays visible in panel).
@@ -386,18 +420,34 @@ class OnpremClientController extends Controller
         }
     }
 
-    /** Renew AMC by one year (from current expiry or today, whichever is later). */
+    /**
+     * Extend the licence validity. rev140 — the Super Admin may set an exact
+     * new expiry date, or a number of months; otherwise it honours the
+     * client's configured term, falling back to +1 year. Term-based renewals
+     * extend from the current expiry (or today, whichever is later).
+     */
     public function renewAmc(Request $request, int $id)
     {
         $this->guard($request);
         $lic = DB::table('licences')->where('client_id', $id)->whereIn('status', ['pending', 'active'])->orderByDesc('id')->first();
         abort_unless($lic, 404, 'No live licence for this client.');
-        $base = max((string) $lic->amc_expires_on, now()->toDateString());
-        $new = \Carbon\Carbon::parse($base)->addYear()->toDateString();
+        $today = now()->toDateString();
+        $until = trim((string) $request->input('renew_until', ''));
+        $months = (int) $request->input('renew_months', 0);
+        if ($until !== '' && substr($until, 0, 10) >= $today) {
+            $new = substr($until, 0, 10);
+        } else {
+            $c = DB::table('onprem_clients')->where('id', $id)->first();
+            $m = $months > 0 ? $months : (int) ($c->licence_term_months ?? 0);
+            $base = max((string) $lic->amc_expires_on, $today);
+            $new = $m > 0
+                ? \Carbon\Carbon::parse($base)->addMonths($m)->toDateString()
+                : \Carbon\Carbon::parse($base)->addYear()->toDateString();
+        }
         DB::table('licences')->where('id', $lic->id)->update(['amc_expires_on' => $new, 'updated_at' => now()]);
-        LicenseService::event($lic->id, 'amc_renewed', 'AMC extended to '.$new.' by '.$request->user()->name);
+        LicenseService::event($lic->id, 'amc_renewed', 'Licence extended to '.$new.' by '.$request->user()->name);
 
-        return redirect()->route('admin.onprem')->with('success', 'AMC renewed till '.$new.'.');
+        return redirect()->route('admin.onprem')->with('success', 'Licence renewed till '.$new.'.');
     }
 
     /** Release the server binding so the client can re-activate after a move (Q5). */

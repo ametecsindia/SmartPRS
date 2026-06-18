@@ -99,6 +99,29 @@
                         <input type="password" name="password" placeholder="••••••••" required>
                     </div>
                 </div>
+                {{-- rev139: on-prem License Code (LC) field — appears below the
+                     login form only when this installation needs activation or
+                     its licence has expired. On SaaS it is never rendered. --}}
+                @if (!empty($needLc))
+                <div class="form-group" style="margin-top:2px;">
+                    <label>License Code (LC)</label>
+                    <div class="input-wrap">
+                        <i class="fas fa-key"></i>
+                        <input type="text" name="license_code" value="{{ old('license_code') }}"
+                               placeholder="SPRS-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false"
+                               style="text-transform:uppercase;letter-spacing:.5px;">
+                    </div>
+                    <p style="font-size:12px;color:var(--text3);margin:7px 2px 0;font-family:var(--font2);line-height:1.5;">
+                        @if (($lcState['state'] ?? '') === 'expired')
+                            <i class="fas fa-triangle-exclamation" style="color:#dc2626;"></i>
+                            Your licence expired on <strong>{{ $lcState['expires_on'] ?? '—' }}</strong>. Enter a new License Code from Ametecs to continue.
+                        @else
+                            <i class="fas fa-circle-info"></i>
+                            This SmartPRS installation needs activation. Enter the License Code provided by Ametecs (WhatsApp 9000098877).
+                        @endif
+                    </p>
+                </div>
+                @endif
                 <div class="form-group" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
                     <span style="display:flex;align-items:center;gap:8px;">
                         <input type="checkbox" name="remember" id="remember" style="width:auto;">

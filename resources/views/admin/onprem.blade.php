@@ -26,6 +26,23 @@
             <label>Employee band<input name="employee_band" placeholder="up to 250"></label>
             <label>Licence price (₹)<input type="number" step="0.01" name="price"></label>
             <label>AMC %<input type="number" step="0.01" name="amc_percent" value="18"></label>
+            {{-- rev140 — Super Admin sets HOW LONG the client may use the app.
+                 A duration, OR an exact expiry date (the date wins if both set).
+                 This becomes the licence's expiry, enforced at the client login. --}}
+            <label>Access validity
+                <select name="licence_term_months">
+                    <option value="12">1 year</option>
+                    <option value="24">2 years</option>
+                    <option value="36">3 years</option>
+                    <option value="60">5 years</option>
+                    <option value="6">6 months</option>
+                    <option value="3">3 months</option>
+                    <option value="1">1 month</option>
+                    <option value="">Use exact date →</option>
+                </select>
+            </label>
+            <label>Or exact expiry date<input type="date" name="licence_expires_on"></label>
+            <label style="grid-column:span 1;">&nbsp;<span style="display:block;font-weight:400;color:#94a3b8;font-size:11px;margin-top:8px;line-height:1.4;">Applied when the key is generated. Leave the date blank to use the duration.</span></label>
             <label style="grid-column:span 2;">Address<input name="address"></label>
             <label style="grid-column:span 3;">Notes<input name="notes"></label>
             <div><button class="btn btn-primary" type="submit">Save client</button></div>
@@ -47,7 +64,7 @@
                     <span style="background:#0c1929;color:#fff;border-radius:6px;font-size:11px;font-weight:700;padding:2px 8px;margin-left:8px;">SmartPRS-{{ strtoupper($c->edition) }}</span>
                     @if ($live)
                         <span style="background:{{ $live->status === 'active' ? '#16a34a' : '#f59e0b' }};color:#fff;border-radius:6px;font-size:11px;font-weight:700;padding:2px 8px;margin-left:4px;">{{ strtoupper($live->status) }}{{ $live->key_last4 ? ' ·…'.$live->key_last4 : '' }}</span>
-                        <span style="font-size:11px;color:#64748b;margin-left:6px;">AMC till {{ $live->amc_expires_on ?: '—' }}</span>
+                        <span style="font-size:11px;color:#64748b;margin-left:6px;">Valid till {{ $live->amc_expires_on ?: '—' }}</span>
                     @endif
                 </div>
                 <div style="font-size:12px;color:#64748b;">{{ $c->contact_name }} · {{ $c->email }} · {{ $c->mobile }}</div>
@@ -81,7 +98,10 @@
                         <button class="btn btn-primary" type="submit" {{ ($fullyPaid || $c->activate_on_partial) ? '' : 'disabled title=Payment-pending' }}>Generate licence key</button>
                     </form>
                 @else
-                    <form method="POST" action="{{ route('admin.onprem.renew', $c->id) }}" style="display:inline;">@csrf<button class="btn btn-outline">Renew AMC +1 year</button></form>
+                    <form method="POST" action="{{ route('admin.onprem.renew', $c->id) }}" style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap;">@csrf
+                        <label style="font-size:11px;">Extend until (optional)<br><input type="date" name="renew_until" style="width:150px;"></label>
+                        <button class="btn btn-outline" type="submit">Renew licence</button>
+                    </form>
                     <form method="POST" action="{{ route('admin.onprem.deactivate', $c->id) }}" style="display:inline;" onsubmit="return confirm('Release the server binding so the client can activate on a NEW server?');">@csrf<button class="btn btn-outline">Release server binding</button></form>
                     <form method="POST" action="{{ route('admin.onprem.revoke', $c->id) }}" style="display:inline;" onsubmit="return confirm('REVOKE this licence? Activation and updates will be blocked for it.');">@csrf<button class="btn btn-outline" style="color:#dc2626;border-color:#fca5a5;">Revoke</button></form>
                 @endif

@@ -64,6 +64,87 @@ class ClientUpdateController extends Controller
         return ! empty($st['cert']) && ! empty($st['activated_at']);
     }
 
+    /**
+     * rev139 — expiry-aware licence state for the LOGIN gate.
+     * Returns ['state' => 'none'|'expired'|'ok', 'expires_on' => ?string,
+     * 'company' => ?string]. Uses the LOCALLY stored certificate (offline
+     * grace): once activated the install keeps running offline until the
+     * stored amc_expires_on passes — the online check only happens when a
+     * code is entered or via the periodic heartbeat.
+     */
+    public static function licenceStatus(): array
+    {
+        $st = self::state();
+        $cert = $st['cert'] ?? [];
+        $company = $st['company'] ?? null;
+        if (empty($cert) || empty($st['activated_at'])) {
+            return ['state' => 'none', 'expires_on' => null, 'company' => $company];
+        }
+        $exp = $cert['amc_expires_on'] ?? null;
+        if ($exp && $exp < now()->toDateString()) {
+            return ['state' => 'expired', 'expires_on' => $exp, 'company' => $company];
+        }
+
+        return ['state' => 'ok', 'expires_on' => $exp, 'company' => $company];
+    }
+
+    /**
+     * True when access should be allowed. ALWAYS true off the on-prem
+     * editions (or when enforcement is off) so SaaS / Super Admin login is
+     * never touched. On an enforced on-prem install it is true only while a
+     * stored, unexpired certificate exists.
+     */
+    public static function licenceValid(): bool
+    {
+        if (! Edition::isOnPrem()
+            || ! filter_var(config('smartprs.licence_enforce', true), FILTER_VALIDATE_BOOLEAN)) {
+            return true;
+        }
+
+        return self::licenceStatus()['state'] === 'ok';
+    }
+
+    /**
+     * rev139 — ONLINE validate a License Code against the licence server and,
+     * on success, store the signed certificate locally. Shared by the
+     * Activation screen and the login-form LC field. Returns
+     * ['ok' => bool, 'error' => ?string, 'company' => ?string].
+     */
+    public static function activateKey(string $key): array
+    {
+        if (strlen(LicenseService::normalize($key)) < 16) {
+            return ['ok' => false, 'error' => 'That does not look like a SmartPRS License Code — please check and try again.'];
+        }
+        try {
+            $resp = Http::timeout(20)->post(config('smartprs.update_url').'/activate', [
+                'key' => $key,
+                'fingerprint' => self::fingerprint(),
+                'server_name' => gethostname() ?: 'unknown',
+                'edition' => Edition::current(),
+            ]);
+            $j = $resp->json();
+            if (! is_array($j) || empty($j['ok'])) {
+                return ['ok' => false, 'error' => is_array($j) && ! empty($j['error']) ? $j['error'] : 'Could not reach the licence server — check the internet connection and try again.'];
+            }
+            // Subscription/block model: never accept an already-expired code.
+            $exp = $j['cert']['amc_expires_on'] ?? ($j['amc_expires_on'] ?? null);
+            if ($exp && $exp < now()->toDateString()) {
+                return ['ok' => false, 'error' => 'That License Code expired on '.$exp.'. Please obtain a current code from Ametecs (WhatsApp 9000098877).'];
+            }
+            self::saveState([
+                'key_enc' => Crypt::encryptString(LicenseService::normalize($key)),
+                'cert' => $j['cert'] ?? [],
+                'company' => $j['company'] ?? '',
+                'activated_at' => now()->toDateTimeString(),
+                'last_ok' => now()->toDateTimeString(),
+            ]);
+
+            return ['ok' => true, 'error' => null, 'company' => $j['company'] ?? ''];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'error' => 'Could not reach the licence server — check the internet connection and try again.'];
+        }
+    }
+
     /** Stable installation fingerprint (server identity, not hardware-fragile). */
     public static function fingerprint(): string
     {
@@ -94,33 +175,12 @@ class ClientUpdateController extends Controller
     public function activatePost(Request $request)
     {
         $this->guard($request);
-        $key = trim((string) $request->input('key', ''));
-        if (strlen(LicenseService::normalize($key)) < 16) {
-            return back()->with('lic_err', 'That does not look like a SmartPRS key — please check and try again.');
+        $res = self::activateKey(trim((string) $request->input('key', '')));
+        if (empty($res['ok'])) {
+            return back()->with('lic_err', $res['error'] ?? 'Could not activate — please try again.');
         }
-        try {
-            $resp = Http::timeout(20)->post(config('smartprs.update_url').'/activate', [
-                'key' => $key,
-                'fingerprint' => self::fingerprint(),
-                'server_name' => gethostname() ?: 'unknown',
-                'edition' => Edition::current(),
-            ]);
-            $j = $resp->json();
-            if (! is_array($j) || empty($j['ok'])) {
-                return back()->with('lic_err', is_array($j) && ! empty($j['error']) ? $j['error'] : 'Could not reach the activation server — check the internet connection and try again.');
-            }
-            self::saveState([
-                'key_enc' => Crypt::encryptString(LicenseService::normalize($key)),
-                'cert' => $j['cert'] ?? [],
-                'company' => $j['company'] ?? '',
-                'activated_at' => now()->toDateTimeString(),
-                'last_ok' => now()->toDateTimeString(),
-            ]);
 
-            return redirect('/app')->with('lic_ok', 'SmartPRS is activated. Welcome aboard!');
-        } catch (\Throwable $e) {
-            return back()->with('lic_err', 'Could not reach the activation server — check the internet connection and try again.');
-        }
+        return redirect('/app')->with('lic_ok', 'SmartPRS is activated. Welcome aboard!');
     }
 
     // ---------- Administration → Updates ----------

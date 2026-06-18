@@ -25,10 +25,14 @@ class LicenseGate
     public function handle(Request $request, Closure $next)
     {
         try {
+            // rev139: licenceValid() is expiry-aware — it is false both when
+            // the install was never activated AND when a previously valid
+            // licence has expired (subscription / block model). It always
+            // returns true off the on-prem editions, so SaaS is untouched.
             if (! Edition::isOnPrem()
                 || ! app()->environment('production')
                 || ! filter_var(config('smartprs.licence_enforce', true), FILTER_VALIDATE_BOOLEAN)
-                || ClientUpdateController::activated()) {
+                || ClientUpdateController::licenceValid()) {
                 return $next($request);
             }
 
@@ -39,26 +43,21 @@ class LicenseGate
                 }
             }
 
-            $u = $request->user();
-            $isAdmin = false;
+            // Licence missing or expired → block and send the user back to the
+            // LOGIN screen, where the License Code field (admins) or the hold
+            // message (everyone else) is shown. The active session is ended so
+            // re-entry of a valid LC happens during sign-in, per the spec.
+            if ($request->expectsJson() || $request->ajax()) {
+                return response()->json(['ok' => false, 'error' => 'Your SmartPRS licence needs activation. Please sign in again and enter the License Code.'], 403);
+            }
             try {
-                $isAdmin = $u && ($u->hasRole('admin') || $u->hasRole('super_admin'));
+                \Illuminate\Support\Facades\Auth::logout();
+                $request->session()->invalidate();
+                $request->session()->regenerateToken();
             } catch (\Throwable $e) {
             }
 
-            if ($isAdmin) {
-                if ($request->expectsJson() || $request->ajax()) {
-                    return response()->json(['ok' => false, 'error' => 'SmartPRS is waiting for licence activation — open Activation and enter your key.'], 403);
-                }
-
-                return redirect('/app/activate');
-            }
-
-            if ($request->expectsJson() || $request->ajax()) {
-                return response()->json(['ok' => false, 'error' => 'SmartPRS is not activated yet. Please ask your administrator.'], 403);
-            }
-
-            return response('SmartPRS is not activated yet. Please ask your administrator to enter the licence key.', 403);
+            return redirect('/login');
         } catch (\Throwable $e) {
             return $next($request);
         }

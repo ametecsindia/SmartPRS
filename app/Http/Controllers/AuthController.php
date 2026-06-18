@@ -22,7 +22,28 @@ class AuthController extends Controller
             return $this->brandedForTenant($t);
         }
 
-        return view('login');
+        return $this->loginView();
+    }
+
+    /**
+     * rev139 — render the login view, adding the on-prem License Code (LC)
+     * prompt flags. On SaaS / Super Admin (not on-prem, or enforcement off)
+     * needLc is always false, so the field never appears and nothing about
+     * the existing login changes.
+     */
+    private function loginView(array $data = [])
+    {
+        try {
+            $need = ! \App\Http\Controllers\ClientUpdateController::licenceValid();
+            $data['needLc'] = $need;
+            $data['lcState'] = $need
+                ? \App\Http\Controllers\ClientUpdateController::licenceStatus()
+                : ['state' => 'ok', 'expires_on' => null];
+        } catch (\Throwable $e) {
+            $data['needLc'] = false;
+        }
+
+        return view('login', $data);
     }
 
     /** rev 109: tenant whose custom_domain equals the request host (per-request cache). */
@@ -81,7 +102,7 @@ class AuthController extends Controller
      */
     public function showSuper()
     {
-        return view('login', ['superMode' => true]);
+        return $this->loginView(['superMode' => true]);
     }
 
     /**
@@ -147,6 +168,56 @@ class AuthController extends Controller
             } catch (\Throwable $e) {
                 // fail-soft: never block login on an internal billing error
             }
+
+            // rev139 — ON-PREM LICENSE CODE (LC) GATE AT LOGIN.
+            // Subscription / block model + online check with offline grace.
+            // licenceValid() returns true unless this is an enforced on-prem
+            // install with a missing/expired licence, so SaaS & Super Admin
+            // sign-in is byte-for-byte unchanged. Credentials are verified
+            // first (above); only AFTER that do we require a valid LC.
+            try {
+                if (! \App\Http\Controllers\ClientUpdateController::licenceValid()) {
+                    $au = $request->user();
+                    $isAdmin = false;
+                    try {
+                        $isAdmin = $au && ($au->hasRole('admin') || $au->hasRole('super_admin'));
+                    } catch (\Throwable $e) {
+                    }
+                    // Only the administrator may activate (LCs are issued and
+                    // managed solely by the Ametecs Super Admin).
+                    if (! $isAdmin) {
+                        Auth::logout();
+                        $request->session()->invalidate();
+                        $request->session()->regenerateToken();
+
+                        return back()->withErrors(['email' => 'SmartPRS is awaiting licence activation. Please ask your administrator to enter the License Code.'])->onlyInput('email');
+                    }
+                    $lc = trim((string) $request->input('license_code', ''));
+                    if ($lc === '') {
+                        $stat = \App\Http\Controllers\ClientUpdateController::licenceStatus();
+                        Auth::logout();
+                        $request->session()->invalidate();
+                        $request->session()->regenerateToken();
+                        $msg = ($stat['state'] ?? '') === 'expired'
+                            ? 'Your SmartPRS licence expired on '.($stat['expires_on'] ?: '—').'. Enter a new License Code to continue.'
+                            : 'Enter the License Code to activate this SmartPRS installation.';
+
+                        return back()->withErrors(['license_code' => $msg])->onlyInput('email');
+                    }
+                    $res = \App\Http\Controllers\ClientUpdateController::activateKey($lc);
+                    if (empty($res['ok'])) {
+                        Auth::logout();
+                        $request->session()->invalidate();
+                        $request->session()->regenerateToken();
+
+                        return back()->withErrors(['license_code' => $res['error'] ?? 'That License Code could not be validated.'])->onlyInput('email');
+                    }
+                    // Activated — fall through to a normal authenticated session.
+                }
+            } catch (\Throwable $e) {
+                // fail-soft: a licence-check error must never lock out a valid user
+            }
+
             $request->session()->regenerate();
 
             return redirect()->intended(route('app'));
