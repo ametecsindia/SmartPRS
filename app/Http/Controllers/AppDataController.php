@@ -189,9 +189,33 @@ class AppDataController extends Controller
             $payroll = ['runs' => collect(), 'payslips' => collect()];
         }
 
+        // rev149 — org-hierarchy option lists for the Add/Edit forms' dropdowns
+        // (Department / Branch / Designation / Team). Without these the in-browser
+        // option arrays are empty on a fresh install, so the selects show nothing
+        // even though the records exist (visible on their own list screens).
+        $optList = function (string $table) use ($tenantId) {
+            try {
+                if (! Schema::hasTable($table)) {
+                    return collect();
+                }
+
+                return DB::table($table)
+                    ->when(Schema::hasColumn($table, 'deleted_at'), fn ($q) => $q->whereNull('deleted_at'))
+                    ->when($tenantId && Schema::hasColumn($table, 'tenant_id'), fn ($q) => $q->where('tenant_id', $tenantId))
+                    ->orderBy('name')->get(['id', 'name'])
+                    ->map(fn ($r) => ['id' => (string) $r->id, 'name' => $r->name])->values();
+            } catch (\Throwable $e) {
+                return collect();
+            }
+        };
+
         return response()->json([
             'employees' => $employees,
             'companies' => $companies,
+            'branches' => $optList('branches'),
+            'departments' => $optList('departments'),
+            'designations' => $optList('designations'),
+            'teams' => $optList('teams'),
             'tenants' => $tenants,
             'payrollRuns' => $payroll['runs'],
             'payslips' => $payroll['payslips'],
@@ -224,6 +248,23 @@ class AppDataController extends Controller
         $header = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines)));
 
         $salaryMap = ['salary' => 'only_salary', 'salary + commission' => 'salary_commission', 'commission' => 'only_commission'];
+
+        // rev149 — make sure the richer template's columns exist on the employees
+        // table (self-creating, per project convention) so they actually import.
+        self::ensureEmployeeColumns();
+        try {
+            if (Schema::hasTable('employees')) {
+                foreach (['whatsapp', 'address', 'dob', 'doj'] as $c) {
+                    if (! Schema::hasColumn('employees', $c)) {
+                        Schema::table('employees', function (Blueprint $t) use ($c) {
+                            $t->string($c)->nullable();
+                        });
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+
         $count = 0;
         foreach ($lines as $line) {
             $cells = str_getcsv($line);
@@ -246,6 +287,34 @@ class AppDataController extends Controller
                 'uan' => $row['uan'] ?? ($row['pf_number'] ?? ($row['pf'] ?? null)),
                 'bank_acc' => $row['bank_acc'] ?? null, 'ifsc' => $row['ifsc'] ?? null, 'updated_at' => now(),
             ];
+            // rev149 — richer fields from the full template (only set when present;
+            // the columns were ensured above, so these are schema-safe).
+            $extra = [
+                'department' => trim((string) ($row['department'] ?? '')) ?: null,
+                'designation' => trim((string) ($row['designation'] ?? '')) ?: null,
+                'branch' => trim((string) ($row['branch'] ?? '')) ?: null,
+                'team' => trim((string) ($row['team'] ?? '')) ?: null,
+                'whatsapp' => trim((string) ($row['whatsapp'] ?? ($row['whatsapp_number'] ?? ''))) ?: null,
+                'address' => trim((string) ($row['address'] ?? '')) ?: null,
+                'dob' => trim((string) ($row['dob'] ?? ($row['date_of_birth'] ?? ''))) ?: null,
+                'doj' => trim((string) ($row['doj'] ?? ($row['date_of_joining'] ?? ''))) ?: null,
+            ];
+            foreach ($extra as $k => $v) {
+                if ($v !== null && Schema::hasColumn('employees', $k)) {
+                    $payload[$k] = $v;
+                }
+            }
+            // Resolve the Company name to a company_id within this tenant.
+            $compName = trim((string) ($row['company'] ?? ''));
+            if ($compName !== '') {
+                $cid = DB::table('companies')
+                    ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+                    ->whereNull('deleted_at')->whereRaw('LOWER(name) = ?', [strtolower($compName)])->value('id');
+                if ($cid) {
+                    $payload['company_id'] = $cid;
+                }
+            }
+
             $existing = DB::table('employees')->where('tenant_id', $tenantId)->where('emp_code', $code)->first();
             if ($existing) {
                 DB::table('employees')->where('id', $existing->id)->update($payload);
@@ -264,6 +333,34 @@ class AppDataController extends Controller
                 $payload['status'] = 'active';
                 $payload['created_at'] = now();
                 DB::table('employees')->insert($payload);
+            }
+
+            // rev149 — optional self-service login from the template's password
+            // column. Guarded so a login problem can never break the import.
+            $pwd = trim((string) ($row['password'] ?? ''));
+            $loginEmail = trim((string) ($row['email'] ?? ''));
+            if ($pwd !== '' && $loginEmail !== '' && Schema::hasTable('users')) {
+                try {
+                    $u = DB::table('users')->whereRaw('LOWER(email) = ?', [strtolower($loginEmail)])
+                        ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))->first();
+                    if ($u) {
+                        DB::table('users')->where('id', $u->id)->update(['password' => bcrypt($pwd), 'updated_at' => now()]);
+                    } else {
+                        $uid = DB::table('users')->insertGetId([
+                            'tenant_id' => $tenantId, 'name' => $name, 'email' => $loginEmail,
+                            'password' => bcrypt($pwd), 'status' => 'active',
+                            'created_at' => now(), 'updated_at' => now(),
+                        ]);
+                        try {
+                            $um = \App\Models\User::find($uid);
+                            if ($um && method_exists($um, 'syncRoles')) {
+                                $um->syncRoles(['employee']);
+                            }
+                        } catch (\Throwable $e) {
+                        }
+                    }
+                } catch (\Throwable $e) {
+                }
             }
             $count++;
         }
@@ -302,9 +399,12 @@ class AppDataController extends Controller
     /** Download a CSV import template. */
     public function employeeTemplate()
     {
-        $csv = "emp_code,name,type,ctc,salary_type,mobile,email,pan,uan,bank_acc,ifsc\n"
-            ."EMP100,Sample Name,office,600000,Salary,+919999999999,sample@company.in,ABCDE1234F,100200300400,123456789,SBIN0001234\n"
-            ."EMP101,Field Agent Name,field,336000,Salary + Commission,+918888888888,agent@company.in,FGHIJ5678K,100200300401,987654321,HDFC0005678\n";
+        // rev149 — full template: company / department / designation / branch / team
+        // / dates / WhatsApp / address / password are now included and imported.
+        $head = 'emp_code,name,type,company,department,designation,branch,team,doj,dob,mobile,whatsapp,address,email,ctc,salary_type,pan,uan,bank_acc,ifsc,password';
+        $csv = $head."\n"
+            .'EMP100,Sample Name,office,Acme Recovery Pvt Ltd,Operations,Executive,Head Office,Alpha Team,2024-04-01,1995-06-15,+919999999999,+919999999999,"12 MG Road, Hyderabad",sample@company.in,600000,Salary,ABCDE1234F,100200300400,12345678901,SBIN0001234,Welcome@123'."\n"
+            .'EMP101,Field Agent Name,field,Acme Recovery Pvt Ltd,Collections,Field Officer,Branch-2,Bravo Team,2024-05-10,1998-02-20,+918888888888,+918888888888,"45 Park Street, Pune",agent@company.in,336000,Salary + Commission,FGHIJ5678K,100200300401,10987654321,HDFC0005678,Welcome@123'."\n";
 
         return response($csv, 200, [
             'Content-Type' => 'text/csv',

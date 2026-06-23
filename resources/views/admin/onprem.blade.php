@@ -42,7 +42,13 @@
                 </select>
             </label>
             <label>Or exact expiry date<input type="date" name="licence_expires_on"></label>
-            <label style="grid-column:span 1;">&nbsp;<span style="display:block;font-weight:400;color:#94a3b8;font-size:11px;margin-top:8px;line-height:1.4;">Applied when the key is generated. Leave the date blank to use the duration.</span></label>
+            <label>On expiry (client login)
+                <select name="expiry_mode">
+                    <option value="renew">Show License Code field (client can renew)</option>
+                    <option value="notify">Show "LC Expired" notice only</option>
+                </select>
+            </label>
+            <label style="grid-column:span 3;">&nbsp;<span style="display:block;font-weight:400;color:#94a3b8;font-size:11px;margin-top:4px;line-height:1.4;">Validity is applied when the key is generated — leave the date blank to use the duration. "On expiry" controls what the client sees at login once the licence lapses: a renewal field, or just a notice to contact you.</span></label>
             <label style="grid-column:span 2;">Address<input name="address"></label>
             <label style="grid-column:span 3;">Notes<input name="notes"></label>
             <div><button class="btn btn-primary" type="submit">Save client</button></div>
@@ -93,6 +99,12 @@
                 <form method="POST" action="{{ route('admin.onprem.invoice', $c->id) }}" style="display:inline;">@csrf
                     <button class="btn btn-outline" type="submit">{{ ($c->invoice_no ?? false) ? 'Re-send invoice + pay link' : 'Email invoice + pay link' }}</button>
                 </form>
+                {{-- rev146/147: offline self-contained License Code — works on a standalone
+                     client PC, no server needed. Optional device lock (MAC/serial/UUID). --}}
+                <form method="POST" action="{{ route('admin.onprem.offlinekey', $c->id) }}" style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap;">@csrf
+                    <label style="font-size:11px;">Lock to device (optional)<br><input name="hardware" placeholder="MAC / Serial / UUID — blank = any PC" style="width:230px;" title="Comma-separate to require several. Leave blank to allow any machine."></label>
+                    <button class="btn btn-outline" type="submit" title="A signed code the client enters at login; verified on their PC, no internet needed"><i class="fas fa-key"></i> Generate offline LC</button>
+                </form>
                 @if (! $live)
                     <form method="POST" action="{{ route('admin.onprem.key', $c->id) }}" style="display:inline;">@csrf
                         <button class="btn btn-primary" type="submit" {{ ($fullyPaid || $c->activate_on_partial) ? '' : 'disabled title=Payment-pending' }}>Generate licence key</button>
@@ -110,6 +122,13 @@
                 <div style="margin-top:12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px 14px;font-family:Consolas,monospace;font-size:16px;letter-spacing:1px;">
                     {{ \App\Services\LicenseService::reveal($live) ?? 'Could not decrypt the key on this server.' }}
                     <div style="font-size:11px;color:#9a3412;font-family:inherit;margin-top:4px;">Shown because you just generated it — note it in the installation record. It was also emailed{{ $c->email ? ' to '.$c->email : '' }}.</div>
+                </div>
+            @endif
+            @if (session('offline_key') && (int) session('offline_key_id') === (int) $c->id)
+                <div style="margin-top:12px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:12px 14px;">
+                    <div style="font-size:12px;font-weight:700;color:#047857;margin-bottom:6px;"><i class="fas fa-key"></i> Offline License Code — give this to the client</div>
+                    <textarea readonly onclick="this.select()" style="width:100%;border:1px solid #6ee7b7;border-radius:8px;padding:8px 10px;font-family:Consolas,monospace;font-size:13px;word-break:break-all;resize:vertical;min-height:54px;">{{ session('offline_key') }}</textarea>
+                    <div style="font-size:11px;color:#065f46;margin-top:4px;">Works on the client PC with no internet. Click to select, then copy. To extend later, change the validity above and generate again.{{ $c->email ? ' Also emailed to '.$c->email.'.' : '' }}</div>
                 </div>
             @endif
         </div>

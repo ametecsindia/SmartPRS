@@ -36,9 +36,18 @@ class AuthController extends Controller
         try {
             $need = ! \App\Http\Controllers\ClientUpdateController::licenceValid();
             $data['needLc'] = $need;
-            $data['lcState'] = $need
-                ? \App\Http\Controllers\ClientUpdateController::licenceStatus()
-                : ['state' => 'ok', 'expires_on' => null];
+            if ($need) {
+                $st = \App\Http\Controllers\ClientUpdateController::licenceStatus();
+                $data['lcState'] = $st;
+                // 'notice' = an "LC Expired" message with NO input (Super Admin
+                // set notify mode); 'field' = the renewal / first-activation
+                // License Code input.
+                $data['lcDisplay'] = (($st['state'] ?? '') === 'expired' && ($st['mode'] ?? 'renew') === 'notify')
+                    ? 'notice' : 'field';
+            } else {
+                $data['lcState'] = ['state' => 'ok', 'expires_on' => null];
+                $data['lcDisplay'] = 'none';
+            }
         } catch (\Throwable $e) {
             $data['needLc'] = false;
         }
@@ -102,6 +111,11 @@ class AuthController extends Controller
      */
     public function showSuper()
     {
+        // rev147 — the platform Super Admin portal must NOT exist on a client's
+        // on-prem install. Hidden entirely (404) so there is no reachable
+        // Super Admin login, page or hint. SaaS is unaffected (isOnPrem false).
+        abort_if(\App\Services\Edition::isOnPrem(), 404);
+
         return $this->loginView(['superMode' => true]);
     }
 
@@ -176,43 +190,68 @@ class AuthController extends Controller
             // sign-in is byte-for-byte unchanged. Credentials are verified
             // first (above); only AFTER that do we require a valid LC.
             try {
+                // rev147 — HYBRID revocation: when online (throttled daily),
+                // honour a Super-Admin revoke before deciding access.
+                \App\Http\Controllers\ClientUpdateController::revocationSweep();
                 if (! \App\Http\Controllers\ClientUpdateController::licenceValid()) {
-                    $au = $request->user();
-                    $isAdmin = false;
-                    try {
-                        $isAdmin = $au && ($au->hasRole('admin') || $au->hasRole('super_admin'));
-                    } catch (\Throwable $e) {
-                    }
-                    // Only the administrator may activate (LCs are issued and
-                    // managed solely by the Ametecs Super Admin).
-                    if (! $isAdmin) {
-                        Auth::logout();
-                        $request->session()->invalidate();
-                        $request->session()->regenerateToken();
+                    $stat = \App\Http\Controllers\ClientUpdateController::licenceStatus();
 
-                        return back()->withErrors(['email' => 'SmartPRS is awaiting licence activation. Please ask your administrator to enter the License Code.'])->onlyInput('email');
-                    }
-                    $lc = trim((string) $request->input('license_code', ''));
-                    if ($lc === '') {
-                        $stat = \App\Http\Controllers\ClientUpdateController::licenceStatus();
-                        Auth::logout();
-                        $request->session()->invalidate();
-                        $request->session()->regenerateToken();
-                        $msg = ($stat['state'] ?? '') === 'expired'
-                            ? 'Your SmartPRS licence expired on '.($stat['expires_on'] ?: '—').'. Enter a new License Code to continue.'
-                            : 'Enter the License Code to activate this SmartPRS installation.';
+                    // NOTIFY mode on an EXPIRED licence: no manual code entry.
+                    // Silently re-check the stored key online — if the Super
+                    // Admin has renewed it, the install recovers itself; if not
+                    // (or offline), show the "LC Expired" notice and stop.
+                    if (($stat['state'] ?? '') === 'expired' && ($stat['mode'] ?? 'renew') === 'notify') {
+                        try {
+                            \App\Http\Controllers\ClientUpdateController::recheckStored();
+                        } catch (\Throwable $e) {
+                        }
+                        if (! \App\Http\Controllers\ClientUpdateController::licenceValid()) {
+                            $st2 = \App\Http\Controllers\ClientUpdateController::licenceStatus();
+                            Auth::logout();
+                            $request->session()->invalidate();
+                            $request->session()->regenerateToken();
 
-                        return back()->withErrors(['license_code' => $msg])->onlyInput('email');
-                    }
-                    $res = \App\Http\Controllers\ClientUpdateController::activateKey($lc);
-                    if (empty($res['ok'])) {
-                        Auth::logout();
-                        $request->session()->invalidate();
-                        $request->session()->regenerateToken();
+                            return back()->withErrors(['email' => 'Your SmartPRS licence expired on '.($st2['expires_on'] ?: '—').'. Please contact Ametecs to renew — WhatsApp 9000098877.'])->onlyInput('email');
+                        }
+                        // Recovered — fall through to a normal authenticated session.
+                    } else {
+                        // First activation, or RENEW mode on expiry → the admin
+                        // enters a License Code (LCs are issued and managed
+                        // solely by the Ametecs Super Admin).
+                        $au = $request->user();
+                        $isAdmin = false;
+                        try {
+                            $isAdmin = $au && ($au->hasRole('admin') || $au->hasRole('super_admin'));
+                        } catch (\Throwable $e) {
+                        }
+                        if (! $isAdmin) {
+                            Auth::logout();
+                            $request->session()->invalidate();
+                            $request->session()->regenerateToken();
 
-                        return back()->withErrors(['license_code' => $res['error'] ?? 'That License Code could not be validated.'])->onlyInput('email');
+                            return back()->withErrors(['email' => 'SmartPRS is awaiting licence activation. Please ask your administrator to enter the License Code.'])->onlyInput('email');
+                        }
+                        $lc = trim((string) $request->input('license_code', ''));
+                        if ($lc === '') {
+                            Auth::logout();
+                            $request->session()->invalidate();
+                            $request->session()->regenerateToken();
+                            $msg = ($stat['state'] ?? '') === 'expired'
+                                ? 'Your SmartPRS licence expired on '.($stat['expires_on'] ?: '—').'. Enter a new License Code to continue.'
+                                : 'Enter the License Code to activate this SmartPRS installation.';
+
+                            return back()->withErrors(['license_code' => $msg])->onlyInput('email');
+                        }
+                        $res = \App\Http\Controllers\ClientUpdateController::activateKey($lc);
+                        if (empty($res['ok'])) {
+                            Auth::logout();
+                            $request->session()->invalidate();
+                            $request->session()->regenerateToken();
+
+                            return back()->withErrors(['license_code' => $res['error'] ?? 'That License Code could not be validated.'])->onlyInput('email');
+                        }
+                        // Activated — fall through to a normal authenticated session.
                     }
-                    // Activated — fall through to a normal authenticated session.
                 }
             } catch (\Throwable $e) {
                 // fail-soft: a licence-check error must never lock out a valid user

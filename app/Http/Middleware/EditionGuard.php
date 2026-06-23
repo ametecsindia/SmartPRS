@@ -31,6 +31,14 @@ class EditionGuard
                     return redirect('/app');
                 }
 
+                // rev147: platform / Super-Admin surfaces are HIDDEN, not upsold
+                // — a client must see no trace of them. Return a plain 404.
+                foreach (Edition::platformPatterns() as $re) {
+                    if (preg_match($re, $path)) {
+                        abort(404);
+                    }
+                }
+
                 foreach (Edition::blockedPatterns() as $re) {
                     if (preg_match($re, $path)) {
                         $msg = 'This module is not included in your ' . Edition::label()

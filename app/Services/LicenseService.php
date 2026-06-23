@@ -65,6 +65,7 @@ class LicenseService
                     $t->string('key_last4', 4);
                     $t->string('status', 16)->default('pending');        // pending|active|suspended|revoked
                     $t->date('amc_expires_on')->nullable();
+                    $t->string('expiry_mode', 12)->default('renew');     // renew|notify (on expiry)
                     $t->timestamp('activated_at')->nullable();
                     $t->string('fingerprint')->nullable();
                     $t->string('server_name')->nullable();
@@ -117,6 +118,14 @@ class LicenseService
                     $t->timestamps();
                 });
             }
+            // rev141 — expiry behaviour for installs whose licences table
+            // predates this column (renew = client enters a new code at login;
+            // notify = "LC Expired" notice only). Schema-guarded.
+            if (Schema::hasTable('licences') && ! Schema::hasColumn('licences', 'expiry_mode')) {
+                Schema::table('licences', function ($t) {
+                    $t->string('expiry_mode', 12)->default('renew');
+                });
+            }
         } catch (\Throwable $e) {
             // fail-soft: a broken DDL must never take the platform down
         }
@@ -142,6 +151,120 @@ class LicenseService
         return strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $key));
     }
 
+    // ===================================================== offline keys (rev146)
+    // A self-contained, SIGNED License Code the client verifies locally — no
+    // server round-trip. Format:  SPRSX1.<payload-b64url>.<sig-hex>
+    // payload = {e:edition, x:expiry(YYYY-MM-DD), m:mode, c:company, i:issued}
+    // sig     = first 40 hex of HMAC-SHA256(payload-b64url, licence_secret).
+
+    public const OFFLINE_PREFIX = 'SPRSX1';
+
+    private static function offlineSecret(): string
+    {
+        return (string) (config('smartprs.licence_secret') ?: 'smartprs-offline-fallback');
+    }
+
+    private static function b64u(string $bin): string
+    {
+        return rtrim(strtr(base64_encode($bin), '+/', '-_'), '=');
+    }
+
+    private static function b64uDecode(string $s): string
+    {
+        return (string) base64_decode(strtr($s, '-_', '+/'));
+    }
+
+    /** True if the string looks like an offline self-contained key. */
+    public static function isOfflineKey(string $key): bool
+    {
+        return str_starts_with(trim($key), self::OFFLINE_PREFIX.'.');
+    }
+
+    /** Normalise a hardware identifier (MAC/serial/UUID/GUID) for comparison. */
+    public static function normalizeHwId(string $s): string
+    {
+        return strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $s));
+    }
+
+    /**
+     * Build a signed offline License Code for a client (Super Admin side).
+     * $hwLocks (optional) — MAC / serial / UUID / GUID strings the licence is
+     * locked to; when present, the client activates only on a matching device.
+     */
+    public static function makeOfflineKey(string $edition, ?string $expiresOn, string $mode = 'renew', string $company = '', array $hwLocks = []): string
+    {
+        $payload = [
+            'e' => strtolower($edition),
+            'x' => $expiresOn,
+            'm' => in_array($mode, ['renew', 'notify'], true) ? $mode : 'renew',
+            'c' => mb_substr($company, 0, 80),
+            'i' => now()->toDateString(),
+        ];
+        $hw = [];
+        foreach ($hwLocks as $h) {
+            $n = self::normalizeHwId((string) $h);
+            if (strlen($n) >= 4) {
+                $hw[] = $n;
+            }
+        }
+        if ($hw) {
+            $payload['h'] = array_values(array_unique($hw));
+        }
+        $b = self::b64u((string) json_encode($payload));
+        $sig = substr(hash_hmac('sha256', $b, self::offlineSecret()), 0, 40);
+
+        return self::OFFLINE_PREFIX.'.'.$b.'.'.$sig;
+    }
+
+    /** Verify an offline key locally (client side). Returns the payload or null. */
+    public static function verifyOfflineKey(string $key): ?array
+    {
+        $parts = explode('.', trim($key));
+        if (count($parts) !== 3 || $parts[0] !== self::OFFLINE_PREFIX) {
+            return null;
+        }
+        [, $b, $sig] = $parts;
+        $expect = substr(hash_hmac('sha256', $b, self::offlineSecret()), 0, 40);
+        if (! hash_equals($expect, $sig)) {
+            return null;
+        }
+        $data = json_decode(self::b64uDecode($b), true);
+
+        return is_array($data) ? $data : null;
+    }
+
+    /**
+     * rev147 — record an offline-issued key server-side so it is REVOCABLE and
+     * visible in the On-Prem panel (offline keys are otherwise stateless).
+     * Upserts the client's live licence row, so regenerating just updates it.
+     */
+    public static function recordOffline(int $clientId, string $edition, ?string $expiresOn, string $expiryMode, string $token): void
+    {
+        self::ensureTables();
+        try {
+            $vals = [
+                'edition' => $edition,
+                'key_hash' => self::hashKey($token),
+                'key_enc' => Crypt::encryptString($token),
+                'key_last4' => substr(self::normalize($token), -4),
+                'status' => 'active',
+                'amc_expires_on' => $expiresOn,
+                'expiry_mode' => in_array($expiryMode, ['renew', 'notify'], true) ? $expiryMode : 'renew',
+                'server_name' => 'offline-key',
+                'updated_at' => now(),
+            ];
+            $live = DB::table('licences')->where('client_id', $clientId)->whereIn('status', ['pending', 'active'])->orderByDesc('id')->first();
+            if ($live) {
+                DB::table('licences')->where('id', $live->id)->update($vals);
+                self::event($live->id, 'generated', 'Offline key (re)issued for client #'.$clientId);
+            } else {
+                $id = DB::table('licences')->insertGetId($vals + ['client_id' => $clientId, 'created_at' => now()]);
+                self::event($id, 'generated', 'Offline key issued for client #'.$clientId);
+            }
+        } catch (\Throwable $e) {
+        }
+    }
+
     public static function hashKey(string $key): string
     {
         return hash('sha256', self::normalize($key));
@@ -159,7 +282,7 @@ class LicenseService
     }
 
     /** Create a licence for a client; returns the PLAINTEXT key (shown once + emailed). */
-    public static function issue(int $clientId, string $edition, ?string $amcExpiresOn): string
+    public static function issue(int $clientId, string $edition, ?string $amcExpiresOn, string $expiryMode = 'renew'): string
     {
         self::ensureTables();
         $key = self::generateKey();
@@ -171,6 +294,7 @@ class LicenseService
             'key_last4' => substr(self::normalize($key), -4),
             'status' => 'pending',
             'amc_expires_on' => $amcExpiresOn,
+            'expiry_mode' => in_array($expiryMode, ['renew', 'notify'], true) ? $expiryMode : 'renew',
             'created_at' => now(), 'updated_at' => now(),
         ]);
         self::event($id, 'generated', 'Key issued for client #'.$clientId.' ('.$edition.')');
@@ -214,6 +338,7 @@ class LicenseService
         $payload = [
             'edition' => $licence->edition,
             'amc_expires_on' => $licence->amc_expires_on,
+            'expiry_mode' => $licence->expiry_mode ?? 'renew',
             'fingerprint' => $fingerprint,
             'issued' => now()->toDateTimeString(),
         ];

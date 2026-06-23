@@ -5,7 +5,7 @@
     "keywords": ["smartprs", "hrm", "payroll", "laravel"],
     "license": "proprietary",
     "require": {
-        "php": "^8.3",
+        "php": "^8.2",
         "barryvdh/laravel-dompdf": "^3.0",
         "laravel/framework": "^11.0",
         "laravel/sanctum": "^4.0",
@@ -67,6 +67,9 @@
         "optimize-autoloader": true,
         "preferred-install": "dist",
         "sort-packages": true,
+        "platform": {
+            "php": "8.2"
+        },
         "allow-plugins": {
             "pestphp/pest-plugin": true,
             "php-http/discovery": true

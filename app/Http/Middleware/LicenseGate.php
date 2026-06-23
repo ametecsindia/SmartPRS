@@ -11,12 +11,14 @@ use Illuminate\Http\Request;
  * rev 107 — ACTIVATION GATE (SRS FR-7; Ejaz: "when entered allows to enter
  * else it will stay at admin login... wait for activation").
  *
- * On an UNACTIVATED on-prem PRODUCTION installation: login works, but the
- * only destination is the activation screen (admins) or a friendly hold
- * message (everyone else). Your own demo/edition installs are exempt:
- * the gate runs only when APP_ENV=production AND licence_enforce is on.
- * Fail-soft: any internal error lets the request through — a licence
- * check must never take a client's HR system down.
+ * On an on-prem install whose licence is missing OR EXPIRED: every protected
+ * screen is blocked and the user is sent back to the login to enter a valid
+ * License Code — so an expired LC truly stops the app until it is renewed.
+ * rev151: the gate runs whenever licence_enforce is ON (independent of
+ * APP_ENV) so expiry blocks even mid-session. Your own demo/edition installs
+ * stay open because they set SMARTPRS_LICENCE_ENFORCE=false. Fail-soft: any
+ * internal error lets the request through — a licence check must never take a
+ * client's HR system down.
  */
 class LicenseGate
 {
@@ -27,10 +29,9 @@ class LicenseGate
         try {
             // rev139: licenceValid() is expiry-aware — it is false both when
             // the install was never activated AND when a previously valid
-            // licence has expired (subscription / block model). It always
+            // licence has EXPIRED (subscription / block model). It always
             // returns true off the on-prem editions, so SaaS is untouched.
             if (! Edition::isOnPrem()
-                || ! app()->environment('production')
                 || ! filter_var(config('smartprs.licence_enforce', true), FILTER_VALIDATE_BOOLEAN)
                 || ClientUpdateController::licenceValid()) {
                 return $next($request);

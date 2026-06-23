@@ -444,6 +444,13 @@ CSS;
                 // so the Directory is strictly database-driven — never sample data.
                 DB.employees = Array.isArray(live.employees) ? live.employees : [];
                 if (Array.isArray(live.companies) && live.companies.length) { DB.companies = live.companies; }
+                // rev149: org-hierarchy lists feed the form dropdowns (Department /
+                // Branch / Designation / Team). Always overlay from the server — these
+                // masters are table-backed, so the server list is authoritative.
+                if (Array.isArray(live.branches)) { DB.branchesC = live.branches; }
+                if (Array.isArray(live.departments)) { DB.departments = live.departments; }
+                if (Array.isArray(live.designations)) { DB.designations = live.designations; }
+                if (Array.isArray(live.teams)) { DB.teams = live.teams; }
                 if (Array.isArray(live.tenants) && live.tenants.length) { DB.tenants = live.tenants; }
                 if (Array.isArray(live.payrollRuns) && live.payrollRuns.length) { DB.payrollRuns = live.payrollRuns; }
                 if (Array.isArray(live.payslips)) { window.__PAYSLIPS = live.payslips; }
@@ -453,6 +460,15 @@ CSS;
                 try { COMPANY = 'ALL'; } catch (e) {}
             }
         } catch (e) { /* fall back to demo data */ }
+        // rev153: GUARANTEE the org-hierarchy arrays exist so forms that build a
+        // dropdown with DB.departments.map(...) (no ||[] guard) can never crash if
+        // the live feed was unavailable. Empty is fine; the data overlay + master
+        // save sync fill them. This prevents the "form blows up" class of errors.
+        try {
+            ['companies', 'branchesC', 'departments', 'designations', 'teams'].forEach(function (k) {
+                if (!Array.isArray(DB[k])) { DB[k] = []; }
+            });
+        } catch (e) {}
         // Knowledge Base (role-filtered articles).
         try {
             const kr = await fetch(cfg.kbUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
@@ -7715,10 +7731,19 @@ CSS;
     // their own nav key for local state, but the backend def is keyed by mc.type. Always hit
     // the canonical type on the server, else MasterController returns "Unknown master".
     function masterType(type) { var mc = MASTER_MAP[type]; return (mc && mc.type) || type; }
+    // rev153: which master screens feed the shared dropdown arrays that OTHER
+    // screens read (Company / Branch / Department / Designation / Team).
+    var ORG_SYNC = { companies: 'companies', branches: 'branchesC', departments: 'departments', designations: 'designations', teams: 'teams' };
+    function masterSyncOrg(type, j) {
+        try {
+            var key = ORG_SYNC[type];
+            if (key && typeof DB !== 'undefined' && j && Array.isArray(j.rows)) { DB[key] = j.rows; }
+        } catch (e) {}
+    }
     function masterLoad(type) {
         fetch(cfg.masterBase + '/' + masterType(type), { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
             .then(function (r) { return r.json(); })
-            .then(function (j) { window.__MASTER[type] = j; if (typeof render === 'function') { render(); } })
+            .then(function (j) { window.__MASTER[type] = j; masterSyncOrg(type, j); if (typeof render === 'function') { render(); } })
             .catch(function () { window.__MASTER[type] = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
     }
     function masterOptsFor(src) {

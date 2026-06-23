@@ -99,28 +99,45 @@
                         <input type="password" name="password" placeholder="••••••••" required>
                     </div>
                 </div>
-                {{-- rev139: on-prem License Code (LC) field — appears below the
-                     login form only when this installation needs activation or
-                     its licence has expired. On SaaS it is never rendered. --}}
-                @if (!empty($needLc))
-                <div class="form-group" style="margin-top:2px;">
-                    <label>License Code (LC)</label>
-                    <div class="input-wrap">
-                        <i class="fas fa-key"></i>
-                        <input type="text" name="license_code" value="{{ old('license_code') }}"
-                               placeholder="SPRS-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false"
-                               style="text-transform:uppercase;letter-spacing:.5px;">
+                {{-- rev139/141: on-prem License Code (LC) prompt — appears below
+                     the login form only when this install needs activation or
+                     its licence has expired. On SaaS it is never rendered.
+                     The Super Admin's "on expiry" setting decides whether an
+                     expired licence shows a renewal FIELD or a NOTICE only. --}}
+                @if (!empty($needLc) && ($lcDisplay ?? 'field') === 'notice')
+                    {{-- NOTIFY mode: an "LC Expired" message, no input. The user
+                         signs in normally; that re-checks the licence online and
+                         recovers automatically once Ametecs has renewed it. --}}
+                    <div style="background:var(--red-soft);border:1px solid #fecaca;border-radius:10px;padding:12px 14px;margin:2px 0 4px;font-family:var(--font2);">
+                        <div style="font-weight:700;color:#dc2626;font-size:14px;">
+                            <i class="fas fa-triangle-exclamation"></i> Licence Expired
+                        </div>
+                        <p style="font-size:12.5px;color:var(--text2);margin:6px 0 0;line-height:1.55;">
+                            Your SmartPRS licence expired on <strong>{{ $lcState['expires_on'] ?? '—' }}</strong>.
+                            Please contact Ametecs to renew, then sign in again — your access restores automatically.
+                            <br>WhatsApp <strong>9000098877</strong> · ejaz@ametecsindia.com
+                        </p>
                     </div>
-                    <p style="font-size:12px;color:var(--text3);margin:7px 2px 0;font-family:var(--font2);line-height:1.5;">
-                        @if (($lcState['state'] ?? '') === 'expired')
-                            <i class="fas fa-triangle-exclamation" style="color:#dc2626;"></i>
-                            Your licence expired on <strong>{{ $lcState['expires_on'] ?? '—' }}</strong>. Enter a new License Code from Ametecs to continue.
-                        @else
-                            <i class="fas fa-circle-info"></i>
-                            This SmartPRS installation needs activation. Enter the License Code provided by Ametecs (WhatsApp 9000098877).
-                        @endif
-                    </p>
-                </div>
+                @elseif (!empty($needLc))
+                    {{-- RENEW / first activation: the License Code input. --}}
+                    <div class="form-group" style="margin-top:2px;">
+                        <label>License Code (LC)</label>
+                        <div class="input-wrap">
+                            <i class="fas fa-key"></i>
+                            <input type="text" name="license_code" value="{{ old('license_code') }}"
+                                   placeholder="SPRS-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false"
+                                   style="text-transform:uppercase;letter-spacing:.5px;">
+                        </div>
+                        <p style="font-size:12px;color:var(--text3);margin:7px 2px 0;font-family:var(--font2);line-height:1.5;">
+                            @if (($lcState['state'] ?? '') === 'expired')
+                                <i class="fas fa-triangle-exclamation" style="color:#dc2626;"></i>
+                                Your licence expired on <strong>{{ $lcState['expires_on'] ?? '—' }}</strong>. Enter a new License Code from Ametecs to continue.
+                            @else
+                                <i class="fas fa-circle-info"></i>
+                                This SmartPRS installation needs activation. Enter the License Code provided by Ametecs (WhatsApp 9000098877).
+                            @endif
+                        </p>
+                    </div>
                 @endif
                 <div class="form-group" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
                     <span style="display:flex;align-items:center;gap:8px;">

@@ -44,6 +44,15 @@ return [
     'update_url' => env('SMARTPRS_UPDATE_URL', 'https://smartprs.com/update'),
     'licence_enforce' => env('SMARTPRS_LICENCE_ENFORCE', true),
 
+    /*
+    | Shared secret for OFFLINE self-contained License Codes (rev146). The
+    | Super Admin signs a key with it; the client verifies the signature
+    | locally — no server needed. It MUST be identical on the Super Admin and
+    | on every client install (it is the same baked default unless overridden;
+    | if you set SMARTPRS_LICENCE_SECRET, set the SAME value everywhere).
+    */
+    'licence_secret' => env('SMARTPRS_LICENCE_SECRET', 'SmartPRS-Ametecs-Offline-LC-v1-9f3c7a2e8b6d41f5'),
+
     'default_company_code' => env('SMARTPRS_DEFAULT_COMPANY_CODE', 'DEMO'),
 
     /*

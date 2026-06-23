@@ -77,15 +77,101 @@ class ClientUpdateController extends Controller
         $st = self::state();
         $cert = $st['cert'] ?? [];
         $company = $st['company'] ?? null;
+        // Offline keys can only be renewed by entering a new code (no server to
+        // pull a renewal from), so they always use the 'renew' field on expiry.
+        $mode = (($cert['expiry_mode'] ?? 'renew') === 'notify' && empty($cert['offline'])) ? 'notify' : 'renew';
         if (empty($cert) || empty($st['activated_at'])) {
-            return ['state' => 'none', 'expires_on' => null, 'company' => $company];
+            return ['state' => 'none', 'expires_on' => null, 'company' => $company, 'mode' => $mode];
         }
         $exp = $cert['amc_expires_on'] ?? null;
         if ($exp && $exp < now()->toDateString()) {
-            return ['state' => 'expired', 'expires_on' => $exp, 'company' => $company];
+            return ['state' => 'expired', 'expires_on' => $exp, 'company' => $company, 'mode' => $mode];
         }
 
-        return ['state' => 'ok', 'expires_on' => $exp, 'company' => $company];
+        return ['state' => 'ok', 'expires_on' => $exp, 'company' => $company, 'mode' => $mode];
+    }
+
+    /**
+     * rev141 — silently re-validate the STORED key online (no user input).
+     * Used by the login flow in 'notify' mode: if the Super Admin has renewed
+     * the licence server-side, this pulls the fresh certificate and the
+     * install unblocks itself. Offline or still-expired → returns ok=false.
+     */
+    public static function recheckStored(): array
+    {
+        $st = self::state();
+        try {
+            $key = ! empty($st['key_enc']) ? Crypt::decryptString($st['key_enc']) : '';
+        } catch (\Throwable $e) {
+            $key = '';
+        }
+        if ($key === '') {
+            return ['ok' => false, 'error' => 'No stored licence to re-check.'];
+        }
+
+        return self::activateKey($key);
+    }
+
+    /** rev147 — best-effort server status for a key: active|revoked|suspended, or null when unreachable. */
+    private static function serverLicenceStatus(string $key): ?string
+    {
+        try {
+            $resp = Http::timeout(6)->post(config('smartprs.update_url').'/heartbeat', ['key' => $key]);
+            $j = $resp->json();
+            if (is_array($j) && ! empty($j['ok'])) {
+                return strtolower((string) ($j['status'] ?? 'active')) ?: 'active';
+            }
+        } catch (\Throwable $e) {
+        }
+
+        return null;
+    }
+
+    /**
+     * rev147 — HYBRID revocation. Called at login: when the client has internet
+     * it checks the server (throttled to once a day) and, if the licence is
+     * revoked/suspended, wipes the local certificate so access is blocked and
+     * the revoked key is remembered. Offline → no-op (runs on the stored cert
+     * until expiry). On-prem only; fail-soft.
+     */
+    public static function revocationSweep(): void
+    {
+        try {
+            if (! Edition::isOnPrem()) {
+                return;
+            }
+            $st = self::state();
+            if (empty($st['cert']) || empty($st['key_enc'])) {
+                return;
+            }
+            $last = $st['last_revcheck'] ?? null;
+            if ($last && \Carbon\Carbon::parse($last)->gt(now()->subDay())) {
+                return;   // already checked recently
+            }
+            try {
+                $key = Crypt::decryptString($st['key_enc']);
+            } catch (\Throwable $e) {
+                return;
+            }
+            if ($key === '') {
+                return;
+            }
+            $status = self::serverLicenceStatus($key);
+            if ($status === null) {
+                return;   // unreachable → offline grace, leave the cert in place
+            }
+            $st['last_revcheck'] = now()->toDateTimeString();
+            $st['last_ok'] = now()->toDateTimeString();
+            if (in_array($status, ['revoked', 'suspended'], true)) {
+                $rev = $st['revoked_hashes'] ?? [];
+                $rev[] = LicenseService::hashKey($key);
+                $st['revoked_hashes'] = array_values(array_unique($rev));
+                $st['cert'] = [];        // wipe → licenceValid() is now false (blocked)
+                $st['revoked'] = true;
+            }
+            self::saveState($st);
+        } catch (\Throwable $e) {
+        }
     }
 
     /**
@@ -112,6 +198,13 @@ class ClientUpdateController extends Controller
      */
     public static function activateKey(string $key): array
     {
+        $key = trim($key);
+
+        // rev146 — OFFLINE self-contained key: verified locally, no server.
+        if (LicenseService::isOfflineKey($key)) {
+            return self::activateOfflineKey($key);
+        }
+
         if (strlen(LicenseService::normalize($key)) < 16) {
             return ['ok' => false, 'error' => 'That does not look like a SmartPRS License Code — please check and try again.'];
         }
@@ -145,10 +238,136 @@ class ClientUpdateController extends Controller
         }
     }
 
+    /**
+     * rev146 — validate an OFFLINE self-contained License Code locally (no
+     * server) and store a self-signed certificate. The key carries its own
+     * edition/expiry/mode and a signature the client verifies with the shared
+     * licence secret. Returns ['ok','error','company'].
+     */
+    public static function activateOfflineKey(string $key): array
+    {
+        $data = LicenseService::verifyOfflineKey($key);
+        if (! $data) {
+            return ['ok' => false, 'error' => 'That License Code is invalid or has been tampered with. Please check it and try again.'];
+        }
+        // rev147 — hybrid revocation: a key revoked while this machine was
+        // online is remembered locally, so re-entering it stays blocked.
+        $h = LicenseService::hashKey($key);
+        $st0 = self::state();
+        if (in_array($h, $st0['revoked_hashes'] ?? [], true)) {
+            return ['ok' => false, 'error' => 'This License Code has been revoked. Please contact Ametecs (WhatsApp 9000098877).'];
+        }
+        $ed = strtolower((string) ($data['e'] ?? ''));
+        if ($ed !== '' && $ed !== Edition::current()) {
+            return ['ok' => false, 'error' => 'This License Code is for SmartPRS-'.strtoupper($ed).', but this installation is SmartPRS-'.strtoupper(Edition::current()).'.'];
+        }
+        $exp = $data['x'] ?? null;
+        if ($exp && $exp < now()->toDateString()) {
+            return ['ok' => false, 'error' => 'That License Code expired on '.$exp.'. Please obtain a current code from Ametecs (WhatsApp 9000098877).'];
+        }
+        // rev147 — optional HARDWARE LOCK: when the key carries device IDs, it
+        // activates ONLY on a machine that presents all of them.
+        $locks = $data['h'] ?? [];
+        if (is_array($locks) && $locks) {
+            $machine = self::machineHardwareIds();
+            foreach ($locks as $lock) {
+                $ln = LicenseService::normalizeHwId((string) $lock);
+                if ($ln !== '' && ! in_array($ln, $machine, true)) {
+                    return ['ok' => false, 'error' => 'This License Code is locked to a different device and cannot be used on this computer. Please contact Ametecs (WhatsApp 9000098877).'];
+                }
+            }
+        }
+        // rev147 — hybrid: if the server is reachable AND says this key is
+        // revoked/suspended, block now and remember it; offline → trust the key.
+        if (in_array(self::serverLicenceStatus($key), ['revoked', 'suspended'], true)) {
+            $rev = $st0['revoked_hashes'] ?? [];
+            $rev[] = $h;
+            self::saveState(array_merge($st0, ['revoked_hashes' => array_values(array_unique($rev))]));
+
+            return ['ok' => false, 'error' => 'This License Code has been revoked. Please contact Ametecs (WhatsApp 9000098877).'];
+        }
+        self::saveState([
+            'key_enc' => Crypt::encryptString($key),
+            'cert' => [
+                'edition' => $ed ?: Edition::current(),
+                'amc_expires_on' => $exp,
+                'expiry_mode' => ($data['m'] ?? 'renew') === 'notify' ? 'notify' : 'renew',
+                'fingerprint' => self::fingerprint(),
+                'hw' => $locks ?: null,
+                'issued' => $data['i'] ?? now()->toDateString(),
+                'offline' => true,
+            ],
+            'company' => (string) ($data['c'] ?? ''),
+            'activated_at' => now()->toDateTimeString(),
+            'last_ok' => now()->toDateTimeString(),
+            'revoked_hashes' => $st0['revoked_hashes'] ?? [],
+        ]);
+
+        return ['ok' => true, 'error' => null, 'company' => (string) ($data['c'] ?? '')];
+    }
+
     /** Stable installation fingerprint (server identity, not hardware-fragile). */
     public static function fingerprint(): string
     {
         return hash('sha256', (gethostname() ?: 'host').'|'.Edition::current().'|'.base_path());
+    }
+
+    /**
+     * rev147 — best-effort read of this machine's hardware identifiers
+     * (MAC addresses, machine UUID/GUID, BIOS serial), normalised for offline
+     * hardware-lock matching. Windows-first with a Linux fallback; fail-soft.
+     */
+    public static function machineHardwareIds(): array
+    {
+        $ids = [];
+        try {
+            if (stripos(PHP_OS, 'WIN') === 0) {
+                $mac = @shell_exec('getmac /fo csv /nh 2>NUL');
+                foreach (preg_split('/\r?\n/', (string) $mac) as $line) {
+                    if (preg_match('/([0-9A-Fa-f]{2}[-:]){5}[0-9A-Fa-f]{2}/', $line, $m)) {
+                        $ids[] = LicenseService::normalizeHwId($m[0]);
+                    }
+                }
+                $uuid = @shell_exec('wmic csproduct get uuid 2>NUL');
+                if (! trim((string) $uuid)) {
+                    $uuid = @shell_exec('powershell -NoProfile -Command "(Get-CimInstance Win32_ComputerSystemProduct).UUID" 2>NUL');
+                }
+                $serial = @shell_exec('wmic bios get serialnumber 2>NUL');
+                if (! trim((string) $serial)) {
+                    $serial = @shell_exec('powershell -NoProfile -Command "(Get-CimInstance Win32_BIOS).SerialNumber" 2>NUL');
+                }
+                foreach ([$uuid, $serial] as $blob) {
+                    foreach (preg_split('/\r?\n/', (string) $blob) as $line) {
+                        $line = trim($line);
+                        if ($line === '' || stripos($line, 'uuid') === 0 || stripos($line, 'serial') === 0) {
+                            continue;
+                        }
+                        $n = LicenseService::normalizeHwId($line);
+                        if (strlen($n) >= 5) {
+                            $ids[] = $n;
+                        }
+                    }
+                }
+            } else {
+                foreach (glob('/sys/class/net/*/address') ?: [] as $f) {
+                    $mac = trim((string) @file_get_contents($f));
+                    if ($mac !== '' && $mac !== '00:00:00:00:00:00') {
+                        $ids[] = LicenseService::normalizeHwId($mac);
+                    }
+                }
+                foreach (['/sys/class/dmi/id/product_uuid', '/sys/class/dmi/id/product_serial', '/etc/machine-id'] as $f) {
+                    if (@is_readable($f)) {
+                        $v = trim((string) @file_get_contents($f));
+                        if ($v !== '') {
+                            $ids[] = LicenseService::normalizeHwId($v);
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+
+        return array_values(array_unique(array_filter($ids)));
     }
 
     private function guard(Request $request): void
@@ -244,6 +463,9 @@ class ClientUpdateController extends Controller
                 $st['pending'] = $j['update'] ?? null;
                 if (isset($j['amc_expires_on'])) {
                     $st['cert']['amc_expires_on'] = $j['amc_expires_on'];
+                }
+                if (isset($j['expiry_mode'])) {
+                    $st['cert']['expiry_mode'] = $j['expiry_mode'];
                 }
             }
             self::saveState($st);

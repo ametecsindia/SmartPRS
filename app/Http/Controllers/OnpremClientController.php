@@ -36,6 +36,10 @@ class OnpremClientController extends Controller
                 // at key generation, which the on-prem LC login gate enforces).
                 'licence_term_months' => fn ($t) => $t->integer('licence_term_months')->nullable(),
                 'licence_expires_on' => fn ($t) => $t->date('licence_expires_on')->nullable(),
+                // rev141 — what the client sees at login once the licence expires:
+                // 'renew' = the License Code field reappears; 'notify' = an
+                // "LC Expired" notice only (renewal handled by Ametecs).
+                'expiry_mode' => fn ($t) => $t->string('expiry_mode', 12)->default('renew'),
             ] as $col => $def) {
                 if (! \Illuminate\Support\Facades\Schema::hasColumn('onprem_clients', $col)) {
                     \Illuminate\Support\Facades\Schema::table('onprem_clients', $def);
@@ -132,8 +136,12 @@ class OnpremClientController extends Controller
             // months, OR an exact expiry date (the date wins if both given).
             'licence_term_months' => ['nullable', 'integer', 'min:1', 'max:120'],
             'licence_expires_on' => ['nullable', 'date'],
+            'expiry_mode' => ['nullable', 'in:renew,notify'],
             'notes' => ['nullable', 'string', 'max:4000'],
         ]);
+        if (empty($v['expiry_mode'])) {
+            $v['expiry_mode'] = 'renew';
+        }
         $row = $v;
         unset($row['id']);
         $row['gstin'] = strtoupper(trim((string) ($row['gstin'] ?? ''))) ?: null;
@@ -144,6 +152,15 @@ class OnpremClientController extends Controller
         } else {
             $row['created_at'] = now();
             $id = DB::table('onprem_clients')->insertGetId($row);
+        }
+
+        // rev141 — keep a live licence's expiry behaviour in step with the
+        // client setting, so changing it takes effect on the next sync.
+        try {
+            DB::table('licences')->where('client_id', $id)
+                ->whereIn('status', ['pending', 'active'])
+                ->update(['expiry_mode' => $v['expiry_mode'], 'updated_at' => now()]);
+        } catch (\Throwable $e) {
         }
 
         return redirect()->route('admin.onprem')->with('success', 'Client saved (#'.$id.').');
@@ -205,7 +222,7 @@ class OnpremClientController extends Controller
         }
 
         $amcExpiry = self::resolveExpiry($c);   // rev140 — Super-Admin-chosen validity
-        $key = LicenseService::issue($id, $c->edition, $amcExpiry);
+        $key = LicenseService::issue($id, $c->edition, $amcExpiry, $c->expiry_mode ?? 'renew');
 
         // Email the key + activation steps (fail-soft; key stays visible in panel).
         try {
@@ -230,6 +247,54 @@ class OnpremClientController extends Controller
         }
 
         return redirect()->route('admin.onprem', ['reveal' => $id])->with('success', 'Licence key generated'.($c->email ? ' and emailed to '.$c->email : '').'. It is shown below — note it in the installation record.');
+    }
+
+    /**
+     * POST /admin/onprem/{id}/offline-key — rev146. Build a SELF-CONTAINED,
+     * signed offline License Code from the client's edition + validity + expiry
+     * mode. No server round-trip and no DB licence row: the client verifies it
+     * locally. Regenerate any time (e.g. after changing the validity) to extend.
+     */
+    public function offlineKey(Request $request, int $id)
+    {
+        $this->guard($request);
+        self::ensureSaleCols();
+        $c = DB::table('onprem_clients')->where('id', $id)->first();
+        abort_unless($c, 404);
+        $expiry = self::resolveExpiry($c);
+        // rev147 — optional device lock: MAC / serial / UUID / GUID, any
+        // separator. Left blank = the key works on any machine.
+        $hwRaw = (string) $request->input('hardware', '');
+        $hwLocks = preg_split('/[\s,;]+/', trim($hwRaw), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $key = LicenseService::makeOfflineKey($c->edition, $expiry, $c->expiry_mode ?? 'renew', $c->company, $hwLocks);
+        $lockNote = $hwLocks ? ' Locked to device: '.implode(', ', $hwLocks).'.' : '';
+        // rev147 — record it so it can be REVOKED later (hybrid revocation).
+        LicenseService::recordOffline($id, $c->edition, $expiry, $c->expiry_mode ?? 'renew', $key);
+
+        try {
+            if ($c->email) {
+                \App\Services\MailService::queue([
+                    'tenant_id' => null,
+                    'to' => $c->email,
+                    'subject' => 'Your SmartPRS-'.strtoupper($c->edition).' License Code',
+                    'heading' => 'SmartPRS activation code for '.($c->contact_name ?: $c->company),
+                    'intro' => 'Enter this License Code on the SmartPRS login screen to activate your installation. It works offline — no internet needed.',
+                    'lines' => [
+                        'License Code: '.$key,
+                        'Edition: SmartPRS-'.strtoupper($c->edition),
+                        'Valid till: '.$expiry,
+                        'Help: ejaz@ametecsindia.com · WhatsApp 9000098877',
+                    ],
+                    'kind' => 'licence_key',
+                ]);
+            }
+        } catch (\Throwable $e) {
+        }
+
+        return redirect()->route('admin.onprem')
+            ->with('offline_key', $key)
+            ->with('offline_key_id', $id)
+            ->with('success', 'Offline License Code generated for '.$c->company.' (valid till '.$expiry.')'.$lockNote.($c->email ? ' and emailed to '.$c->email : '').'.');
     }
 
     // ---------- rev 107b: invoice + online payment link (SRS FR-11 steps 2-3) ----------
@@ -390,7 +455,7 @@ class OnpremClientController extends Controller
             // Full payment → the key generates and emails itself (FR-11 step 4).
             $keyMsg = '';
             if (self::fullyPaid($c) && ! DB::table('licences')->where('client_id', $c->id)->whereIn('status', ['pending', 'active'])->exists()) {
-                $key = LicenseService::issue($c->id, $c->edition, now()->addYear()->toDateString());
+                $key = LicenseService::issue($c->id, $c->edition, self::resolveExpiry($c), $c->expiry_mode ?? 'renew');
                 $keyMsg = ' Your licence key has been emailed to '.($c->email ?: 'your registered address').'.';
                 try {
                     if ($c->email) {

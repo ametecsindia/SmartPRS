@@ -89,11 +89,22 @@ class Edition
 
     // ---- Server-side endpoint blocking (regex on relative path) ------------
 
-    /** SaaS/platform endpoints — blocked on every on-prem edition. */
+    /**
+     * SaaS/platform + Super-Admin endpoints — blocked on every on-prem edition.
+     * rev147: these are PLATFORM surfaces (incl. the Super Admin portal /super
+     * and the whole /admin panel); on a client they are HIDDEN (404), never a
+     * 403 upsell, so no Super Admin login/route/API is reachable or even hinted.
+     */
     private const BLOCK_SAAS = [
         '#^app/saas#', '#^app/billing#', '#^app/my-subscription#',
-        '#^admin/#', '#^signup#', '#^quote#', '#^demo($|/)#', '#^lead$#',
+        '#^admin($|/)#', '#^super($|/)#', '#^signup#', '#^quote#', '#^demo($|/)#', '#^lead$#',
     ];
+
+    /** Platform/Super-Admin patterns that must be fully HIDDEN (404) on-prem. */
+    public static function platformPatterns(): array
+    {
+        return self::BLOCK_SAAS;
+    }
 
     /** DNA endpoints — blocked on l1 + l2 (ALL methods: data stays invisible). */
     private const BLOCK_DNA = [

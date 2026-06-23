@@ -92,6 +92,7 @@ class UpdateServerController extends Controller
             'status' => $lic->status,
             'amc_expires_on' => $lic->amc_expires_on,
             'amc_active' => LicenseService::amcActive($lic),
+            'expiry_mode' => $lic->expiry_mode ?? 'renew',
         ]);
     }
 
@@ -111,6 +112,7 @@ class UpdateServerController extends Controller
                 'ok' => true, 'update' => null,
                 'reason' => 'Your AMC ended on '.($lic->amc_expires_on ?: '—').'. Renew to receive updates — WhatsApp 9000098877.',
                 'amc_active' => false, 'amc_expires_on' => $lic->amc_expires_on,
+                'expiry_mode' => $lic->expiry_mode ?? 'renew',
             ]);
         }
 
@@ -123,11 +125,12 @@ class UpdateServerController extends Controller
             ->first();
 
         if (! $rel || version_compare($this->numeric($rel->version), $this->numeric($current), '<=')) {
-            return response()->json(['ok' => true, 'update' => null, 'reason' => 'You are on the latest version granted to you.', 'amc_active' => true, 'amc_expires_on' => $lic->amc_expires_on]);
+            return response()->json(['ok' => true, 'update' => null, 'reason' => 'You are on the latest version granted to you.', 'amc_active' => true, 'amc_expires_on' => $lic->amc_expires_on, 'expiry_mode' => $lic->expiry_mode ?? 'renew']);
         }
 
         return response()->json([
             'ok' => true, 'amc_active' => true, 'amc_expires_on' => $lic->amc_expires_on,
+            'expiry_mode' => $lic->expiry_mode ?? 'renew',
             'update' => ['version' => $rel->version, 'notes' => $rel->notes, 'size' => (int) $rel->size, 'checksum' => $rel->checksum],
         ]);
     }

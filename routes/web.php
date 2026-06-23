@@ -198,6 +198,7 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/admin/onprem/{id}/invoice', [App\Http\Controllers\OnpremClientController::class, 'invoice'])->name('admin.onprem.invoice');
     Route::post('/admin/onprem/{id}/partial', [App\Http\Controllers\OnpremClientController::class, 'partialToggle'])->name('admin.onprem.partial');
     Route::post('/admin/onprem/{id}/key', [App\Http\Controllers\OnpremClientController::class, 'issueKey'])->name('admin.onprem.key');
+    Route::post('/admin/onprem/{id}/offline-key', [App\Http\Controllers\OnpremClientController::class, 'offlineKey'])->name('admin.onprem.offlinekey');
     Route::post('/admin/onprem/{id}/renew', [App\Http\Controllers\OnpremClientController::class, 'renewAmc'])->name('admin.onprem.renew');
     Route::post('/admin/onprem/{id}/deactivate', [App\Http\Controllers\OnpremClientController::class, 'deactivate'])->name('admin.onprem.deactivate');
     Route::post('/admin/onprem/{id}/revoke', [App\Http\Controllers\OnpremClientController::class, 'revoke'])->name('admin.onprem.revoke');
