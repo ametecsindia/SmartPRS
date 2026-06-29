@@ -80,6 +80,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | eTimeOffice cloud attendance (api.etimeoffice.com)
+    |--------------------------------------------------------------------------
+    | HTTP Basic auth where the *username* is "CorpID:User:Password:true" and the
+    | *password* is the password. Punches are pulled by emp_code and written into
+    | attendance_logs. Credentials live in .env (never shipped to clients).
+    */
+    'etimeoffice' => [
+        'enabled'  => (bool) env('ETIMEOFFICE_ENABLED', false),
+        'base_url' => env('ETIMEOFFICE_BASE_URL', 'https://api.etimeoffice.com/api'),
+        'endpoint' => env('ETIMEOFFICE_ENDPOINT', 'DownloadPunchDataMCID'),
+        'corp_id'  => env('ETIMEOFFICE_CORP_ID'),
+        'username' => env('ETIMEOFFICE_USERNAME'),
+        'password' => env('ETIMEOFFICE_PASSWORD'),
+        'empcode'  => env('ETIMEOFFICE_EMPCODE', 'ALL'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Money
     |--------------------------------------------------------------------------
     | All monetary values use decimal columns + integer-safe math. Never float.

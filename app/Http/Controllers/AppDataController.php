@@ -234,7 +234,16 @@ class AppDataController extends Controller
         if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
             return $deny;
         }
-        $request->validate(['file' => ['required', 'file', 'mimes:csv,txt']]);
+        // rev154 — validate by EXTENSION, not MIME. A .csv saved by Excel is often
+        // reported with a non-text MIME (application/vnd.ms-excel, octet-stream,
+        // etc.), and `mimes:csv,txt` then rejected a perfectly valid file — which
+        // looked like "the upload does nothing" on the client. We only need a real
+        // uploaded file ending in .csv/.txt; the parser handles the rest.
+        $request->validate(['file' => ['required', 'file']]);
+        $ext = strtolower((string) $request->file('file')->getClientOriginalExtension());
+        if (! in_array($ext, ['csv', 'txt'], true)) {
+            return response()->json(['ok' => false, 'error' => 'Please upload the sample file as .csv (saved from Excel as "CSV UTF-8"). Got: .'.$ext], 422);
+        }
 
         $user = $request->user();
         $tenantId = $user->tenant_id ?? DB::table('tenants')->value('id');
@@ -251,7 +260,14 @@ class AppDataController extends Controller
 
         // rev149 — make sure the richer template's columns exist on the employees
         // table (self-creating, per project convention) so they actually import.
-        self::ensureEmployeeColumns();
+        // rev154 — guarded: the columns are normally guaranteed by migration; if a
+        // restricted DB user can't ALTER, the import must still proceed (extra
+        // fields are written only when their column exists, see Schema::hasColumn
+        // below), never 500 silently.
+        try {
+            self::ensureEmployeeColumns();
+        } catch (\Throwable $e) {
+        }
         try {
             if (Schema::hasTable('employees')) {
                 foreach (['whatsapp', 'address', 'dob', 'doj'] as $c) {

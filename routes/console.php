@@ -78,3 +78,16 @@ Schedule::command('demo:reset')
     ->cron('0 */3 * * *')
     ->withoutOverlapping()
     ->onOneServer();
+
+/*
+| eTimeOffice cloud biometric attendance (rev156): pull punches every hour into
+| attendance_logs so the Attendance Report and payroll stay current. Re-pulls the
+| last day each run (writes are idempotent via updateOrInsert, so overlap just
+| absorbs any late device→cloud sync). INERT until ETIMEOFFICE_ENABLED=true and
+| the credentials are set in .env — the ->when() guard keeps it off otherwise.
+*/
+Schedule::command('attendance:sync-etimeoffice --days=1')
+    ->hourly()
+    ->when(fn () => (bool) config('smartprs.etimeoffice.enabled'))
+    ->withoutOverlapping()
+    ->onOneServer();

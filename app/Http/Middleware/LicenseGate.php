@@ -27,6 +27,17 @@ class LicenseGate
     public function handle(Request $request, Closure $next)
     {
         try {
+            // rev156: EDITION DEMONSTRATIONS (/app1 /app2 /app3 /teamdemo) run on
+            // the SaaS server and borrow an edition VIEW via the session
+            // (edition_demo / demo_team). Edition::current() then reports l1/l2/l3,
+            // which makes isOnPrem() true — but these are NOT real on-prem installs
+            // and have no licence, so the gate would log the demo in and instantly
+            // bounce it back to /login. Never licence-gate a demo session.
+            if ($request->hasSession()
+                && ($request->session()->has('edition_demo') || $request->session()->get('demo_team'))) {
+                return $next($request);
+            }
+
             // rev139: licenceValid() is expiry-aware — it is false both when
             // the install was never activated AND when a previously valid
             // licence has EXPIRED (subscription / block model). It always

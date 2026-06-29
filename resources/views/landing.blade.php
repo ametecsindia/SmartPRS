@@ -276,6 +276,22 @@
         </div>
     </section>
 
+    {{-- Recovery Compliance 2026 promo banner — links to the compliance manual/landing page --}}
+    <section style="background:linear-gradient(135deg,var(--navy) 0%,#0e1c30 100%);color:#fff;padding:40px 0;position:relative;overflow:hidden;">
+        <div style="position:absolute;top:-60px;right:-40px;width:280px;height:280px;border-radius:50%;background:var(--accent);opacity:.08;"></div>
+        <div class="wrap" style="position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:26px;flex-wrap:wrap;">
+            <div style="flex:1 1 520px;">
+                <span style="display:inline-block;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-weight:700;font-size:12.5px;letter-spacing:.6px;padding:6px 15px;border-radius:30px;margin-bottom:13px;"><i class="fas fa-bullhorn" style="margin-right:7px;"></i>Effective 1 October 2026</span>
+                <h2 style="font-size:clamp(22px,3vw,31px);font-weight:800;letter-spacing:-.6px;line-height:1.12;margin:4px 0 10px;color:#fff;">Recovery Compliance 2026 — is your agency audit-ready?</h2>
+                <p style="color:rgba(255,255,255,.74);font-size:16px;line-height:1.5;margin:0;max-width:680px;">New RBI recovery-conduct rules for collection &amp; recovery agencies. See all 45 payroll &amp; HRMS topics every agency must follow — and how SmartPRS already delivers them.</p>
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                <a href="/recovery-compliance-2026.html" class="btn btn-accent"><i class="fas fa-book-open"></i> Read the Manual</a>
+                <a href="/SmartPRS-Recovery-Compliance-2026-Manual.pdf" download class="btn btn-ghost"><i class="fas fa-download"></i> Download PDF</a>
+            </div>
+        </div>
+    </section>
+
     <section id="features">
         <div class="wrap">
             <div class="sec-head">

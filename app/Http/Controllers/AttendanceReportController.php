@@ -434,39 +434,8 @@ class AttendanceReportController extends Controller
             ->where('emp_code', $code)->where('log_date', $date)
             ->orderBy('punch_at')->get();
 
-        $pairs = [];
-        $totalWork = 0;
-        $totalBreak = 0;
-        $open = null;
-        $prevOut = null;
-        $idx = 0;
-        foreach ($punches as $p) {
-            $t = Carbon::parse($p->punch_at);
-            if ($p->direction === 'in') {
-                if ($prevOut) {
-                    $brk = $this->mins($prevOut, $t);
-                    if (isset($pairs[$idx - 1])) {
-                        $pairs[$idx - 1]['break_after'] = $brk;
-                        $totalBreak += $brk;
-                    }
-                    $prevOut = null;
-                }
-                $open = $t;
-            } elseif ($p->direction === 'out' && $open) {
-                $work = $this->mins($open, $t);
-                $totalWork += $work;
-                $pairs[$idx] = [
-                    'no' => $idx + 1,
-                    'in' => $open->format('H:i'),
-                    'out' => $t->format('H:i'),
-                    'worked' => $work,
-                    'break_after' => null,
-                ];
-                $idx++;
-                $open = null;
-                $prevOut = $t; // gap to next IN counts as a break
-            }
-        }
+        $pp = $this->pairPunches($punches);
+        $remaining = max(0, self::STANDARD_WORK_MIN - $pp['total_work']);
 
         $rt = DB::table('attendance_ratings')
             ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
@@ -478,11 +447,18 @@ class AttendanceReportController extends Controller
             'emp_code' => $code,
             'emp_name' => $emp ?: $code,
             'date' => $date,
-            'pairs' => array_values($pairs),
-            'total_work' => $totalWork,
-            'total_work_h' => $this->hm($totalWork),
-            'total_break' => $totalBreak,
-            'total_break_h' => $this->hm($totalBreak),
+            'pairs' => array_values($pp['pairs']),
+            'first_in' => $pp['first_in'] ? $pp['first_in']->format('H:i') : '—',
+            'last_out' => $pp['last_out'] ? $pp['last_out']->format('H:i') : '—',
+            'total_work' => $pp['total_work'],
+            'total_work_h' => $this->hm($pp['total_work']),
+            'total_break' => $pp['total_break'],
+            'total_break_h' => $this->hm($pp['total_break']),
+            'remaining_min' => $remaining,
+            'remaining_h' => $this->hm($remaining),
+            'open' => $pp['open'],
+            'in_count' => $pp['in_count'],
+            'out_count' => $pp['out_count'],
             'rating' => $rt->rating ?? null,
             'remarks' => $rt->remarks ?? '',
         ]);
@@ -603,41 +579,85 @@ class AttendanceReportController extends Controller
         return $pdf->download('attendance-report-'.$from.($to !== $from ? '_'.$to : '').'.pdf');
     }
 
+    /**
+     * rev158 — pair a day's punches into IN/OUT sessions by chronological
+     * ALTERNATION: the 1st punch is IN, the 2nd OUT, the 3rd IN, and so on. This
+     * is the universal, reliable way to read raw biometric punches and is immune
+     * to a device (e.g. eTimeOffice) that reports a missing or wrong in/out
+     * direction — which was making every In/Out/Break/Total figure incorrect.
+     * Worked = sum of each IN->OUT span; break = each gap between one pair's OUT
+     * and the next pair's IN. A trailing unpaired IN (odd count) is an OPEN
+     * session shown with no OUT and zero worked.
+     */
+    private function pairPunches($punches): array
+    {
+        $times = [];
+        foreach ($punches as $p) {
+            $times[] = Carbon::parse($p->punch_at);
+        }
+        usort($times, fn ($a, $b) => $a->getTimestamp() <=> $b->getTimestamp());
+        $n = count($times);
+
+        $pairs = [];
+        $totalWork = 0;
+        for ($i = 0; $i + 1 < $n; $i += 2) {
+            $work = $this->mins($times[$i], $times[$i + 1]);
+            $totalWork += $work;
+            $pairs[] = [
+                'no' => count($pairs) + 1,
+                'in' => $times[$i]->format('H:i'),
+                'out' => $times[$i + 1]->format('H:i'),
+                'worked' => $work,
+                'break_after' => null,
+            ];
+        }
+
+        $totalBreak = 0;
+        for ($k = 0; $k + 1 < count($pairs); $k++) {
+            $brk = $this->mins($times[2 * $k + 1], $times[2 * $k + 2]);
+            $pairs[$k]['break_after'] = $brk;
+            $totalBreak += $brk;
+        }
+
+        $open = ($n % 2 === 1);
+        if ($open) {
+            $pairs[] = [
+                'no' => count($pairs) + 1,
+                'in' => $times[$n - 1]->format('H:i'),
+                'out' => '—',
+                'worked' => 0,
+                'break_after' => null,
+            ];
+        }
+
+        $firstIn = $n > 0 ? $times[0] : null;
+        $lastOutIdx = ($n % 2 === 0) ? $n - 1 : $n - 2;
+        $lastOut = ($lastOutIdx >= 1) ? $times[$lastOutIdx] : null;
+        $lastInIdx = ($n % 2 === 1) ? $n - 1 : $n - 2;
+        $lastIn = ($lastInIdx >= 0) ? $times[$lastInIdx] : null;
+
+        return [
+            'pairs' => $pairs,
+            'first_in' => $firstIn,
+            'last_in' => $lastIn,
+            'last_out' => $lastOut,
+            'total_work' => $totalWork,
+            'total_break' => $totalBreak,
+            'open' => $open,
+            'in_count' => intdiv($n + 1, 2),
+            'out_count' => intdiv($n, 2),
+        ];
+    }
+
     /** Build the daily summary metrics from an ordered list of punches. */
     private function summarise(array $punches): array
     {
-        $ins = [];
-        $outs = [];
-        foreach ($punches as $p) {
-            if ($p->direction === 'in') {
-                $ins[] = Carbon::parse($p->punch_at);
-            } elseif ($p->direction === 'out') {
-                $outs[] = Carbon::parse($p->punch_at);
-            }
-        }
-        $firstIn = $ins[0] ?? null;
-        $lastIn = end($ins) ?: null;
-        $lastOut = end($outs) ?: null;
-
-        // Worked = sum of in->out pairs; break = idle gaps between out->next in.
-        $totalWork = 0;
-        $totalBreak = 0;
-        $open = null;
-        $prevOut = null;
-        foreach ($punches as $p) {
-            $t = Carbon::parse($p->punch_at);
-            if ($p->direction === 'in') {
-                if ($prevOut) {
-                    $totalBreak += $this->mins($prevOut, $t);
-                    $prevOut = null;
-                }
-                $open = $t;
-            } elseif ($p->direction === 'out' && $open) {
-                $totalWork += $this->mins($open, $t);
-                $open = null;
-                $prevOut = $t;
-            }
-        }
+        $pp = $this->pairPunches($punches);
+        $firstIn = $pp['first_in'];
+        $lastIn = $pp['last_in'];
+        $lastOut = $pp['last_out'];
+        $totalWork = $pp['total_work'];
+        $totalBreak = $pp['total_break'];
 
         $shiftEnd = $firstIn ? Carbon::parse($firstIn->toDateString().' '.self::SHIFT_END) : null;
         $earlyMin = ($lastOut && $shiftEnd && $lastOut < $shiftEnd) ? $this->mins($lastOut, $shiftEnd) : 0;
@@ -656,8 +676,8 @@ class AttendanceReportController extends Controller
             'drawback_time' => $this->hm($drawbackMin),
             'early_min' => $earlyMin,
             'overtime_min' => $overtimeMin,
-            'in_count' => count($ins),
-            'out_count' => count($outs),
+            'in_count' => $pp['in_count'],
+            'out_count' => $pp['out_count'],
         ];
     }
 

@@ -124,6 +124,7 @@ class AppController extends Controller
             'mobileDevBase' => url('/app/mobile-devices'),  // rev 119: + /list, /{id}/approve|reject|revoke
             'masterBase' => url('/app/master'),       // + /{type}, /{type}/{id}/delete
             'cocUrl' => url('/app/code-of-conduct'),   // Code of Conduct read + acknowledge (+ /ack)
+            'bioUrl' => url('/app/biometric-config'),   // rev157: Biometric Device Setup screen (test + sync)
             'incentiveBase' => url('/app/incentive'),   // commission/incentive calc: /template /calculate /commit
             'finYearBase' => url('/app/fin-year'),       // financial year: GET + /set
             'mySubBase' => url('/app/my-subscription'),   // tenant self-serve billing: GET + /quote /renew/order /renew/complete
@@ -591,7 +592,7 @@ CSS;
     var PERM_NAV = {
         dashboard: ['dashboard', 'platform-dashboard', 'how-it-works', 'notifications'],
         employees: ['emp-list', 'emp-add', 'idcard', 'teams', 'onboarding-board', 'recruitment', 'bgv', 'documents', 'roster', 'offroll-agents', 'transfers'],
-        attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'geofence', 'geofence-list', 'late-policy'],
+        attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'biometric-setup', 'geofence', 'geofence-list', 'late-policy'],
         leave: ['leave-apply', 'leave-types', 'holidays'],
         payroll: ['pay-cycle', 'salary-schedules', 'salary-setup', 'salary-gen', 'salary-approval', 'payslip', 'deductions', 'payout-recon', 'live-salary', 'pay-ledger'],
         commissions: ['commissions', 'incentive-schemes', 'clawbacks', 'bonus-enc'],
@@ -1080,7 +1081,7 @@ CSS;
         'documents': 'fa-folder-open', 'onboarding-board': 'fa-clipboard-check', 'exits': 'fa-door-open', 'transfers': 'fa-right-left',
         'recruitment': 'fa-user-tie', 'bgv': 'fa-user-shield',
         'att-daily': 'fa-calendar-check', 'att-report': 'fa-table-list', 'att-manual': 'fa-pen-to-square',
-        'att-zkteco': 'fa-fingerprint', 'biometric-devices': 'fa-fingerprint', 'geofence': 'fa-map-location-dot',
+        'att-zkteco': 'fa-fingerprint', 'biometric-devices': 'fa-fingerprint', 'biometric-setup': 'fa-sliders', 'geofence': 'fa-map-location-dot',
         'geofence-list': 'fa-draw-polygon', 'late-policy': 'fa-business-time',
         'leave-apply': 'fa-calendar-day', 'leave-types': 'fa-list-ul', 'holidays': 'fa-umbrella-beach',
         'salary-setup': 'fa-sitemap', 'salary-schedules': 'fa-calendar-days', 'salary-gen': 'fa-gears',
@@ -1473,10 +1474,10 @@ CSS;
         } catch (e) {}
         // Master data → real DB-backed editors (departments / branches / banks / designations).
         try {
-            var MM = { 'departments': 'Departments', 'branches': 'Branches', 'banks': 'Banks', 'designations': 'Designations', 'holidays': 'Holidays', 'leave-types': 'Leave Types', 'biometric-devices': 'Biometric Devices', 'assets': 'Assets', 'complaints': 'Complaints', 'helpdesk': 'HR Helpdesk', 'deductions': 'Deductions Ledger', 'payout-recon': 'Payout Reconciliation', 'salary-schedules': 'Salary Schedules', 'tds-returns': 'TDS Returns',
+            var MM = { 'departments': 'Departments', 'branches': 'Branches', 'banks': 'Banks', 'designations': 'Designations', 'holidays': 'Holidays', 'leave-types': 'Leave Types', 'biometric-devices': 'Biometric Devices', 'biometric-setup': 'Biometric Device Setup', 'assets': 'Assets', 'complaints': 'Complaints', 'helpdesk': 'HR Helpdesk', 'deductions': 'Deductions Ledger', 'payout-recon': 'Payout Reconciliation', 'salary-schedules': 'Salary Schedules', 'tds-returns': 'TDS Returns',
                 'teams': 'Teams', 'bgv': 'Background Verification', 'documents': 'Documents', 'offroll-agents': 'Off-roll Agents', 'geofence': 'Geofence Rules', 'geofence-list': 'Geofence Rules', 'late-policy': 'Late Policy', 'salary-setup': 'Salary Setup', 'incentive-schemes': 'Incentive Schemes', 'points-ledger': 'Points Ledger', 'points-rules': 'Points Rules', 'tests': 'Tests', 'training-programs': 'Training Programs', 'training-records': 'Training Records', 'code-of-conduct': 'Code of Conduct', 'faqs': 'FAQs', 'escalations': 'Escalations', 'agent-auth': 'Agent Authorization', 'messages': 'Messages', 'companies': 'Companies', 'letters-offer': 'Offer Letters', 'letters-increment': 'Increment Letters', 'letters-warning': 'Warning Letters', 'letters-relieving': 'Relieving Letters', 'letters-templates': 'Letter Templates',
                 'roster': 'Roster', 'onboarding-board': 'Onboarding', 'awards': 'Awards & Rewards', 'performance': 'Performance', 'notice-board': 'Notice Board', 'notice': 'Notice Board', 'feature-flags': 'Feature Flags', 'training-content': 'Training Content', 'test-results': 'Test Results', 'pay-cycle': 'Pay Cycle', 'wa-settings': 'WhatsApp Settings', 'sms-settings': 'SMS Settings', 'sms-templates': 'SMS Templates', 'att-manual': 'Manual Attendance', 'att-zkteco': 'ZKTeco Devices' };
-            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } }
+            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } SCREENS['biometric-setup'] = { title: 'Biometric Device Setup', type: 'custom' }; }
         } catch (e) {}
         if (typeof renderCustom !== 'function' || renderCustom.__wrapped) { return; }
         var _rc = renderCustom;
@@ -1488,6 +1489,7 @@ CSS;
             if (id === 'onboarding-board') { return onboardingScreen(); }
             if (id === 'performance') { return performanceScreen(); }
             if (id === 'code-of-conduct') { return codeOfConductScreen(); }
+            if (id === 'biometric-setup') { return biometricSetupScreen(); }
             if (id === 'late-policy') { return latePolicyScreen(); }
             if (id === 'incentive-schemes') { return schemesScreen(); }
             if (id === 'mobile-devices') { return mobileDevicesScreen(); }
@@ -6705,6 +6707,83 @@ CSS;
             .then(function (j) { window.__COC = j; if (typeof render === 'function') { render(); } })
             .catch(function () { window.__COC = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
     };
+    function bioLoad() {
+        fetch(cfg.bioUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__BIO = j || { error: 'No data' }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__BIO = { error: 'Failed to load biometric configuration.' }; if (typeof render === 'function') { render(); } });
+    }
+    function bioCollect() {
+        var g = function (id) { var el = document.getElementById(id); return el ? el.value : ''; };
+        var ck = document.getElementById('bio-enabled');
+        return {
+            provider: g('bio-provider'), base_url: g('bio-base'), endpoint: g('bio-endpoint'),
+            corp_id: g('bio-corp'), username: g('bio-user'), password: g('bio-pass'),
+            empcode: g('bio-empcode'), emp_prefix: g('bio-prefix'),
+            enabled: (ck && ck.checked) ? 1 : 0
+        };
+    }
+    function bioMsg(html) { var b = document.getElementById('bio-result'); if (b) { b.innerHTML = html; } }
+    function bioPost(url, body, busy) {
+        bioMsg('<span style="color:var(--text3)">' + busy + '&hellip;</span>');
+        return fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body) }).then(function (r) { return r.json(); });
+    }
+    window.bioSave = function () {
+        bioPost(cfg.bioUrl, bioCollect(), 'Saving').then(function (j) {
+            if (j && j.ok) { window.__BIO = null; bioMsg('<span style="color:var(--green)">Saved.</span>'); bioLoad(); }
+            else { bioMsg('<span style="color:var(--red)">' + ((j && j.error) || 'Save failed') + '</span>'); }
+        }).catch(function () { bioMsg('<span style="color:var(--red)">Save failed</span>'); });
+    }
+    window.bioTest = function () {
+        bioPost(cfg.bioUrl + '/test', bioCollect(), 'Testing connection').then(function (j) {
+            if (j && j.ok) {
+                var pv = String(j.preview || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+                bioMsg('<div style="color:var(--green);margin-bottom:6px">Connected. Parsed ' + (j.parsed || 0) + ' punch(es).</div><pre style="white-space:pre-wrap;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:240px;overflow:auto;font-size:12px">' + pv + '</pre>');
+            } else { bioMsg('<span style="color:var(--red)">' + ((j && j.error) || 'Test failed') + '</span>'); }
+        }).catch(function () { bioMsg('<span style="color:var(--red)">Test failed</span>'); });
+    }
+    window.bioSync = function () {
+        bioPost(cfg.bioUrl + '/sync', { days: 1 }, 'Syncing punches').then(function (j) {
+            if (j && j.ok) {
+                var extra = j.unmatched ? (' ' + j.unmatched + ' code(s) had no matching employee.') : '';
+                bioMsg('<span style="color:var(--green)">Imported ' + (j.imported || 0) + ' punch(es) for ' + (j.matched || 0) + ' employee row(s).' + extra + '</span>');
+            } else { bioMsg('<span style="color:var(--red)">' + ((j && j.error) || 'Sync failed') + '</span>'); }
+        }).catch(function () { bioMsg('<span style="color:var(--red)">Sync failed</span>'); });
+    }
+    function biometricSetupScreen() {
+        var d = window.__BIO;
+        if (!d) { setTimeout(function () { if (!window.__BIO) { bioLoad(); } }, 10); return pghead('Biometric Device Setup', 'Loading&hellip;', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading&hellip;</div></div>'; }
+        if (d.error) { return pghead('Biometric Device Setup', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)">' + String(d.error) + '</div></div>'; }
+        var esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
+        var c = d.config || {};
+        var fld = function (label, id, val, type, ph, help) {
+            return '<div style="margin-bottom:14px"><label style="display:block;font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">' + esc(label) + '</label>'
+                + '<input id="' + id + '" type="' + (type || 'text') + '" value="' + esc(val) + '" placeholder="' + esc(ph || '') + '" autocomplete="off" style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:14px">'
+                + (help ? '<div style="font-size:12px;color:var(--text3);margin-top:4px">' + esc(help) + '</div>' : '') + '</div>';
+        };
+        var pwPh = d.hasPassword ? 'Saved &mdash; leave blank to keep current password' : 'Device API password';
+        var statusBar = d.lastSyncAt ? '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:9px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:var(--text2)"><i class="fas fa-clock"></i> Last sync: ' + esc(d.lastSyncAt) + ' &mdash; ' + esc(d.lastStatus || '') + '</div>' : '';
+        var html = pghead('Biometric Device Setup', 'Connect a cloud attendance API. Punches import into Attendance &amp; payroll automatically every hour.', '')
+            + '<div class="card" style="padding:22px 24px;max-width:580px">'
+            + statusBar
+            + '<label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:16px"><input id="bio-enabled" type="checkbox"' + (c.enabled ? ' checked' : '') + '> Enable automatic hourly sync</label>'
+            + fld('Provider', 'bio-provider', c.provider || 'eTimeOffice', 'text', 'eTimeOffice', 'Cloud attendance provider name.')
+            + fld('API Base URL', 'bio-base', c.base_url || 'https://api.etimeoffice.com/api', 'text', '')
+            + fld('Endpoint', 'bio-endpoint', c.endpoint || 'DownloadPunchDataMCID', 'text', '')
+            + fld('Corporate ID', 'bio-corp', c.corp_id || '', 'text', 'e.g. ametecsindia')
+            + fld('Username', 'bio-user', c.username || '', 'text', '')
+            + fld('Password', 'bio-pass', '', 'password', pwPh, '')
+            + fld('Employee code filter', 'bio-empcode', c.empcode || 'ALL', 'text', 'ALL', 'Usually ALL.')
+            + fld('Employee ID prefix', 'bio-prefix', c.emp_prefix || '', 'text', 'e.g. A', 'If the device returns 12345 and your employees are A12345, enter A. Leave blank when codes match exactly.')
+            + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">'
+            + '<button class="btn btn-primary" onclick="bioSave()"><i class="fas fa-floppy-disk"></i> Save</button>'
+            + '<button class="btn btn-outline" onclick="bioTest()"><i class="fas fa-plug"></i> Test connection</button>'
+            + '<button class="btn btn-outline" onclick="bioSync()"><i class="fas fa-rotate"></i> Sync now</button>'
+            + '</div>'
+            + '<div id="bio-result" style="margin-top:14px;font-size:13px"></div>'
+            + '</div>';
+        return html;
+    }
     function codeOfConductScreen() {
         var d = window.__COC;
         if (!d) { setTimeout(function () { if (!window.__COC) { cocLoad(); } }, 10); return pghead('Code of Conduct', 'Loading…', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
@@ -8581,10 +8660,11 @@ CSS;
             + '<textarea id="att_remarks" rows="4" placeholder="Stand-up note (e.g. too many breaks today)" style="width:100%;margin-top:8px;padding:10px;border:1.5px solid var(--border);border-radius:9px;font-family:var(--font2)">' + (d.remarks || '') + '</textarea>'
             + '<button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="attRateSave(\'' + d.emp_code + '\',\'' + d.date + '\')"><i class="fas fa-check"></i> Save Rating</button></div>'
             + '</div>'
-            + '<div style="display:flex;gap:10px;margin-bottom:14px">'
-            + attChip('Total Worked', d.total_work_h, 'var(--green)')
-            + attChip('Total Break', d.total_break_h, 'var(--red)')
-            + attChip('Punch Pairs', (d.pairs || []).length, 'var(--accent)')
+            + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
+            + attChip('Total In', d.first_in || '—', 'var(--green)')
+            + attChip('Total Out', d.last_out || '—', 'var(--red)')
+            + attChip('Total Break', d.total_break_h || '0h 00m', '#b45309')
+            + attChip('Working Time', d.total_work_h || '0h 00m', 'var(--accent)')
             + '</div>'
             + '<table style="width:100%;border-collapse:collapse"><thead><tr>'
             + '<th style="padding:9px 12px;text-align:center;font-size:11px;text-transform:uppercase;color:var(--text3)">#</th>'
@@ -8593,7 +8673,11 @@ CSS;
             + '<th style="padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">Worked</th>'
             + '<th style="padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">Break After</th>'
             + '</tr></thead><tbody>' + rows + '</tbody>'
-            + '<tfoot><tr><td colspan="3" style="padding:10px 12px;text-align:right;font-weight:700;background:#0f172a;color:#fff">Total Break Time</td><td colspan="2" style="padding:10px 12px;font-weight:700;background:#0f172a;color:#fff">' + d.total_break_h + '</td></tr></tfoot>'
+            + '<tfoot>'
+            + '<tr><td colspan="3" style="padding:10px 12px;text-align:right;font-weight:700;background:#0f172a;color:#fff">Working Time (In time)</td><td colspan="2" style="padding:10px 12px;font-weight:700;background:#0f172a;color:#fff">' + (d.total_work_h || '0h 00m') + '</td></tr>'
+            + '<tr><td colspan="3" style="padding:10px 12px;text-align:right;font-weight:700;background:#1e293b;color:#fff">Total Break Time</td><td colspan="2" style="padding:10px 12px;font-weight:700;background:#1e293b;color:#fff">' + (d.total_break_h || '0h 00m') + '</td></tr>'
+            + '<tr><td colspan="3" style="padding:10px 12px;text-align:right;font-weight:700;background:#334155;color:#fff">Remaining (vs 8h)</td><td colspan="2" style="padding:10px 12px;font-weight:700;background:#334155;color:#fff">' + (d.remaining_h || '0h 00m') + '</td></tr>'
+            + '</tfoot>'
             + '</table></div></div>';
         m.innerHTML = inner;
         m.style.display = 'flex';
