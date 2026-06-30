@@ -181,6 +181,41 @@ class ApprovalService
             } catch (\Throwable $e) {
             }
         }
+        // J3 (Ejaz): exit clearance checklist — structured offboarding columns on
+        // the exits table so Exit & FnF captures ID surrender, asset return,
+        // access revoke, DRA-ID return, knowledge transfer + a final clearance
+        // verdict. Idempotent self-heal (additive, nullable).
+        if ($table === 'exits' && Schema::hasTable('exits')) {
+            try {
+                $wantExit = [
+                    'last_working_day' => 'date',
+                    'id_surrendered' => 'string',
+                    'access_revoked' => 'string',
+                    'dra_id_returned' => 'string',
+                    'data_handed_over' => 'string',
+                    'knowledge_transfer' => 'string',
+                    'final_clearance' => 'string',
+                    'cleared_by' => 'string',
+                    'cleared_on' => 'date',
+                    'clearance_remarks' => 'string',
+                ];
+                $addExit = array_filter($wantExit, fn ($t, $c) => ! Schema::hasColumn('exits', $c), ARRAY_FILTER_USE_BOTH);
+                if ($addExit) {
+                    Schema::table('exits', function (Blueprint $t) use ($addExit) {
+                        foreach ($addExit as $c => $type) {
+                            if ($type === 'bool') {
+                                $t->boolean($c)->default(false);
+                            } elseif ($type === 'date') {
+                                $t->date($c)->nullable();
+                            } else {
+                                $t->string($c, 500)->nullable();
+                            }
+                        }
+                    });
+                }
+            } catch (\Throwable $e) {
+            }
+        }
         // rev 79b (Ejaz found live, 4 Jun 2026): legacy ENUM status columns from
         // the original migrations (e.g. commissions: provisional/confirmed/
         // reversed) cannot store the approval workflow's pending/approved →

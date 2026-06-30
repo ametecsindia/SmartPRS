@@ -307,6 +307,8 @@ class AttendanceReportController extends Controller
             return response()->json(['ok' => false, 'error' => 'Could not save punch: '.$e->getMessage()], 422);
         }
 
+        \App\Services\Audit::record($tenantId ? (int) $tenantId : null, $user->id, 'punch_'.$direction, 'attendance', 0, ['emp_code' => $code, 'direction' => $direction], $request->ip());
+
         return response()->json([
             'ok' => true,
             'direction' => $direction,

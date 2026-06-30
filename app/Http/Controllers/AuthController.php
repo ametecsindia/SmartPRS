@@ -257,6 +257,21 @@ class AuthController extends Controller
                 // fail-soft: a licence-check error must never lock out a valid user
             }
 
+            // J2 — audit a successful sign-in.
+            try {
+                $au = $request->user();
+                \App\Services\Audit::record(
+                    $au && $au->tenant_id ? (int) $au->tenant_id : null,
+                    $au?->id,
+                    'login',
+                    'auth',
+                    $au?->id ?? 0,
+                    ['email' => $au?->email],
+                    $request->ip()
+                );
+            } catch (\Throwable $e) {
+            }
+
             $request->session()->regenerate();
 
             return redirect()->intended(route('app'));

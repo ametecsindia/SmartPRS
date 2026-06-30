@@ -548,6 +548,9 @@ class RequestController extends Controller
 
             $newId = DB::table($table)->insertGetId($row);
 
+            // J2 — audit the request submission.
+            \App\Services\Audit::record($emp->tenant_id ? (int) $emp->tenant_id : null, optional($request->user())->id, 'submit', $module, (int) $newId, ['employee' => $emp->name ?? null], $request->ip());
+
             // rev 84: commissions get a permanent per-entry history trail.
             if ($module === 'commissions') {
                 ApprovalService::logCommission($emp->tenant_id, $newId, 'created',
@@ -1370,6 +1373,49 @@ class RequestController extends Controller
                 'updated_at' => now(),
             ]);
             DB::table($table)->where('id', $id)->update($update);
+
+            // J2 — audit every approval decision.
+            \App\Services\Audit::record($tid ? (int) $tid : null, optional($request->user())->id, $newStatus, $module, (int) $id, ['remarks' => $v['remarks'] ?? null], $request->ip());
+
+            // F1 — compliance-gated incentive (warn + allow + audit). Approving a
+            // commission for a low-compliance agent is allowed but recorded.
+            if ($module === 'commissions' && $v['action'] === 'approve'
+                && Schema::hasColumn($table, 'employee_id') && ! empty($rec->employee_id)) {
+                try {
+                    $minScore = (int) (\App\Http\Controllers\SettingsController::rates($tid)['incentive_min_compliance'] ?? 60);
+                    $score = \App\Http\Controllers\ComplianceController::scoreFor((int) $rec->employee_id, $tid);
+                    if ($score < $minScore && Schema::hasTable('activity_logs')) {
+                        DB::table('activity_logs')->insert([
+                            'tenant_id' => $tid, 'user_id' => optional($request->user())->id,
+                            'action' => 'incentive_low_compliance', 'entity' => 'commissions', 'entity_id' => $id,
+                            'detail' => json_encode(['note' => 'Incentive approved despite a low compliance score', 'score' => $score, 'min' => $minScore]),
+                            'ip' => $request->ip(), 'created_at' => now(),
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    // never block an approval on the compliance check
+                }
+            }
+
+            // H2 — grievance-lock awareness: paying an incentive while a grievance /
+            // complaint is OPEN is allowed but recorded (warn + audit).
+            if ($module === 'commissions' && $v['action'] === 'approve'
+                && Schema::hasColumn($table, 'employee_id') && ! empty($rec->employee_id) && Schema::hasTable('complaints')) {
+                try {
+                    $open = DB::table('complaints')->where('employee_id', $rec->employee_id)
+                        ->whereIn('status', ['open', 'pending', 'in_progress'])->count();
+                    if ($open > 0 && Schema::hasTable('activity_logs')) {
+                        DB::table('activity_logs')->insert([
+                            'tenant_id' => $tid, 'user_id' => optional($request->user())->id,
+                            'action' => 'grievance_pending_incentive', 'entity' => 'commissions', 'entity_id' => $id,
+                            'detail' => json_encode(['note' => 'Incentive approved while a grievance/complaint is open', 'open_complaints' => $open]),
+                            'ip' => $request->ip(), 'created_at' => now(),
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    // grievance check is best-effort; never block approval on it
+                }
+            }
 
             if ($module === 'commissions') {
                 $by = $me->name ?? ($request->user()->name ?? $request->user()->email);

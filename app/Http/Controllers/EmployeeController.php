@@ -41,6 +41,8 @@ class EmployeeController extends Controller
 
         $employee->save();
 
+        \App\Services\Audit::record(auth()->user()->tenant_id ? (int) auth()->user()->tenant_id : null, auth()->id(), 'create', 'employees', $employee->id, ['code' => $employee->employee_code], $request->ip());
+
         return redirect()->route('employees.index')
             ->with('success', "Employee {$employee->employee_code} added.");
     }
@@ -60,6 +62,8 @@ class EmployeeController extends Controller
 
         $employee->update($data);
 
+        \App\Services\Audit::record(auth()->user()->tenant_id ? (int) auth()->user()->tenant_id : null, auth()->id(), 'update', 'employees', $employee->id, ['code' => $employee->employee_code], $request->ip());
+
         return redirect()->route('employees.index')
             ->with('success', "Employee {$employee->employee_code} updated.");
     }
@@ -67,7 +71,10 @@ class EmployeeController extends Controller
     public function destroy(Employee $employee)
     {
         $code = $employee->employee_code;
+        $eid = $employee->id;
         $employee->delete();
+
+        \App\Services\Audit::record(auth()->user()->tenant_id ? (int) auth()->user()->tenant_id : null, auth()->id(), 'delete', 'employees', $eid, ['code' => $code], request()->ip());
 
         return redirect()->route('employees.index')
             ->with('success', "Employee {$code} removed.");

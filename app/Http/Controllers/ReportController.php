@@ -32,6 +32,10 @@ class ReportController extends Controller
             'reg-deductions' => ['label' => 'Deduction register — Form E (D7)', 'month' => true],
             'bank-advice' => ['label' => 'Bank advice / NEFT (D8)', 'month' => true],
             'fnf' => ['label' => 'Full & final settlement (D9)', 'month' => false],
+            'reg-overtime' => ['label' => 'Overtime register (E3)', 'month' => true],
+            'compliance-scorecard' => ['label' => 'Compliance scorecard (F1)', 'month' => false],
+            'exemp-access' => ['label' => 'Ex-employee access audit (G4)', 'month' => false],
+            'audit-trail' => ['label' => 'Audit trail — signed (J2)', 'month' => false],
         ];
     }
 
@@ -282,6 +286,133 @@ class ReportController extends Controller
         }
 
 
+        // E3 — Overtime register: OT entries logged for the month.
+        if ($dataset === 'reg-overtime') {
+            $cols = ['Code', 'Name', 'OT Date', 'Hours', 'Multiplier', 'Amount', 'Status'];
+            if (! Schema::hasTable('overtime')) {
+                return ['columns' => $cols, 'rows' => [], 'count' => 0];
+            }
+            $q = DB::table('overtime as o')->leftJoin('employees as e', 'e.id', '=', 'o.employee_id')
+                ->when($tid, fn ($x) => $x->where('o.tenant_id', $tid))
+                ->when($companyId, fn ($x) => $x->where('o.company_id', $companyId))
+                ->when($month, fn ($x) => $x->whereBetween('o.ot_date', [$month.'-01', $end]))
+                ->orderByDesc('o.ot_date');
+            $count = (clone $q)->count();
+            $rows = $q->when($limit, fn ($x) => $x->limit($limit))
+                ->get(['e.emp_code', 'e.name', 'o.ot_date', 'o.hours', 'o.multiplier', 'o.amount', 'o.status'])
+                ->map(fn ($r) => ['Code' => $r->emp_code, 'Name' => $r->name, 'OT Date' => $r->ot_date,
+                    'Hours' => (float) $r->hours, 'Multiplier' => $r->multiplier, 'Amount' => (float) $r->amount, 'Status' => $r->status])->all();
+
+            return ['columns' => $cols, 'rows' => $rows, 'count' => $count];
+        }
+
+        // F1 — compliance scorecard: per-agent compliance score + incentive eligibility.
+        if ($dataset === 'compliance-scorecard') {
+            $cols = ['Code', 'Name', 'Company', 'Compliance Score', 'Incentive Eligible'];
+            $min = 60;
+            try {
+                $min = (int) (\App\Http\Controllers\SettingsController::rates($tid)['incentive_min_compliance'] ?? 60);
+            } catch (\Throwable $e) {
+            }
+            $q = DB::table('employees as e')->leftJoin('companies as c', 'c.id', '=', 'e.company_id')
+                ->when($tid, fn ($x) => $x->where('e.tenant_id', $tid))
+                ->when($companyId, fn ($x) => $x->where('e.company_id', $companyId))
+                ->whereNull('e.deleted_at')->orderBy('e.emp_code');
+            $count = (clone $q)->count();
+            $rows = $q->when($limit, fn ($x) => $x->limit($limit))->get(['e.id', 'e.emp_code', 'e.name', 'c.name as company'])
+                ->map(function ($r) use ($min) {
+                    $sc = \App\Http\Controllers\ComplianceController::scoreFor((int) $r->id, null);
+
+                    return ['Code' => $r->emp_code, 'Name' => $r->name, 'Company' => $r->company,
+                        'Compliance Score' => $sc, 'Incentive Eligible' => ($sc >= $min ? 'Yes' : 'No')];
+                })->all();
+
+            return ['columns' => $cols, 'rows' => $rows, 'count' => $count];
+        }
+
+        // G4 — ex-employee access audit: exited agents whose email still matches a login.
+        if ($dataset === 'exemp-access') {
+            $cols = ['Code', 'Name', 'Email', 'Employee Status', 'Login Status', 'Risk'];
+            if (! Schema::hasTable('users')) {
+                return ['columns' => $cols, 'rows' => [], 'count' => 0];
+            }
+            $hasUserStatus = Schema::hasColumn('users', 'status');
+            $q = DB::table('employees as e')->leftJoin('users as u', 'u.email', '=', 'e.email')
+                ->when($tid, fn ($x) => $x->where('e.tenant_id', $tid))
+                ->when($companyId, fn ($x) => $x->where('e.company_id', $companyId))
+                ->where(fn ($x) => $x->where('e.status', 'exited')->orWhereNotNull('e.deleted_at'))
+                ->orderBy('e.emp_code');
+            $count = (clone $q)->count();
+            $sel = ['e.emp_code', 'e.name', 'e.email', 'e.status as emp_status', 'u.id as uid'];
+            if ($hasUserStatus) {
+                $sel[] = 'u.status as user_status';
+            }
+            $rows = $q->when($limit, fn ($x) => $x->limit($limit))->get($sel)
+                ->map(function ($r) use ($hasUserStatus) {
+                    $login = $r->uid ? ($hasUserStatus ? ($r->user_status ?? 'active') : 'active') : 'no login';
+                    $active = $r->uid && ! in_array($login, ['inactive', 'disabled', 'suspended'], true);
+
+                    return ['Code' => $r->emp_code, 'Name' => $r->name, 'Email' => $r->email,
+                        'Employee Status' => $r->emp_status, 'Login Status' => $login,
+                        'Risk' => $active ? 'ACTIVE LOGIN — revoke' : 'OK'];
+                })->all();
+
+            return ['columns' => $cols, 'rows' => $rows, 'count' => $count];
+        }
+
+        if ($dataset === 'audit-trail') {
+            // J2 — the immutable, hash-chained activity log as a verifiable export.
+            // Each row carries its SHA-256 row hash; Integrity = result of replaying
+            // the chain. Ordered chronologically so the chain reads top-to-bottom.
+            $cols = ['#', 'When', 'Action', 'Subject', 'Detail', 'By', 'IP', 'Integrity', 'RowHash'];
+            if (! Schema::hasTable('activity_logs')) {
+                return ['columns' => $cols, 'rows' => [], 'count' => 0];
+            }
+            $hasChain = Schema::hasColumn('activity_logs', 'row_hash');
+            $verdict = $hasChain ? \App\Services\Audit::verify() : ['ok' => false, 'broken_at' => 0];
+            $userMap = DB::table('users')->pluck('name', 'id');
+            $q = DB::table('activity_logs')
+                ->when($tid, fn ($x) => $x->where('tenant_id', $tid))
+                ->orderBy('id');
+            $count = (clone $q)->count();
+            $rows = $q->when($limit, fn ($x) => $x->limit($limit))->get()
+                ->map(function ($r) use ($userMap, $hasChain, $verdict) {
+                    $a = (array) $r;
+                    $detail = '';
+                    if (! empty($a['detail'])) {
+                        $d = json_decode($a['detail'], true);
+                        if (is_array($d)) {
+                            if (isset($d['note'])) {
+                                $detail = $d['note'];
+                            } elseif (isset($d['fields']) && is_array($d['fields'])) {
+                                $detail = 'fields: '.implode(', ', $d['fields']);
+                            } else {
+                                $detail = json_encode($d);
+                            }
+                        } else {
+                            $detail = (string) $a['detail'];
+                        }
+                    }
+                    $uid = $a['user_id'] ?? null;
+                    $rid = (int) ($a['id'] ?? 0);
+                    $intact = $hasChain && (empty($verdict['broken_at']) || $rid < $verdict['broken_at']);
+
+                    return [
+                        '#' => $rid,
+                        'When' => ! empty($a['created_at']) ? Carbon::parse($a['created_at'])->format('d M Y H:i:s') : '',
+                        'Action' => ucfirst(str_replace('_', ' ', (string) ($a['action'] ?? ''))),
+                        'Subject' => trim(str_replace('_', ' ', (string) ($a['entity'] ?? '')).(! empty($a['entity_id']) ? ' #'.$a['entity_id'] : '')),
+                        'Detail' => $detail,
+                        'By' => $uid ? ($userMap[$uid] ?? ('User #'.$uid)) : 'System',
+                        'IP' => $a['ip'] ?? '',
+                        'Integrity' => ! $hasChain ? 'unsigned' : ($intact ? 'verified' : 'BROKEN'),
+                        'RowHash' => $hasChain ? substr((string) ($a['row_hash'] ?? ''), 0, 16) : '',
+                    ];
+                })->all();
+
+            return ['columns' => $cols, 'rows' => $rows, 'count' => $count];
+        }
+
         return ['columns' => [], 'rows' => [], 'count' => 0];
     }
 
@@ -345,6 +476,20 @@ class ReportController extends Controller
                     $line[] = $row[$c] ?? '';
                 }
                 $out .= $this->csvLine($line);
+            }
+
+            // G3 — access/export logging: record who exported which dataset.
+            try {
+                if (Schema::hasTable('activity_logs')) {
+                    DB::table('activity_logs')->insert([
+                        'tenant_id' => $tid, 'user_id' => optional($request->user())->id,
+                        'action' => 'report_export', 'entity' => 'reports', 'entity_id' => 0,
+                        'detail' => json_encode(['dataset' => $dataset, 'month' => $month, 'rows' => count($built['rows'])]),
+                        'ip' => $request->ip(), 'created_at' => now(),
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                // export logging is best-effort
             }
 
             $fname = 'smartprs-'.$dataset.($month ? '-'.$month : '').'-'.now()->format('Ymd').'.csv';

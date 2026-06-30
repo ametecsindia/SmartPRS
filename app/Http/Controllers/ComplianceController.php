@@ -280,4 +280,52 @@ class ComplianceController extends Controller
             return [];
         }
     }
+
+    /**
+     * F1 — per-agent compliance score (0–100) from internal SmartPRS data:
+     * DRA valid (25) + PCC valid (20) + BGV clear (20) + NDA signed (15) +
+     * no open complaints (20). Used by the incentive gate and the scorecard report.
+     */
+    public static function scoreFor(int $employeeId, ?int $tid = null): int
+    {
+        $score = 0;
+        $today = Carbon::today()->toDateString();
+        if (Schema::hasTable('dra_certs')) {
+            $ok = DB::table('dra_certs')->where('employee_id', $employeeId)->where('status', 'verified')
+                ->where(fn ($q) => $q->whereNull('expiry')->orWhere('expiry', '>=', $today))->exists();
+            if ($ok) {
+                $score += 25;
+            }
+        }
+        if (Schema::hasTable('employees')) {
+            $e = DB::table('employees')->where('id', $employeeId)->first();
+            if ($e) {
+                $pccOk = (($e->pcc_status ?? '') === 'verified') && (empty($e->pcc_expiry) || $e->pcc_expiry >= $today);
+                if ($pccOk) {
+                    $score += 20;
+                }
+            }
+        }
+        if (Schema::hasTable('bgv')) {
+            if (DB::table('bgv')->where('employee_id', $employeeId)->where('status', 'clear')->exists()) {
+                $score += 20;
+            }
+        }
+        if (Schema::hasTable('letters')) {
+            $ndaOk = DB::table('letters')->where('employee_id', $employeeId)->where('letter_type', 'nda')
+                ->where('is_template', 0)->where('status', 'signed')->exists();
+            if ($ndaOk) {
+                $score += 15;
+            }
+        }
+        if (Schema::hasTable('complaints')) {
+            $open = DB::table('complaints')->where('employee_id', $employeeId)
+                ->whereIn('status', ['open', 'pending', 'in_progress'])->count();
+            $score += $open > 0 ? 0 : 20;
+        } else {
+            $score += 20;
+        }
+
+        return min(100, max(0, $score));
+    }
 }

@@ -128,6 +128,27 @@ class LetterController extends Controller
             $mobile = $letter->mobile ?? '';
         }
 
+        // H4 — grievance-officer details (per company) auto-merge into every letter.
+        $grievOfficer = '';
+        $grievPhone = '';
+        $grievEmail = '';
+        if (Schema::hasColumn('companies', 'grievance_officer')) {
+            $gc = DB::table('companies')->where('id', $letter->company_id)
+                ->first(['grievance_officer', 'grievance_phone', 'grievance_email']);
+            if ($gc) {
+                $grievOfficer = $gc->grievance_officer ?? '';
+                $grievPhone = $gc->grievance_phone ?? '';
+                $grievEmail = $gc->grievance_email ?? '';
+            }
+        }
+        // H1 — lawful borrower-contact window for {{contact_hours}}.
+        $contactHours = '08:00–19:00';
+        try {
+            $cr = \App\Http\Controllers\SettingsController::rates($letter->tenant_id);
+            $contactHours = ($cr['contact_window_start'] ?? '08:00').'–'.($cr['contact_window_end'] ?? '19:00');
+        } catch (\Throwable $e) {
+        }
+
         $repl = [
             '{{employee_name}}' => $personName,
             '{{candidate_name}}' => $personName,
@@ -147,6 +168,10 @@ class LetterController extends Controller
             '{{ifsc}}' => $ifsc,
             '{{email}}' => $email,
             '{{mobile}}' => $mobile,
+            '{{grievance_officer}}' => $grievOfficer,
+            '{{grievance_phone}}' => $grievPhone,
+            '{{grievance_email}}' => $grievEmail,
+            '{{contact_hours}}' => $contactHours,
         ];
         $body = strtr((string) $tpl->body, $repl);
 

@@ -109,22 +109,53 @@ class ComputedController extends Controller
 
             if ($type === 'activity-logs') {
                 $rows = [];
+                $note = 'Audit logging populates this as users create, edit, approve and export records.';
                 if (Schema::hasTable('activity_logs')) {
-                    $cols = Schema::getColumnListing('activity_logs');
-                    $rows = DB::table('activity_logs')->orderByDesc('id')->limit(200)->get()
-                        ->map(function ($r) use ($cols) {
-                            $a = (array) $r;
+                    $userMap = DB::table('users')->pluck('name', 'id');
+                    $logs = DB::table('activity_logs')
+                        ->when($tid, fn ($x) => $x->where('tenant_id', $tid))
+                        ->orderByDesc('id')->limit(300)->get();
+                    $rows = $logs->map(function ($r) use ($userMap) {
+                        $a = (array) $r;
+                        $detail = '';
+                        if (! empty($a['detail'])) {
+                            $d = json_decode($a['detail'], true);
+                            if (is_array($d)) {
+                                if (isset($d['note'])) {
+                                    $detail = $d['note'];
+                                } elseif (isset($d['fields']) && is_array($d['fields'])) {
+                                    $detail = 'fields: '.implode(', ', $d['fields']);
+                                } else {
+                                    $detail = json_encode($d);
+                                }
+                            } else {
+                                $detail = (string) $a['detail'];
+                            }
+                        }
+                        $uid = $a['user_id'] ?? null;
 
-                            return ['When' => isset($a['created_at']) ? Carbon::parse($a['created_at'])->format('d M Y H:i') : '',
-                                'Action' => $a['description'] ?? ($a['action'] ?? ($a['event'] ?? '')),
-                                'By' => $a['causer_id'] ?? ($a['user_id'] ?? '—'),
-                                'Subject' => $a['subject_type'] ?? ($a['log_name'] ?? '')];
-                        })->all();
+                        return [
+                            'When' => ! empty($a['created_at']) ? Carbon::parse($a['created_at'])->format('d M Y H:i') : '',
+                            'Action' => ucfirst(str_replace('_', ' ', (string) ($a['action'] ?? ''))),
+                            'Subject' => trim(str_replace('_', ' ', (string) ($a['entity'] ?? '')).(! empty($a['entity_id']) ? ' #'.$a['entity_id'] : '')),
+                            'Detail' => $detail,
+                            'By' => $uid ? ($userMap[$uid] ?? ('User #'.$uid)) : 'System',
+                            'IP' => $a['ip'] ?? '',
+                        ];
+                    })->all();
+                    $v = \App\Services\Audit::verify();
+                    if (! empty($v['ok'])) {
+                        $note = 'Showing the most recent '.count($rows).' entries. Integrity: chain VERIFIED across '.$v['checked'].' signed records — no tampering detected. Export the full signed trail from Reports → Audit trail (signed).';
+                    } elseif (! empty($v['broken_at'])) {
+                        $note = 'WARNING: the audit chain is broken at record #'.$v['broken_at'].' — a historic row was altered or deleted. Investigate immediately.';
+                    } else {
+                        $note = 'Showing the most recent '.count($rows).' entries. Export the full trail from Reports → Audit trail (signed).';
+                    }
                 }
 
-                return response()->json(['ok' => true, 'label' => 'Activity logs',
-                    'columns' => ['When', 'Action', 'By', 'Subject'], 'rows' => $rows,
-                    'note' => 'Most recent activity. (Audit logging populates this over time.)']);
+                return response()->json(['ok' => true, 'label' => 'Activity & audit logs',
+                    'columns' => ['When', 'Action', 'Subject', 'Detail', 'By', 'IP'], 'rows' => $rows,
+                    'note' => $note]);
             }
 
             return response()->json(['ok' => false, 'error' => 'Unknown report'], 422);

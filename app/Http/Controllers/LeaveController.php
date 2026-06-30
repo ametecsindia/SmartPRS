@@ -312,7 +312,9 @@ class LeaveController extends Controller
             ];
             $row = array_intersect_key($row, array_flip(Schema::getColumnListing('leaves')));
 
-            DB::table('leaves')->insert($row);
+            $leaveId = DB::table('leaves')->insertGetId($row);
+
+            \App\Services\Audit::record($emp->tenant_id ? (int) $emp->tenant_id : null, optional($request->user())->id, 'submit', 'leave', (int) $leaveId, ['type' => $v['type'] ?? 'Leave', 'days' => $days], $request->ip());
 
             return response()->json(['ok' => true, 'approver' => $approverName]);
         } catch (\Throwable $e) {
@@ -353,6 +355,8 @@ class LeaveController extends Controller
             $update = array_intersect_key($update, array_flip(Schema::getColumnListing('leaves')));
 
             DB::table('leaves')->where('id', $id)->update($update);
+
+            \App\Services\Audit::record($tenantId ? (int) $tenantId : null, optional($request->user())->id, $update['status'], 'leave', (int) $id, ['remarks' => $v['remarks'] ?? null], $request->ip());
 
             // Notify the employee of the leave decision. Fail-soft.
             try {

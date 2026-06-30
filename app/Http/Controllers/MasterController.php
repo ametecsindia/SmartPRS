@@ -303,10 +303,23 @@ class MasterController extends Controller
                 'fields' => ['state', 'zone', 'category', 'monthly_min', 'effective_from', 'status'],
                 'label' => 'Minimum Wage', 'order' => 'id', 'required' => ['monthly_min'],
             ],
+            'policies' => [
+                'table' => 'policies',
+                'cols' => ['title' => 'string', 'category' => 'string', 'version' => 'string', 'owner' => 'string', 'effective_date' => 'date', 'board_approved_on' => 'date', 'review_due' => 'date', 'ack_required' => 'bool', 'reference' => 'string', 'summary' => 'text', 'status' => 'string'],
+                'fields' => ['title', 'category', 'version', 'owner', 'effective_date', 'board_approved_on', 'review_due', 'ack_required', 'reference', 'summary', 'status'],
+                'label' => 'Policy', 'order' => 'id', 'required' => ['title', 'version'],
+            ],
+            'overtime' => [
+                'table' => 'overtime',
+                'cols' => ['employee' => 'string', 'company_name' => 'string', 'ot_date' => 'date', 'hours' => 'decimal', 'multiplier' => 'string', 'amount' => 'decimal', 'status' => 'string'],
+                'fields' => ['employee', 'company_name', 'ot_date', 'hours', 'multiplier', 'amount', 'status'],
+                'label' => 'Overtime Entry', 'order' => 'id', 'required' => ['employee', 'hours'],
+                'emp_map' => ['employee' => 'employee_id'],
+            ],
             'companies' => [
                 'table' => 'companies',
-                'cols' => ['name' => 'string', 'is_master' => 'bool', 'type' => 'string', 'pan' => 'string', 'gstin' => 'string', 'address' => 'string', 'phone' => 'string', 'email' => 'string', 'website' => 'string', 'status' => 'string'],
-                'fields' => ['name', 'is_master', 'type', 'pan', 'gstin', 'address', 'phone', 'email', 'website', 'status'],
+                'cols' => ['name' => 'string', 'is_master' => 'bool', 'type' => 'string', 'pan' => 'string', 'gstin' => 'string', 'address' => 'string', 'phone' => 'string', 'email' => 'string', 'website' => 'string', 'grievance_officer' => 'string', 'grievance_phone' => 'string', 'grievance_email' => 'string', 'status' => 'string'],
+                'fields' => ['name', 'is_master', 'type', 'pan', 'gstin', 'address', 'phone', 'email', 'website', 'grievance_officer', 'grievance_phone', 'grievance_email', 'status'],
                 'label' => 'Company', 'order' => 'name', 'required' => ['name'],
             ],
             // Letters — one `letters` table. Templates (is_template=1) hold a
@@ -658,6 +671,16 @@ class MasterController extends Controller
                 }
             }
 
+            // E3 — Overtime register: auto-compute the OT amount (hours × multiplier ×
+            // hourly rate) when no amount was entered. Hourly rate = monthly gross
+            // (CTC / 12) / 26 days / 8 hours.
+            if ($type === 'overtime' && ! empty($row['employee_id']) && ! empty($row['hours']) && empty($row['amount'])) {
+                $ctc = (float) DB::table('employees')->where('id', $row['employee_id'])->value('ctc');
+                $mult = (float) ($row['multiplier'] ?? 2);
+                $hourly = $ctc > 0 ? ($ctc / 12 / 26 / 8) : 0.0;
+                $row['amount'] = round(((float) $row['hours']) * ($mult > 0 ? $mult : 2) * $hourly, 2);
+            }
+
             $id = $input['id'] ?? null;
             if ($id) {
                 DB::table($table)->where('id', $id)
@@ -680,8 +703,20 @@ class MasterController extends Controller
                     $row['fin_year'] = $fy;
                 }
                 $row['created_at'] = now();
-                DB::table($table)->insert($row);
+                $newId = DB::table($table)->insertGetId($row);
             }
+
+            // J2 — immutable audit trail: log every create / update of any master
+            // record into the tamper-evident activity log (hash-chained).
+            \App\Services\Audit::record(
+                $tid ? (int) $tid : null,
+                optional($request->user())->id,
+                $id ? 'update' : 'create',
+                $type,
+                $id ?: ($newId ?? 0),
+                ['fields' => array_values(array_diff(array_keys($row), ['tenant_id', 'updated_at', 'created_at', 'fin_year']))],
+                $request->ip()
+            );
 
             // B2 — DRA eligibility gate (warn + allow). When an agent is assigned to a
             // bank / portfolio without a valid DRA certificate, allow the save but
@@ -986,6 +1021,17 @@ class MasterController extends Controller
             } else {
                 $q->delete();
             }
+
+            // J2 — audit the deletion.
+            \App\Services\Audit::record(
+                $tid ? (int) $tid : null,
+                optional($request->user())->id,
+                'delete',
+                $type,
+                $id,
+                null,
+                $request->ip()
+            );
 
             return response()->json(['ok' => true]);
         } catch (\Throwable $e) {

@@ -29,7 +29,6 @@ class SettingsController extends Controller
         return [
             'pf_wage_cap' => 15000,       // PF wage ceiling (₹)
             'pf_rate' => 12,              // PF % each side (employee & employer)
-            'conveyance_enabled' => false, // OPTIONAL Conveyance deduction (off by default); when on, same rule as PF: pf_rate% of min(Basic, pf_wage_cap)
             'esi_threshold' => 21000,     // gross ≤ this is ESI-eligible (₹)
             'esi_employee_rate' => 0.75,  // ESI employee %
             'esi_employer_rate' => 3.25,  // ESI employer %
@@ -39,6 +38,10 @@ class SettingsController extends Controller
             'cess_rate' => 4,             // health & education cess %
             'comm_tds_rate' => 5,         // Sec 194H commission TDS %
             'no_pan_tds_rate' => 20,      // higher TDS % when deductee has no PAN
+            'incentive_min_compliance' => 60, // F1 — min compliance score (0–100) to pay an incentive without an override note
+            'data_retention_months' => 84,    // G5 — record / recording retention period (months); 84 = 7 years
+            'contact_window_start' => '08:00', // H1 — lawful borrower-contact window start (RBI 08:00–19:00)
+            'contact_window_end' => '19:00',   // H1 — lawful borrower-contact window end
             'tds_slabs' => [              // new-regime annual slabs; upto 0 = "and above"
                 ['upto' => 300000, 'rate' => 0],
                 ['upto' => 700000, 'rate' => 5],
@@ -120,14 +123,7 @@ class SettingsController extends Controller
             ], $v['tds_slabs']));
         }
 
-        // Conveyance is an OPTIONAL boolean toggle (not part of the numeric loop).
-        // Preserve the saved value if a caller doesn't send it.
         $tenantId = $request->user()->tenant_id ?? 0;
-        $existing = json_decode((string) DB::table('statutory_settings')->where('tenant_id', $tenantId)->value('value'), true) ?: [];
-        $merged['conveyance_enabled'] = $request->has('conveyance_enabled')
-            ? $request->boolean('conveyance_enabled')
-            : (bool) ($existing['conveyance_enabled'] ?? false);
-
         DB::table('statutory_settings')->updateOrInsert(
             ['tenant_id' => $tenantId],
             ['value' => json_encode($merged), 'updated_at' => now(), 'created_at' => now()]
