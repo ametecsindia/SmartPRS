@@ -124,7 +124,6 @@ class AppController extends Controller
             'mobileDevBase' => url('/app/mobile-devices'),  // rev 119: + /list, /{id}/approve|reject|revoke
             'masterBase' => url('/app/master'),       // + /{type}, /{type}/{id}/delete
             'cocUrl' => url('/app/code-of-conduct'),   // Code of Conduct read + acknowledge (+ /ack)
-            'bioUrl' => url('/app/biometric-config'),   // rev157: Biometric Device Setup screen (test + sync)
             'incentiveBase' => url('/app/incentive'),   // commission/incentive calc: /template /calculate /commit
             'finYearBase' => url('/app/fin-year'),       // financial year: GET + /set
             'mySubBase' => url('/app/my-subscription'),   // tenant self-serve billing: GET + /quote /renew/order /renew/complete
@@ -592,16 +591,16 @@ CSS;
     var PERM_NAV = {
         dashboard: ['dashboard', 'platform-dashboard', 'how-it-works', 'notifications'],
         employees: ['emp-list', 'emp-add', 'idcard', 'teams', 'onboarding-board', 'recruitment', 'bgv', 'documents', 'roster', 'offroll-agents', 'transfers'],
-        attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'biometric-setup', 'geofence', 'geofence-list', 'late-policy'],
+        attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'geofence', 'geofence-list', 'late-policy'],
         leave: ['leave-apply', 'leave-types', 'holidays'],
         payroll: ['pay-cycle', 'salary-schedules', 'salary-setup', 'salary-gen', 'salary-approval', 'payslip', 'deductions', 'payout-recon', 'live-salary', 'pay-ledger'],
         commissions: ['commissions', 'incentive-schemes', 'clawbacks', 'bonus-enc'],
         expenses: ['expenses', 'advance'],
         loans: ['loans'],
-        statutory: ['pf-esic', 'tds', 'pt', 'gratuity', 'tds-returns'],
+        statutory: ['pf-esic', 'tds', 'pt', 'gratuity', 'tds-returns', 'min-wages'],
         performance: ['performance', 'increments', 'exits', 'awards', 'points-scores', 'points-ledger', 'points-rules', 'tests', 'test-results', 'test-reports', 'attrition'],
-        field: ['escalations', 'agent-auth', 'complaints', 'compliance-alerts'],
-        kb: ['kb', 'faqs', 'training-programs', 'training-records', 'training-content', 'code-of-conduct', 'helpdesk', 'letters-offer', 'letters-increment', 'letters-warning', 'letters-relieving', 'letters-templates', 'notice', 'messages', 'send-message'],
+        field: ['escalations', 'agent-auth', 'dra-certs', 'complaints', 'compliance-alerts'],
+        kb: ['kb', 'faqs', 'training-programs', 'training-records', 'training-content', 'code-of-conduct', 'helpdesk', 'letters-offer', 'letters-increment', 'letters-warning', 'letters-relieving', 'letters-nda', 'letters-templates', 'notice', 'messages', 'send-message'],
         reports: ['reports', 'activity-logs'],
         assets: ['assets'],
         settings: ['companies', 'departments', 'designations', 'branches', 'banks', 'users', 'roles', 'settings', 'fin-year', 'my-subscription', 'branding', 'company-emails', 'wa-settings', 'wa-templates', 'sms-settings', 'sms-templates', 'approvals-inbox', 'mobile-devices'],
@@ -1081,7 +1080,7 @@ CSS;
         'documents': 'fa-folder-open', 'onboarding-board': 'fa-clipboard-check', 'exits': 'fa-door-open', 'transfers': 'fa-right-left',
         'recruitment': 'fa-user-tie', 'bgv': 'fa-user-shield',
         'att-daily': 'fa-calendar-check', 'att-report': 'fa-table-list', 'att-manual': 'fa-pen-to-square',
-        'att-zkteco': 'fa-fingerprint', 'biometric-devices': 'fa-fingerprint', 'biometric-setup': 'fa-sliders', 'geofence': 'fa-map-location-dot',
+        'att-zkteco': 'fa-fingerprint', 'biometric-devices': 'fa-fingerprint', 'geofence': 'fa-map-location-dot',
         'geofence-list': 'fa-draw-polygon', 'late-policy': 'fa-business-time',
         'leave-apply': 'fa-calendar-day', 'leave-types': 'fa-list-ul', 'holidays': 'fa-umbrella-beach',
         'salary-setup': 'fa-sitemap', 'salary-schedules': 'fa-calendar-days', 'salary-gen': 'fa-gears',
@@ -1097,8 +1096,8 @@ CSS;
         'training-programs': 'fa-graduation-cap', 'training-records': 'fa-list-check', 'training-content': 'fa-book',
         'faqs': 'fa-circle-question', 'kb': 'fa-book-open', 'code-of-conduct': 'fa-scale-balanced',
         'letters-offer': 'fa-file-signature', 'letters-increment': 'fa-file-arrow-up', 'letters-warning': 'fa-triangle-exclamation',
-        'letters-relieving': 'fa-file-export', 'letters-templates': 'fa-file-lines',
-        'offroll-agents': 'fa-user-shield', 'agent-auth': 'fa-id-badge', 'compliance-alerts': 'fa-triangle-exclamation',
+        'letters-relieving': 'fa-file-export', 'letters-nda': 'fa-user-shield', 'letters-templates': 'fa-file-lines',
+        'offroll-agents': 'fa-user-shield', 'agent-auth': 'fa-id-badge', 'dra-certs': 'fa-certificate', 'compliance-alerts': 'fa-triangle-exclamation', 'min-wages': 'fa-indian-rupee-sign',
         'escalations': 'fa-headset', 'roster': 'fa-route', 'complaints': 'fa-comment-dots',
         'notice': 'fa-bullhorn', 'messages': 'fa-comments', 'send-message': 'fa-paper-plane', 'helpdesk': 'fa-headset',
         'sms-settings': 'fa-comment-sms', 'sms-templates': 'fa-comment-dots', 'wa-settings': 'fa-comment-dots', 'wa-templates': 'fa-comment-medical',
@@ -1474,10 +1473,10 @@ CSS;
         } catch (e) {}
         // Master data → real DB-backed editors (departments / branches / banks / designations).
         try {
-            var MM = { 'departments': 'Departments', 'branches': 'Branches', 'banks': 'Banks', 'designations': 'Designations', 'holidays': 'Holidays', 'leave-types': 'Leave Types', 'biometric-devices': 'Biometric Devices', 'biometric-setup': 'Biometric Device Setup', 'assets': 'Assets', 'complaints': 'Complaints', 'helpdesk': 'HR Helpdesk', 'deductions': 'Deductions Ledger', 'payout-recon': 'Payout Reconciliation', 'salary-schedules': 'Salary Schedules', 'tds-returns': 'TDS Returns',
-                'teams': 'Teams', 'bgv': 'Background Verification', 'documents': 'Documents', 'offroll-agents': 'Off-roll Agents', 'geofence': 'Geofence Rules', 'geofence-list': 'Geofence Rules', 'late-policy': 'Late Policy', 'salary-setup': 'Salary Setup', 'incentive-schemes': 'Incentive Schemes', 'points-ledger': 'Points Ledger', 'points-rules': 'Points Rules', 'tests': 'Tests', 'training-programs': 'Training Programs', 'training-records': 'Training Records', 'code-of-conduct': 'Code of Conduct', 'faqs': 'FAQs', 'escalations': 'Escalations', 'agent-auth': 'Agent Authorization', 'messages': 'Messages', 'companies': 'Companies', 'letters-offer': 'Offer Letters', 'letters-increment': 'Increment Letters', 'letters-warning': 'Warning Letters', 'letters-relieving': 'Relieving Letters', 'letters-templates': 'Letter Templates',
+            var MM = { 'departments': 'Departments', 'branches': 'Branches', 'banks': 'Banks', 'designations': 'Designations', 'holidays': 'Holidays', 'leave-types': 'Leave Types', 'biometric-devices': 'Biometric Devices', 'assets': 'Assets', 'complaints': 'Complaints', 'helpdesk': 'HR Helpdesk', 'deductions': 'Deductions Ledger', 'payout-recon': 'Payout Reconciliation', 'salary-schedules': 'Salary Schedules', 'tds-returns': 'TDS Returns',
+                'teams': 'Teams', 'bgv': 'Background Verification', 'documents': 'Documents', 'offroll-agents': 'Off-roll Agents', 'geofence': 'Geofence Rules', 'geofence-list': 'Geofence Rules', 'late-policy': 'Late Policy', 'salary-setup': 'Salary Setup', 'incentive-schemes': 'Incentive Schemes', 'points-ledger': 'Points Ledger', 'points-rules': 'Points Rules', 'tests': 'Tests', 'training-programs': 'Training Programs', 'training-records': 'Training Records', 'code-of-conduct': 'Code of Conduct', 'faqs': 'FAQs', 'escalations': 'Escalations', 'agent-auth': 'Agent Authorization', 'dra-certs': 'DRA Certifications', 'min-wages': 'Minimum Wages', 'messages': 'Messages', 'companies': 'Companies', 'letters-offer': 'Offer Letters', 'letters-increment': 'Increment Letters', 'letters-warning': 'Warning Letters', 'letters-relieving': 'Relieving Letters', 'letters-nda': 'NDA / Confidentiality', 'letters-templates': 'Letter Templates',
                 'roster': 'Roster', 'onboarding-board': 'Onboarding', 'awards': 'Awards & Rewards', 'performance': 'Performance', 'notice-board': 'Notice Board', 'notice': 'Notice Board', 'feature-flags': 'Feature Flags', 'training-content': 'Training Content', 'test-results': 'Test Results', 'pay-cycle': 'Pay Cycle', 'wa-settings': 'WhatsApp Settings', 'sms-settings': 'SMS Settings', 'sms-templates': 'SMS Templates', 'att-manual': 'Manual Attendance', 'att-zkteco': 'ZKTeco Devices' };
-            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } SCREENS['biometric-setup'] = { title: 'Biometric Device Setup', type: 'custom' }; }
+            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } }
         } catch (e) {}
         if (typeof renderCustom !== 'function' || renderCustom.__wrapped) { return; }
         var _rc = renderCustom;
@@ -1489,7 +1488,6 @@ CSS;
             if (id === 'onboarding-board') { return onboardingScreen(); }
             if (id === 'performance') { return performanceScreen(); }
             if (id === 'code-of-conduct') { return codeOfConductScreen(); }
-            if (id === 'biometric-setup') { return biometricSetupScreen(); }
             if (id === 'late-policy') { return latePolicyScreen(); }
             if (id === 'incentive-schemes') { return schemesScreen(); }
             if (id === 'mobile-devices') { return mobileDevicesScreen(); }
@@ -6707,83 +6705,6 @@ CSS;
             .then(function (j) { window.__COC = j; if (typeof render === 'function') { render(); } })
             .catch(function () { window.__COC = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
     };
-    function bioLoad() {
-        fetch(cfg.bioUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
-            .then(function (r) { return r.json(); })
-            .then(function (j) { window.__BIO = j || { error: 'No data' }; if (typeof render === 'function') { render(); } })
-            .catch(function () { window.__BIO = { error: 'Failed to load biometric configuration.' }; if (typeof render === 'function') { render(); } });
-    }
-    function bioCollect() {
-        var g = function (id) { var el = document.getElementById(id); return el ? el.value : ''; };
-        var ck = document.getElementById('bio-enabled');
-        return {
-            provider: g('bio-provider'), base_url: g('bio-base'), endpoint: g('bio-endpoint'),
-            corp_id: g('bio-corp'), username: g('bio-user'), password: g('bio-pass'),
-            empcode: g('bio-empcode'), emp_prefix: g('bio-prefix'),
-            enabled: (ck && ck.checked) ? 1 : 0
-        };
-    }
-    function bioMsg(html) { var b = document.getElementById('bio-result'); if (b) { b.innerHTML = html; } }
-    function bioPost(url, body, busy) {
-        bioMsg('<span style="color:var(--text3)">' + busy + '&hellip;</span>');
-        return fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body) }).then(function (r) { return r.json(); });
-    }
-    window.bioSave = function () {
-        bioPost(cfg.bioUrl, bioCollect(), 'Saving').then(function (j) {
-            if (j && j.ok) { window.__BIO = null; bioMsg('<span style="color:var(--green)">Saved.</span>'); bioLoad(); }
-            else { bioMsg('<span style="color:var(--red)">' + ((j && j.error) || 'Save failed') + '</span>'); }
-        }).catch(function () { bioMsg('<span style="color:var(--red)">Save failed</span>'); });
-    }
-    window.bioTest = function () {
-        bioPost(cfg.bioUrl + '/test', bioCollect(), 'Testing connection').then(function (j) {
-            if (j && j.ok) {
-                var pv = String(j.preview || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
-                bioMsg('<div style="color:var(--green);margin-bottom:6px">Connected. Parsed ' + (j.parsed || 0) + ' punch(es).</div><pre style="white-space:pre-wrap;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:240px;overflow:auto;font-size:12px">' + pv + '</pre>');
-            } else { bioMsg('<span style="color:var(--red)">' + ((j && j.error) || 'Test failed') + '</span>'); }
-        }).catch(function () { bioMsg('<span style="color:var(--red)">Test failed</span>'); });
-    }
-    window.bioSync = function () {
-        bioPost(cfg.bioUrl + '/sync', { days: 1 }, 'Syncing punches').then(function (j) {
-            if (j && j.ok) {
-                var extra = j.unmatched ? (' ' + j.unmatched + ' code(s) had no matching employee.') : '';
-                bioMsg('<span style="color:var(--green)">Imported ' + (j.imported || 0) + ' punch(es) for ' + (j.matched || 0) + ' employee row(s).' + extra + '</span>');
-            } else { bioMsg('<span style="color:var(--red)">' + ((j && j.error) || 'Sync failed') + '</span>'); }
-        }).catch(function () { bioMsg('<span style="color:var(--red)">Sync failed</span>'); });
-    }
-    function biometricSetupScreen() {
-        var d = window.__BIO;
-        if (!d) { setTimeout(function () { if (!window.__BIO) { bioLoad(); } }, 10); return pghead('Biometric Device Setup', 'Loading&hellip;', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading&hellip;</div></div>'; }
-        if (d.error) { return pghead('Biometric Device Setup', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)">' + String(d.error) + '</div></div>'; }
-        var esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
-        var c = d.config || {};
-        var fld = function (label, id, val, type, ph, help) {
-            return '<div style="margin-bottom:14px"><label style="display:block;font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">' + esc(label) + '</label>'
-                + '<input id="' + id + '" type="' + (type || 'text') + '" value="' + esc(val) + '" placeholder="' + esc(ph || '') + '" autocomplete="off" style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:14px">'
-                + (help ? '<div style="font-size:12px;color:var(--text3);margin-top:4px">' + esc(help) + '</div>' : '') + '</div>';
-        };
-        var pwPh = d.hasPassword ? 'Saved &mdash; leave blank to keep current password' : 'Device API password';
-        var statusBar = d.lastSyncAt ? '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:9px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:var(--text2)"><i class="fas fa-clock"></i> Last sync: ' + esc(d.lastSyncAt) + ' &mdash; ' + esc(d.lastStatus || '') + '</div>' : '';
-        var html = pghead('Biometric Device Setup', 'Connect a cloud attendance API. Punches import into Attendance &amp; payroll automatically every hour.', '')
-            + '<div class="card" style="padding:22px 24px;max-width:580px">'
-            + statusBar
-            + '<label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:16px"><input id="bio-enabled" type="checkbox"' + (c.enabled ? ' checked' : '') + '> Enable automatic hourly sync</label>'
-            + fld('Provider', 'bio-provider', c.provider || 'eTimeOffice', 'text', 'eTimeOffice', 'Cloud attendance provider name.')
-            + fld('API Base URL', 'bio-base', c.base_url || 'https://api.etimeoffice.com/api', 'text', '')
-            + fld('Endpoint', 'bio-endpoint', c.endpoint || 'DownloadPunchDataMCID', 'text', '')
-            + fld('Corporate ID', 'bio-corp', c.corp_id || '', 'text', 'e.g. ametecsindia')
-            + fld('Username', 'bio-user', c.username || '', 'text', '')
-            + fld('Password', 'bio-pass', '', 'password', pwPh, '')
-            + fld('Employee code filter', 'bio-empcode', c.empcode || 'ALL', 'text', 'ALL', 'Usually ALL.')
-            + fld('Employee ID prefix', 'bio-prefix', c.emp_prefix || '', 'text', 'e.g. A', 'If the device returns 12345 and your employees are A12345, enter A. Leave blank when codes match exactly.')
-            + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">'
-            + '<button class="btn btn-primary" onclick="bioSave()"><i class="fas fa-floppy-disk"></i> Save</button>'
-            + '<button class="btn btn-outline" onclick="bioTest()"><i class="fas fa-plug"></i> Test connection</button>'
-            + '<button class="btn btn-outline" onclick="bioSync()"><i class="fas fa-rotate"></i> Sync now</button>'
-            + '</div>'
-            + '<div id="bio-result" style="margin-top:14px;font-size:13px"></div>'
-            + '</div>';
-        return html;
-    }
     function codeOfConductScreen() {
         var d = window.__COC;
         if (!d) { setTimeout(function () { if (!window.__COC) { cocLoad(); } }, 10); return pghead('Code of Conduct', 'Loading…', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
@@ -7650,6 +7571,7 @@ CSS;
             warning: 'Dear {{employee_name}} ({{emp_code}}),' + NL + NL + 'This letter is to formally bring to your attention concerns regarding your conduct and performance as {{designation}} in {{department}}.' + NL + NL + 'You are advised to demonstrate immediate and sustained improvement. Failure to do so may result in further disciplinary action in accordance with company policy.' + NL + NL + 'Issued on {{date}}.' + NL + NL + 'For {{company}},' + NL + 'HR Department',
             relieving: 'To Whomsoever It May Concern,' + NL + NL + 'This is to certify that {{employee_name}} ({{emp_code}}) was employed with {{company}} as {{designation}} in {{department}}, and has been relieved from their duties with effect from {{date}}.' + NL + NL + 'We thank them for their service and wish them success in their future endeavours.' + NL + NL + 'For {{company}},' + NL + 'HR Department',
             experience: 'To Whomsoever It May Concern,' + NL + NL + 'This is to certify that {{employee_name}} ({{emp_code}}) served {{company}} as {{designation}} in {{department}} (date of joining {{doj}}). Their conduct and performance during the tenure were found satisfactory.' + NL + NL + 'We wish them all the best for the future.' + NL + NL + 'For {{company}},' + NL + 'HR Department',
+            nda: 'CONFIDENTIALITY & NON-DISCLOSURE UNDERTAKING' + NL + NL + 'I, {{employee_name}} ({{emp_code}}), engaged as {{designation}} in {{department}} at {{company}}, acknowledge that in the course of my duties I will access confidential borrower and customer information, account and financial data, and other business-sensitive information.' + NL + NL + 'I undertake that I shall:' + NL + '1. Keep all borrower / customer personal and financial data strictly confidential and use it only for authorised recovery work for the assigned bank / NBFC portfolio.' + NL + '2. Not copy, export, photograph, forward or disclose such data to any third party, and not use personal devices, personal email, or personal messaging (e.g. WhatsApp) to handle it.' + NL + '3. Comply with the RBI fair-practices and recovery-conduct norms and the Digital Personal Data Protection Act, 2023.' + NL + '4. Return or securely destroy all such information, and surrender all access, on the end of my engagement.' + NL + '5. Understand that any breach may lead to disciplinary action and civil / criminal consequences.' + NL + NL + 'Signed on {{date}}.' + NL + NL + '{{employee_name}}' + NL + 'For {{company}}',
             custom: ''
         };
     })();
@@ -7716,8 +7638,16 @@ CSS;
             { k: 'company_name', l: 'Company', src: 'company' }, { k: 'quarter', l: 'Quarter', type: 'select', opts: ['Q1', 'Q2', 'Q3', 'Q4'], optLabels: ['Q1 (Apr–Jun)', 'Q2 (Jul–Sep)', 'Q3 (Oct–Dec)', 'Q4 (Jan–Mar)'] }, { k: 'deductees', l: 'Deductees', type: 'number' }, { k: 'tax_deducted', l: 'Tax Deducted (₹)', type: 'number' }, { k: 'deposited', l: 'Deposited (₹)', type: 'number' }, { k: 'due_date', l: 'Due Date', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'filed', 'revised'], optLabels: ['Pending', 'Filed', 'Revised'] }] },
         'teams': { type: 'teams', title: 'Teams', sub: 'Teams with their manager & leader', fields: [
             { k: 'name', l: 'Team Name' }, { k: 'function', l: 'Function' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'manager', l: 'Manager', src: 'emp' }, { k: 'leader', l: 'Team Leader', src: 'emp' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
-        'bgv': { type: 'bgv', title: 'Background Verification', sub: 'BGV cases per employee', fields: [
-            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'agency', l: 'Agency' }, { k: 'checks', l: 'Checks (Address/PCC/…)' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'in_progress', 'clear', 'discrepancy'], optLabels: ['Pending', 'In progress', 'Clear', 'Discrepancy'] }, { k: 'completed_on', l: 'Completed On', type: 'date' }] },
+        'bgv': { type: 'bgv', title: 'Background Verification', sub: 'Structured BGV per agent — per-check results + re-verification schedule. Overdue / upcoming re-verifications show in Compliance Alerts.', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'agency', l: 'Agency' },
+            { k: 'chk_identity', l: 'Identity / KYC', type: 'select', opts: ['pending', 'clear', 'flag', 'na'], optLabels: ['Pending', 'Clear', 'Flag', 'N/A'] },
+            { k: 'chk_address', l: 'Address', type: 'select', opts: ['pending', 'clear', 'flag', 'na'], optLabels: ['Pending', 'Clear', 'Flag', 'N/A'] },
+            { k: 'chk_education', l: 'Education', type: 'select', opts: ['pending', 'clear', 'flag', 'na'], optLabels: ['Pending', 'Clear', 'Flag', 'N/A'] },
+            { k: 'chk_employment', l: 'Previous employment', type: 'select', opts: ['pending', 'clear', 'flag', 'na'], optLabels: ['Pending', 'Clear', 'Flag', 'N/A'] },
+            { k: 'chk_criminal', l: 'Criminal / court record', type: 'select', opts: ['pending', 'clear', 'flag', 'na'], optLabels: ['Pending', 'Clear', 'Flag', 'N/A'] },
+            { k: 'chk_references', l: 'References', type: 'select', opts: ['pending', 'clear', 'flag', 'na'], optLabels: ['Pending', 'Clear', 'Flag', 'N/A'] },
+            { k: 'status', l: 'Overall Status', type: 'select', opts: ['pending', 'in_progress', 'clear', 'discrepancy'], optLabels: ['Pending', 'In progress', 'Clear', 'Discrepancy'] },
+            { k: 'verified_on', l: 'Verified On', type: 'date' }, { k: 'revalidate_months', l: 'Re-verify every (months)', type: 'number' }, { k: 'next_due', l: 'Next Re-verify Due', type: 'date' }] },
         'documents': { type: 'documents', title: 'Documents', sub: 'Employee documents + expiry tracking', fields: [
             { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'kind', l: 'Document Kind' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'approved', 'rejected'], optLabels: ['Pending', 'Approved', 'Rejected'] }, { k: 'expiry', l: 'Expiry', type: 'date' }] },
         'offroll-agents': { type: 'offroll-agents', title: 'Off-roll Agents', sub: 'Vendor / off-roll field agents', rowFn: 'offrollKyc', rowFnLabel: 'KYC / Docs', rowFnIcon: 'fa-id-card', fields: [
@@ -7750,6 +7680,10 @@ CSS;
             { k: 'date', l: 'Date', type: 'date' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'bank', l: 'Bank' }, { k: 'team', l: 'Team' }, { k: 'issue', l: 'Issue' }, { k: 'severity', l: 'Severity', type: 'select', opts: ['low', 'medium', 'high'], optLabels: ['Low', 'Medium', 'High'] }, { k: 'priority', l: 'Priority', type: 'select', opts: ['low', 'medium', 'high', 'urgent'], optLabels: ['Low', 'Medium', 'High', 'Urgent'] }, { k: 'status', l: 'Status', type: 'select', opts: ['open', 'in_progress', 'resolved', 'closed'], optLabels: ['Open', 'In progress', 'Resolved', 'Closed'] }, { k: 'action_taken', l: 'Action Taken' }] },
         'agent-auth': { type: 'agent-auth', title: 'Agent Authorization', sub: 'DRA / bank authorizations', fields: [
             { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'bank', l: 'Bank' }, { k: 'portfolio', l: 'Portfolio' }, { k: 'auth_no', l: 'Authorization No.' }, { k: 'valid_to', l: 'Valid To', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'expired', 'revoked'], optLabels: ['Active', 'Expired', 'Revoked'] }] },
+        'dra-certs': { type: 'dra-certs', title: 'DRA Certifications', sub: 'IIBF Debt Recovery Agent certificate per agent — number, institute, training track, issue & expiry. Feeds Compliance Alerts and the bank-authorisation eligibility check.', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'cert_no', l: 'Certificate No.' }, { k: 'institute', l: 'Training Institute' }, { k: 'track', l: 'Training Track', type: 'select', opts: ['ug_100', 'grad_50'], optLabels: ['Undergraduate (100 hrs)', 'Graduate (50 hrs)'] }, { k: 'issue_date', l: 'Issue Date', type: 'date' }, { k: 'expiry', l: 'Expiry / Revalidation', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['verified', 'pending', 'expired'], optLabels: ['Verified', 'Pending', 'Expired'] }] },
+        'min-wages': { type: 'min-wages', title: 'Minimum Wages', sub: 'Notified minimum wage by state / zone / category. Used by the Minimum-wage check report (Reports → Minimum-wage check).', fields: [
+            { k: 'state', l: 'State' }, { k: 'zone', l: 'Zone / Area' }, { k: 'category', l: 'Category / Schedule' }, { k: 'monthly_min', l: 'Monthly Minimum (₹)', type: 'number' }, { k: 'effective_from', l: 'Effective From', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
         'messages': { type: 'messages', title: 'Messages', sub: 'Message / broadcast log', fields: [
             { k: 'target', l: 'Target' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'channels', l: 'Channels' }, { k: 'message', l: 'Message' }, { k: 'recipients', l: 'Recipients', type: 'number' }, { k: 'sent_at', l: 'Sent At', type: 'date' }] },
         'companies': { type: 'companies', title: 'Companies', sub: 'Group companies — the signed-up company is the Master; additional companies are Subsidiaries', fields: [
@@ -7762,8 +7696,10 @@ CSS;
             { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'template', l: 'Template', src: 'template' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'issued_on', l: 'Issued On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['draft', 'issued', 'signed'], optLabels: ['Draft', 'Issued', 'Signed'] }] },
         'letters-relieving': { type: 'letters-relieving', title: 'Relieving Letters', sub: 'Pick an employee + a saved Relieving template → Preview / Email', rowAction: { label: 'Preview', cfg: 'lettersBase', suffix: '/pdf' }, rowEmail: true, fields: [
             { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'template', l: 'Template', src: 'template' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'issued_on', l: 'Issued On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['draft', 'issued', 'signed'], optLabels: ['Draft', 'Issued', 'Signed'] }] },
+        'letters-nda': { type: 'letters-nda', title: 'NDA / Confidentiality', sub: 'Pick an agent + a saved NDA template → Preview / Email / send for e-signature. The signed status shows here and feeds Compliance.', rowAction: { label: 'Preview', cfg: 'lettersBase', suffix: '/pdf' }, rowEmail: true, rowAcceptLink: true, fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'template', l: 'Template', src: 'template' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'issued_on', l: 'Issued On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['draft', 'issued', 'signed'], optLabels: ['Draft', 'Issued', 'Signed'] }] },
         'letters-templates': { type: 'letters-templates', title: 'Letter Templates', sub: 'Reusable letter bodies. Pick a type to load a professional sample, then edit. Placeholders like {{employee_name}}, {{designation}}, {{ctc}}, {{date}} are filled when a letter is generated', fields: [
-            { k: 'title', l: 'Template Title' }, { k: 'letter_type', l: 'For Letter Type', type: 'select', opts: ['offer', 'increment', 'warning', 'relieving', 'experience', 'custom'], optLabels: ['Offer', 'Increment', 'Warning / PIP', 'Relieving', 'Experience', 'Custom'], fill: 'LETTER_SAMPLES', fillTarget: 'body' }, { k: 'body', l: 'Body', type: 'textarea', hint: 'Placeholders: {{employee_name}} {{emp_code}} {{designation}} {{department}} {{company}} {{date}} {{ctc}} {{doj}} {{pan}} {{uan}} {{bank_acc}} {{ifsc}}' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+            { k: 'title', l: 'Template Title' }, { k: 'letter_type', l: 'For Letter Type', type: 'select', opts: ['offer', 'increment', 'warning', 'relieving', 'experience', 'nda', 'custom'], optLabels: ['Offer', 'Increment', 'Warning / PIP', 'Relieving', 'Experience', 'Confidentiality / NDA', 'Custom'], fill: 'LETTER_SAMPLES', fillTarget: 'body' }, { k: 'body', l: 'Body', type: 'textarea', hint: 'Placeholders: {{employee_name}} {{emp_code}} {{designation}} {{department}} {{company}} {{date}} {{ctc}} {{doj}} {{pan}} {{uan}} {{bank_acc}} {{ifsc}}' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
         'roster': { type: 'roster', title: 'Roster', sub: 'Shift roster', fields: [
             { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'team', l: 'Team' }, { k: 'date', l: 'Date', type: 'date' }, { k: 'shift', l: 'Shift' }, { k: 'status', l: 'Status', type: 'select', opts: ['scheduled', 'present', 'absent', 'off'], optLabels: ['Scheduled', 'Present', 'Absent', 'Week-off'] }] },
         'onboarding-board': { type: 'onboarding-board', title: 'Onboarding', sub: 'New-joiner onboarding', fields: [
@@ -8660,11 +8596,10 @@ CSS;
             + '<textarea id="att_remarks" rows="4" placeholder="Stand-up note (e.g. too many breaks today)" style="width:100%;margin-top:8px;padding:10px;border:1.5px solid var(--border);border-radius:9px;font-family:var(--font2)">' + (d.remarks || '') + '</textarea>'
             + '<button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="attRateSave(\'' + d.emp_code + '\',\'' + d.date + '\')"><i class="fas fa-check"></i> Save Rating</button></div>'
             + '</div>'
-            + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
-            + attChip('Total In', d.first_in || '—', 'var(--green)')
-            + attChip('Total Out', d.last_out || '—', 'var(--red)')
-            + attChip('Total Break', d.total_break_h || '0h 00m', '#b45309')
-            + attChip('Working Time', d.total_work_h || '0h 00m', 'var(--accent)')
+            + '<div style="display:flex;gap:10px;margin-bottom:14px">'
+            + attChip('Total Worked', d.total_work_h, 'var(--green)')
+            + attChip('Total Break', d.total_break_h, 'var(--red)')
+            + attChip('Punch Pairs', (d.pairs || []).length, 'var(--accent)')
             + '</div>'
             + '<table style="width:100%;border-collapse:collapse"><thead><tr>'
             + '<th style="padding:9px 12px;text-align:center;font-size:11px;text-transform:uppercase;color:var(--text3)">#</th>'
@@ -8673,11 +8608,7 @@ CSS;
             + '<th style="padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">Worked</th>'
             + '<th style="padding:9px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">Break After</th>'
             + '</tr></thead><tbody>' + rows + '</tbody>'
-            + '<tfoot>'
-            + '<tr><td colspan="3" style="padding:10px 12px;text-align:right;font-weight:700;background:#0f172a;color:#fff">Working Time (In time)</td><td colspan="2" style="padding:10px 12px;font-weight:700;background:#0f172a;color:#fff">' + (d.total_work_h || '0h 00m') + '</td></tr>'
-            + '<tr><td colspan="3" style="padding:10px 12px;text-align:right;font-weight:700;background:#1e293b;color:#fff">Total Break Time</td><td colspan="2" style="padding:10px 12px;font-weight:700;background:#1e293b;color:#fff">' + (d.total_break_h || '0h 00m') + '</td></tr>'
-            + '<tr><td colspan="3" style="padding:10px 12px;text-align:right;font-weight:700;background:#334155;color:#fff">Remaining (vs 8h)</td><td colspan="2" style="padding:10px 12px;font-weight:700;background:#334155;color:#fff">' + (d.remaining_h || '0h 00m') + '</td></tr>'
-            + '</tfoot>'
+            + '<tfoot><tr><td colspan="3" style="padding:10px 12px;text-align:right;font-weight:700;background:#0f172a;color:#fff">Total Break Time</td><td colspan="2" style="padding:10px 12px;font-weight:700;background:#0f172a;color:#fff">' + d.total_break_h + '</td></tr></tfoot>'
             + '</table></div></div>';
         m.innerHTML = inner;
         m.style.display = 'flex';

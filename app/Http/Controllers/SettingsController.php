@@ -29,6 +29,7 @@ class SettingsController extends Controller
         return [
             'pf_wage_cap' => 15000,       // PF wage ceiling (₹)
             'pf_rate' => 12,              // PF % each side (employee & employer)
+            'conveyance_enabled' => false, // OPTIONAL Conveyance deduction (off by default); when on, same rule as PF: pf_rate% of min(Basic, pf_wage_cap)
             'esi_threshold' => 21000,     // gross ≤ this is ESI-eligible (₹)
             'esi_employee_rate' => 0.75,  // ESI employee %
             'esi_employer_rate' => 3.25,  // ESI employer %
@@ -119,7 +120,14 @@ class SettingsController extends Controller
             ], $v['tds_slabs']));
         }
 
+        // Conveyance is an OPTIONAL boolean toggle (not part of the numeric loop).
+        // Preserve the saved value if a caller doesn't send it.
         $tenantId = $request->user()->tenant_id ?? 0;
+        $existing = json_decode((string) DB::table('statutory_settings')->where('tenant_id', $tenantId)->value('value'), true) ?: [];
+        $merged['conveyance_enabled'] = $request->has('conveyance_enabled')
+            ? $request->boolean('conveyance_enabled')
+            : (bool) ($existing['conveyance_enabled'] ?? false);
+
         DB::table('statutory_settings')->updateOrInsert(
             ['tenant_id' => $tenantId],
             ['value' => json_encode($merged), 'updated_at' => now(), 'created_at' => now()]

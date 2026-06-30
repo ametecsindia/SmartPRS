@@ -103,6 +103,45 @@ class ComplianceController extends Controller
             $consider('PCC', $a['pcc_expiry'] ?? null, $emp);
         }
 
+        // B1/B3 — structured DRA certificates live in dra_certs (the DRA Certifications
+        // screen). Scan their expiry too so the radar and digest cover them.
+        if (Schema::hasTable('dra_certs')) {
+            $dq = DB::table('dra_certs as d')
+                ->join('employees as e', 'e.id', '=', 'd.employee_id')
+                ->leftJoin('companies as c', 'c.id', '=', 'e.company_id')
+                ->when($tenantId, fn ($x) => $x->where('d.tenant_id', $tenantId))
+                ->whereNull('e.deleted_at')
+                ->whereNotNull('d.expiry');
+            $dsel = ['d.expiry as dra_expiry', 'e.id', 'e.tenant_id', 'e.company_id', 'e.emp_code', 'e.name', 'c.name as company'];
+            foreach (['email', 'agent_code', 'portfolio'] as $c) {
+                if ($has($c)) {
+                    $dsel[] = 'e.'.$c;
+                }
+            }
+            foreach ($dq->get($dsel) as $dc) {
+                $consider('DRA', $dc->dra_expiry ?? null, $dc);
+            }
+        }
+
+        // C3 — BGV re-verification scheduler: surface overdue / upcoming re-verifications.
+        if (Schema::hasTable('bgv') && Schema::hasColumn('bgv', 'next_due')) {
+            $bq = DB::table('bgv as b')
+                ->join('employees as e', 'e.id', '=', 'b.employee_id')
+                ->leftJoin('companies as c', 'c.id', '=', 'e.company_id')
+                ->when($tenantId, fn ($x) => $x->where('b.tenant_id', $tenantId))
+                ->whereNull('e.deleted_at')
+                ->whereNotNull('b.next_due');
+            $bsel = ['b.next_due as bgv_due', 'e.id', 'e.tenant_id', 'e.company_id', 'e.emp_code', 'e.name', 'c.name as company'];
+            foreach (['email', 'agent_code', 'portfolio'] as $c) {
+                if ($has($c)) {
+                    $bsel[] = 'e.'.$c;
+                }
+            }
+            foreach ($bq->get($bsel) as $bc) {
+                $consider('BGV re-verify', $bc->bgv_due ?? null, $bc);
+            }
+        }
+
         // Sort: most urgent first (smallest days, expired before soon).
         usort($rows, fn ($x, $y) => $x['days'] <=> $y['days']);
 

@@ -58,6 +58,11 @@ if (! $spOnPrem) {
 Route::get('/offer/{token}', [App\Http\Controllers\OfferAcceptController::class, 'show'])->name('offer.show');
 Route::post('/offer/{token}/accept', [App\Http\Controllers\OfferAcceptController::class, 'accept'])->name('offer.accept');
 
+// Public NDA / confidentiality e-sign page (agent, no login — secured by the token).
+Route::get('/nda/{token}', [App\Http\Controllers\NdaSignController::class, 'show'])->name('nda.show');
+Route::post('/nda/{token}/sign', [App\Http\Controllers\NdaSignController::class, 'sign'])->name('nda.sign')
+    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class]);
+
 // rev 119: MOBILE APP device gate — public API consumed by the hybrid app
 // BEFORE login (no session/cookie → CSRF-exempt, like the webhooks). Tenant is
 // resolved by host (custom domain) or the workspace slug the app sends.
@@ -416,11 +421,6 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/tests/{id}/submit', [App\Http\Controllers\TestController::class, 'submit'])->whereNumber('id')->name('app.tests.submit');
     // Biometric device: in-app sync (pull punches into attendance_logs).
     Route::post('/app/device/{id}/sync', [App\Http\Controllers\DeviceController::class, 'syncById'])->whereNumber('id')->name('app.device.sync');
-    // rev157: Biometric Device Setup — frontend-managed cloud-attendance API config (eTimeOffice).
-    Route::get('/app/biometric-config', [App\Http\Controllers\BiometricConfigController::class, 'show'])->name('app.bioconfig');
-    Route::post('/app/biometric-config', [App\Http\Controllers\BiometricConfigController::class, 'save'])->name('app.bioconfig.save');
-    Route::post('/app/biometric-config/test', [App\Http\Controllers\BiometricConfigController::class, 'test'])->name('app.bioconfig.test');
-    Route::post('/app/biometric-config/sync', [App\Http\Controllers\BiometricConfigController::class, 'sync'])->name('app.bioconfig.sync');
     // Employee Self-Service snapshot (own profile/payslips/attendance/leave/notices).
     Route::get('/app/ess/me', [App\Http\Controllers\EssController::class, 'me'])->name('app.ess.me');
     // Onboarding checklist workflow.

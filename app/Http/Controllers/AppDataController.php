@@ -712,6 +712,66 @@ class AppDataController extends Controller
         return round($tax / 12, 2);
     }
 
+    /**
+     * Professional Tax — statutory MONTHLY slab on gross (not a flat amount).
+     * Default = Telangana: up to ₹15,000 → Nil; ₹15,001–20,000 → ₹150; above ₹20,000 → ₹200.
+     * A company can override with $rates['pt_slabs'] = [['upto'=>15000,'amt'=>0], ...].
+     */
+    public static function ptForGross(float $gross, array $r): float
+    {
+        $slabs = $r['pt_slabs'] ?? null;
+        if (! is_array($slabs) || ! $slabs) {
+            $slabs = [
+                ['upto' => 15000.0, 'amt' => 0.0],
+                ['upto' => 20000.0, 'amt' => 150.0],
+                ['upto' => PHP_FLOAT_MAX, 'amt' => 200.0],
+            ];
+        }
+        foreach ($slabs as $s) {
+            if ($gross <= (float) ($s['upto'] ?? PHP_FLOAT_MAX)) {
+                return round((float) ($s['amt'] ?? 0), 2);
+            }
+        }
+        return 0.0;
+    }
+
+    /**
+     * Statutory PF/ESI/PT per government rules. Returns employee deductions
+     * (pf, esi, pt) PLUS employer contributions for the ECR/challan (which are
+     * NOT payslip deductions, so callers must not add them to total_ded).
+     *  - PF: 12% of PF wage (Basic + DA), capped at the ₹15,000 wage ceiling.
+     *        Employer 12% = EPS 8.33% (on wage capped ₹15,000, max ₹1,250) + EPF (3.67% balance);
+     *        EDLI 0.5% (max ₹75) shown separately.
+     *  - ESI: on GROSS when gross ≤ ₹21,000; employee 0.75% + employer 3.25%,
+     *        each rounded UP to the next rupee (ESIC rule).
+     *  - PT: monthly slab via ptForGross().
+     */
+    public static function statutory(float $gross, float $pfWage, array $r): array
+    {
+        $pfCap = (float) ($r['pf_wage_cap'] ?? 15000);
+        $pfRate = (float) ($r['pf_rate'] ?? 12);
+        $pfBase = min(max($pfWage, 0.0), $pfCap);
+        $epsBase = min($pfBase, 15000.0); // EPS/EDLI statutory wage ceiling is ₹15,000
+
+        $pfEmployee = round($pfBase * $pfRate / 100, 2);
+        $pfEmployer = round($pfBase * $pfRate / 100, 2);
+        $eps = min(round($epsBase * 8.33 / 100, 2), 1250.0);
+        $epfEmployer = round($pfEmployer - $eps, 2);
+        $edli = round($epsBase * 0.5 / 100, 2);
+
+        $esiThr = (float) ($r['esi_threshold'] ?? 21000);
+        $esiEligible = $gross > 0 && $gross <= $esiThr;
+        $esiEmployee = $esiEligible ? (float) ceil($gross * ((float) ($r['esi_employee_rate'] ?? 0.75)) / 100) : 0.0;
+        $esiEmployer = $esiEligible ? (float) ceil($gross * ((float) ($r['esi_employer_rate'] ?? 3.25)) / 100) : 0.0;
+
+        return [
+            'pf' => $pfEmployee, 'esi' => $esiEmployee, 'pt' => self::ptForGross($gross, $r),
+            'pf_wage' => round($pfBase, 2),
+            'pf_employer' => $pfEmployer, 'pf_eps' => $eps, 'pf_epf_employer' => $epfEmployer, 'pf_edli' => $edli,
+            'esi_employer' => $esiEmployer,
+        ];
+    }
+
     public static function computeSlip(float $ctc, ?array $rates = null): array
     {
         $r = $rates ?: SettingsController::defaults();
@@ -719,15 +779,19 @@ class AppDataController extends Controller
         $basic = round($gross * 0.5, 2);
         $hra = round($basic * 0.4, 2);
         $special = round($gross - $basic - $hra, 2);
-        $pf = round(min($basic, (float) $r['pf_wage_cap']) * ((float) $r['pf_rate'] / 100), 2);
-        $esi = $gross <= (float) $r['esi_threshold'] ? round($gross * ((float) $r['esi_employee_rate'] / 100), 2) : 0.0;
-        $pt = $gross > 0 ? (float) $r['pt_amount'] : 0.0;
+        // No salary components defined → PF wage falls back to the assumed Basic (50% of gross).
+        $st = self::statutory($gross, $basic, $r);
+        $pf = $st['pf'];
+        $esi = $st['esi'];
+        $pt = $st['pt'];
         $tds = self::salaryTdsMonthly($ctc);
         $totalDed = round($pf + $esi + $pt + $tds, 2);
 
         return [
             'gross' => $gross, 'basic' => $basic, 'hra' => $hra, 'special' => $special,
             'pf' => $pf, 'esi' => $esi, 'pt' => $pt, 'tds' => $tds,
+            'pf_wage' => $st['pf_wage'], 'pf_employer' => $st['pf_employer'], 'pf_eps' => $st['pf_eps'],
+            'pf_epf_employer' => $st['pf_epf_employer'], 'pf_edli' => $st['pf_edli'], 'esi_employer' => $st['esi_employer'],
             'total_ded' => $totalDed, 'net' => round($gross - $totalDed, 2),
         ];
     }
@@ -823,10 +887,19 @@ class AppDataController extends Controller
             $basic = $earnSum > 0 ? (float) reset($earnings) : 0.0; // PF fallback: first earning
         }
 
-        // Statutory deductions (PF on the component Basic).
-        $pf = round(min($basic, (float) $r['pf_wage_cap']) * ((float) $r['pf_rate'] / 100), 2);
-        $esi = $gross <= (float) $r['esi_threshold'] ? round($gross * ((float) $r['esi_employee_rate'] / 100), 2) : 0.0;
-        $pt = $gross > 0 ? (float) $r['pt_amount'] : 0.0;
+        // Statutory deductions per govt rules: PF on Basic + DA (capped ₹15k),
+        // ESI on gross (round-up), PT by slab.
+        $da = 0.0;
+        foreach ($earnings as $en => $ea) {
+            $lc = strtolower((string) $en);
+            if (str_contains($lc, 'dearness') || preg_match('/(^|[^a-z])da([^a-z]|$)/', $lc)) {
+                $da += (float) $ea;
+            }
+        }
+        $st = self::statutory($gross, $basic + $da, $r);
+        $pf = $st['pf'];
+        $esi = $st['esi'];
+        $pt = $st['pt'];
         $tds = self::salaryTdsMonthly($ctc);
         $deductions = ['PF' => $pf, 'ESI' => $esi, 'Professional Tax' => $pt, 'TDS' => $tds];
         foreach ($dedComps as $c) {
@@ -855,6 +928,8 @@ class AppDataController extends Controller
             'gross' => $gross, 'basic' => round($basic, 2), 'hra' => round($hra, 2), 'special' => $special,
             'earnings' => $earnings, 'deductions' => $deductions,
             'pf' => $pf, 'esi' => $esi, 'pt' => $pt, 'tds' => $tds,
+            'pf_wage' => $st['pf_wage'], 'pf_employer' => $st['pf_employer'], 'pf_eps' => $st['pf_eps'],
+            'pf_epf_employer' => $st['pf_epf_employer'], 'pf_edli' => $st['pf_edli'], 'esi_employer' => $st['esi_employer'],
             'total_ded' => $totalDed, 'net' => round($gross - $totalDed, 2),
         ];
     }

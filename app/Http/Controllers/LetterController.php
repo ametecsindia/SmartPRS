@@ -63,6 +63,24 @@ class LetterController extends Controller
                 ->orderByDesc('id')->first();
         }
 
+        // NDA / confidentiality undertaking ships with a built-in default body, so HR
+        // can issue one without first creating a template (still editable in Templates).
+        if ((! $tpl || ! trim((string) $tpl->body)) && $letter->letter_type === 'nda') {
+            $tpl = (object) [
+                'id' => 0,
+                'title' => 'Confidentiality & Non-Disclosure Undertaking',
+                'body' => "CONFIDENTIALITY & NON-DISCLOSURE UNDERTAKING\n\n"
+                    ."I, {{employee_name}} ({{emp_code}}), engaged as {{designation}} in {{department}} at {{company}}, acknowledge that in the course of my duties I will access confidential borrower and customer information, account and financial data, and other business-sensitive information.\n\n"
+                    ."I undertake that I shall:\n"
+                    ."1. Keep all borrower / customer personal and financial data strictly confidential and use it only for authorised recovery work for the assigned bank / NBFC portfolio.\n"
+                    ."2. Not copy, export, photograph, forward or disclose such data to any third party, and not use personal devices, personal email, or personal messaging (e.g. WhatsApp) to handle it.\n"
+                    ."3. Comply with the RBI fair-practices and recovery-conduct norms and the Digital Personal Data Protection Act, 2023.\n"
+                    ."4. Return or securely destroy all such information, and surrender all access, on the end of my engagement.\n"
+                    ."5. Understand that any breach may lead to disciplinary action and civil / criminal consequences.\n\n"
+                    ."Signed on {{date}}.\n\n{{employee_name}}\nFor {{company}}",
+            ];
+        }
+
         if (! $tpl || ! trim((string) $tpl->body)) {
             return ['error' => response('No template (with a body) found for "'.$letter->letter_type.'" letters. '
                 .'Create one in HR Letters → Templates first.', 422)->header('Content-Type', 'text/plain')];
@@ -297,21 +315,37 @@ class LetterController extends Controller
         }
         try {
             $tid = $request->user()->tenant_id;
-            $letter = DB::table('letters')->where('id', $id)->where('letter_type', 'offer')->where('is_template', 0)
+            $letter = DB::table('letters')->where('id', $id)->where('is_template', 0)
                 ->when($tid, fn ($q) => $q->where('tenant_id', $tid))->first();
             if (! $letter) {
-                return response()->json(['ok' => false, 'error' => 'Offer letter not found'], 404);
+                return response()->json(['ok' => false, 'error' => 'Letter not found'], 404);
             }
-            if (empty($letter->candidate)) {
-                return response()->json(['ok' => false, 'error' => 'This offer has no candidate.'], 422);
+
+            // NDA / confidentiality undertaking goes to the EMPLOYEE (agent); an offer
+            // letter goes to the CANDIDATE in Recruitment.
+            $isNda = ($letter->letter_type ?? '') === 'nda';
+            if ($isNda) {
+                $emp = DB::table('employees')->where('id', $letter->employee_id)
+                    ->when($tid, fn ($q) => $q->where('tenant_id', $tid))->first();
+                $to = $emp->email ?? null;
+                $toName = $emp->name ?? ($emp->full_name ?? 'Agent');
+                if (! $to) {
+                    return response()->json(['ok' => false, 'error' => 'This agent has no email on their employee record.'], 422);
+                }
+            } else {
+                if (empty($letter->candidate)) {
+                    return response()->json(['ok' => false, 'error' => 'This offer has no candidate.'], 422);
+                }
+                $cand = DB::table('recruitment')->where('name', $letter->candidate)
+                    ->when($tid, fn ($q) => $q->where('tenant_id', $tid))->first();
+                $to = $cand->email ?? null;
+                $toName = $letter->candidate;
+                if (! $to) {
+                    return response()->json(['ok' => false, 'error' => 'The candidate has no email in Recruitment.'], 422);
+                }
             }
-            $cand = DB::table('recruitment')->where('name', $letter->candidate)
-                ->when($tid, fn ($q) => $q->where('tenant_id', $tid))->first();
-            $to = $cand->email ?? null;
-            if (! $to) {
-                return response()->json(['ok' => false, 'error' => 'The candidate has no email in Recruitment.'], 422);
-            }
-            foreach (['accept_token' => 'string', 'accepted_at' => 'ts', 'accepted_ip' => 'string'] as $c => $t) {
+
+            foreach (['accept_token' => 'string', 'accepted_at' => 'ts', 'accepted_ip' => 'string', 'signed_name' => 'string'] as $c => $t) {
                 if (! Schema::hasColumn('letters', $c)) {
                     Schema::table('letters', function (Blueprint $b) use ($c, $t) {
                         $t === 'ts' ? $b->timestamp($c)->nullable() : $b->string($c)->nullable();
@@ -321,19 +355,32 @@ class LetterController extends Controller
             $token = $letter->accept_token ?: \Illuminate\Support\Str::random(40);
             DB::table('letters')->where('id', $id)->update(['accept_token' => $token, 'updated_at' => now()]);
             $company = DB::table('companies')->where('id', $letter->company_id)->value('name');
-            $url = url('/offer/'.$token);
 
-            \App\Services\MailService::queue([
-                'tenant_id' => $letter->tenant_id, 'company_id' => $letter->company_id,
-                'to' => $to, 'to_name' => $letter->candidate,
-                'subject' => 'Your offer from '.($company ?: 'us'),
-                'heading' => 'You have an offer!',
-                'intro' => 'Dear '.$letter->candidate.', '.($company ?: 'We').' is pleased to extend an offer to you. Please review the details and confirm your acceptance using the button below.',
-                'cta_label' => 'View & Accept Offer', 'cta_url' => $url,
-                'kind' => 'offer.link',
-            ]);
+            if ($isNda) {
+                $url = url('/nda/'.$token);
+                \App\Services\MailService::queue([
+                    'tenant_id' => $letter->tenant_id, 'company_id' => $letter->company_id,
+                    'to' => $to, 'to_name' => $toName,
+                    'subject' => 'Confidentiality undertaking to e-sign — '.($company ?: 'SmartPRS'),
+                    'heading' => 'Please review & e-sign',
+                    'intro' => 'Dear '.$toName.', please review the confidentiality / non-disclosure undertaking for '.($company ?: 'your engagement').' and confirm your e-signature using the button below.',
+                    'cta_label' => 'Review & e-sign', 'cta_url' => $url,
+                    'kind' => 'nda.link',
+                ]);
+            } else {
+                $url = url('/offer/'.$token);
+                \App\Services\MailService::queue([
+                    'tenant_id' => $letter->tenant_id, 'company_id' => $letter->company_id,
+                    'to' => $to, 'to_name' => $toName,
+                    'subject' => 'Your offer from '.($company ?: 'us'),
+                    'heading' => 'You have an offer!',
+                    'intro' => 'Dear '.$toName.', '.($company ?: 'We').' is pleased to extend an offer to you. Please review the details and confirm your acceptance using the button below.',
+                    'cta_label' => 'View & Accept Offer', 'cta_url' => $url,
+                    'kind' => 'offer.link',
+                ]);
+            }
 
-            return response()->json(['ok' => true, 'message' => 'Acceptance link emailed to '.$to.'.', 'link' => $url]);
+            return response()->json(['ok' => true, 'message' => 'Link emailed to '.$to.'.', 'link' => $url]);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
         }

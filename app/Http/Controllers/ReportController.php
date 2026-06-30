@@ -26,6 +26,12 @@ class ReportController extends Controller
             'payslips' => ['label' => 'Payslips', 'month' => true],
             'leaves' => ['label' => 'Leave records', 'month' => true],
             'attendance' => ['label' => 'Attendance punches', 'month' => true],
+            'min-wage-check' => ['label' => 'Minimum-wage check (D1)', 'month' => false],
+            'reg-wage' => ['label' => 'Wage register — Form B (D7)', 'month' => true],
+            'reg-muster' => ['label' => 'Muster roll — Form D (D7)', 'month' => true],
+            'reg-deductions' => ['label' => 'Deduction register — Form E (D7)', 'month' => true],
+            'bank-advice' => ['label' => 'Bank advice / NEFT (D8)', 'month' => true],
+            'fnf' => ['label' => 'Full & final settlement (D9)', 'month' => false],
         ];
     }
 
@@ -120,6 +126,161 @@ class ReportController extends Controller
 
             return ['columns' => $cols, 'rows' => $rows, 'count' => $count];
         }
+
+        // D1 — minimum-wage check: monthly gross (CTC/12) vs the configured minimum.
+        if ($dataset === 'min-wage-check') {
+            $cols = ['Code', 'Name', 'Company', 'Monthly Gross', 'Min Wage', 'Shortfall', 'Status'];
+            $min = 0.0;
+            if (Schema::hasTable('min_wages')) {
+                $min = (float) DB::table('min_wages')->when($tid, fn ($x) => $x->where('tenant_id', $tid))->max('monthly_min');
+            }
+            $q = DB::table('employees as e')->leftJoin('companies as c', 'c.id', '=', 'e.company_id')
+                ->when($tid, fn ($x) => $x->where('e.tenant_id', $tid))
+                ->when($companyId, fn ($x) => $x->where('e.company_id', $companyId))
+                ->whereNull('e.deleted_at')->orderBy('e.emp_code');
+            $count = (clone $q)->count();
+            $rows = $q->when($limit, fn ($x) => $x->limit($limit))->get(['e.emp_code', 'e.name', 'c.name as company', 'e.ctc'])
+                ->map(function ($r) use ($min) {
+                    $g = round(((float) $r->ctc) / 12, 2);
+                    $short = $min > 0 ? round(max(0, $min - $g), 2) : 0;
+
+                    return ['Code' => $r->emp_code, 'Name' => $r->name, 'Company' => $r->company, 'Monthly Gross' => $g,
+                        'Min Wage' => $min, 'Shortfall' => $short, 'Status' => ($min <= 0 ? 'No min set' : ($g >= $min ? 'OK' : 'BELOW MIN'))];
+                })->all();
+
+            return ['columns' => $cols, 'rows' => $rows, 'count' => $count];
+        }
+
+        // D7 — Wage register (Form B): per-payslip earnings/deductions for the month.
+        if ($dataset === 'reg-wage') {
+            $cols = ['Month', 'Code', 'Name', 'Gross', 'PF', 'ESI', 'PT', 'TDS', 'Total Deductions', 'Net'];
+            $hasDed = Schema::hasColumn('payslips', 'deductions');
+            $q = DB::table('payslips as p')->join('employees as e', 'e.id', '=', 'p.employee_id')
+                ->when($tid, fn ($x) => $x->where('p.tenant_id', $tid))
+                ->when($companyId, fn ($x) => $x->where('p.company_id', $companyId))
+                ->when($month, fn ($x) => $x->where('p.month', $month))->orderBy('e.emp_code');
+            $count = (clone $q)->count();
+            $sel = ['p.month', 'e.emp_code', 'e.name', 'p.gross', 'p.total_ded', 'p.net'];
+            if ($hasDed) {
+                $sel[] = 'p.deductions';
+            }
+            $rows = $q->when($limit, fn ($x) => $x->limit($limit))->get($sel)->map(function ($r) use ($hasDed) {
+                $d = ['PF' => '', 'ESI' => '', 'PT' => '', 'TDS' => ''];
+                if ($hasDed && ! empty($r->deductions)) {
+                    $j = json_decode($r->deductions, true);
+                    if (is_array($j)) {
+                        foreach ($j as $k => $v) {
+                            $kl = strtolower((string) $k);
+                            if (str_contains($kl, 'provident') || str_contains($kl, 'pf')) {
+                                $d['PF'] = $v;
+                            } elseif (str_contains($kl, 'esi')) {
+                                $d['ESI'] = $v;
+                            } elseif (str_contains($kl, 'professional') || $kl === 'pt') {
+                                $d['PT'] = $v;
+                            } elseif (str_contains($kl, 'tds')) {
+                                $d['TDS'] = $v;
+                            }
+                        }
+                    }
+                }
+
+                return ['Month' => $r->month, 'Code' => $r->emp_code, 'Name' => $r->name, 'Gross' => (float) $r->gross,
+                    'PF' => $d['PF'], 'ESI' => $d['ESI'], 'PT' => $d['PT'], 'TDS' => $d['TDS'],
+                    'Total Deductions' => (float) $r->total_ded, 'Net' => (float) $r->net];
+            })->all();
+
+            return ['columns' => $cols, 'rows' => $rows, 'count' => $count];
+        }
+
+        // D7 — Muster roll (Form D): present-day count per agent for the month.
+        if ($dataset === 'reg-muster') {
+            $cols = ['Code', 'Name', 'Present Days'];
+            if (! Schema::hasTable('attendance_logs')) {
+                return ['columns' => $cols, 'rows' => [], 'count' => 0];
+            }
+            $q = DB::table('attendance_logs as a')
+                ->when($tid, fn ($x) => $x->where('a.tenant_id', $tid))
+                ->when($companyId, fn ($x) => $x->where('a.company_id', $companyId))
+                ->when($month, fn ($x) => $x->whereBetween('a.log_date', [$month.'-01', $end]));
+            $rows = (clone $q)->select('a.emp_code', 'a.emp_name', DB::raw('COUNT(DISTINCT a.log_date) as present_days'))
+                ->groupBy('a.emp_code', 'a.emp_name')->orderBy('a.emp_code')->get()
+                ->map(fn ($r) => ['Code' => $r->emp_code, 'Name' => $r->emp_name, 'Present Days' => (int) $r->present_days])->all();
+
+            return ['columns' => $cols, 'rows' => $rows, 'count' => count($rows)];
+        }
+
+        // D7 — Deduction register (Form E): fines / recoveries / statutory deductions.
+        if ($dataset === 'reg-deductions') {
+            $cols = ['Code', 'Name', 'Type', 'Amount', 'Status'];
+            if (! Schema::hasTable('deductions')) {
+                return ['columns' => $cols, 'rows' => [], 'count' => 0];
+            }
+            $q = DB::table('deductions as d')->leftJoin('employees as e', 'e.id', '=', 'd.employee_id')
+                ->when($tid, fn ($x) => $x->where('d.tenant_id', $tid))
+                ->when($companyId, fn ($x) => $x->where('d.company_id', $companyId));
+            if ($month && Schema::hasColumn('deductions', 'cycle_month')) {
+                $q->where('d.cycle_month', $month);
+            } elseif ($month && Schema::hasColumn('deductions', 'created_at')) {
+                $q->whereBetween('d.created_at', [$month.'-01 00:00:00', $end.' 23:59:59']);
+            }
+            $count = (clone $q)->count();
+            $rows = $q->when($limit, fn ($x) => $x->limit($limit))->orderByDesc('d.id')
+                ->get(['e.emp_code', 'e.name', 'd.type', 'd.amount', 'd.status'])
+                ->map(fn ($r) => ['Code' => $r->emp_code, 'Name' => $r->name, 'Type' => $r->type, 'Amount' => (float) $r->amount, 'Status' => $r->status])->all();
+
+            return ['columns' => $cols, 'rows' => $rows, 'count' => $count];
+        }
+
+        // D8 — Bank advice / NEFT: net payable per agent with bank account + IFSC.
+        if ($dataset === 'bank-advice') {
+            $cols = ['Code', 'Name', 'Bank A/C', 'IFSC', 'Net Amount', 'Mode'];
+            $q = DB::table('payslips as p')->join('employees as e', 'e.id', '=', 'p.employee_id')
+                ->when($tid, fn ($x) => $x->where('p.tenant_id', $tid))
+                ->when($companyId, fn ($x) => $x->where('p.company_id', $companyId))
+                ->when($month, fn ($x) => $x->where('p.month', $month))->orderBy('e.emp_code');
+            $count = (clone $q)->count();
+            $rows = $q->when($limit, fn ($x) => $x->limit($limit))->get(['e.emp_code', 'e.name', 'e.bank_acc', 'e.ifsc', 'p.net'])
+                ->map(fn ($r) => ['Code' => $r->emp_code, 'Name' => $r->name, 'Bank A/C' => $r->bank_acc, 'IFSC' => $r->ifsc, 'Net Amount' => (float) $r->net, 'Mode' => 'NEFT'])->all();
+
+            return ['columns' => $cols, 'rows' => $rows, 'count' => $count];
+        }
+
+        // D9 — Full & final settlement: prorated final salary + gratuity − advances − dues.
+        if ($dataset === 'fnf') {
+            $cols = ['Code', 'Name', 'Last Day', 'Final Month Salary', 'Gratuity', 'Advances Recovered', 'Dues', 'FnF Payable'];
+            if (! Schema::hasTable('exits')) {
+                return ['columns' => $cols, 'rows' => [], 'count' => 0];
+            }
+            $q = DB::table('exits as x')->join('employees as e', 'e.id', '=', 'x.employee_id')
+                ->when($tid, fn ($z) => $z->where('x.tenant_id', $tid))
+                ->when($companyId, fn ($z) => $z->where('x.company_id', $companyId))->orderByDesc('x.id');
+            $count = (clone $q)->count();
+            $rows = $q->when($limit, fn ($z) => $z->limit($limit))
+                ->get(['e.emp_code', 'e.name', 'e.ctc', 'e.doj', 'x.last_day', 'x.advances_recovered', 'x.dues'])
+                ->map(function ($r) {
+                    $monthly = round(((float) $r->ctc) / 12, 2);
+                    $basic = round($monthly * 0.5, 2);
+                    $grat = 0.0;
+                    if ($r->doj && $r->last_day) {
+                        try {
+                            $yrs = Carbon::parse($r->doj)->diffInYears(Carbon::parse($r->last_day));
+                            if ($yrs >= 5) {
+                                $grat = round(15 / 26 * $basic * $yrs, 2);
+                            }
+                        } catch (\Throwable $e) {
+                        }
+                    }
+                    $adv = (float) ($r->advances_recovered ?? 0);
+                    $dues = (float) ($r->dues ?? 0);
+
+                    return ['Code' => $r->emp_code, 'Name' => $r->name, 'Last Day' => $r->last_day,
+                        'Final Month Salary' => $monthly, 'Gratuity' => $grat, 'Advances Recovered' => $adv,
+                        'Dues' => $dues, 'FnF Payable' => round($monthly + $grat - $adv - $dues, 2)];
+                })->all();
+
+            return ['columns' => $cols, 'rows' => $rows, 'count' => $count];
+        }
+
 
         return ['columns' => [], 'rows' => [], 'count' => 0];
     }

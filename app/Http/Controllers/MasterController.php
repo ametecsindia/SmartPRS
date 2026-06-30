@@ -178,8 +178,12 @@ class MasterController extends Controller
             ],
             'bgv' => [
                 'table' => 'bgv',
-                'cols' => ['employee' => 'string', 'company_name' => 'string', 'agency' => 'string', 'checks' => 'string', 'status' => 'string', 'completed_on' => 'date'],
-                'fields' => ['employee', 'company_name', 'agency', 'checks', 'status', 'completed_on'],
+                'cols' => ['employee' => 'string', 'company_name' => 'string', 'agency' => 'string', 'checks' => 'string',
+                    'chk_identity' => 'string', 'chk_address' => 'string', 'chk_education' => 'string', 'chk_employment' => 'string', 'chk_criminal' => 'string', 'chk_references' => 'string',
+                    'status' => 'string', 'completed_on' => 'date', 'verified_on' => 'date', 'revalidate_months' => 'int', 'next_due' => 'date'],
+                'fields' => ['employee', 'company_name', 'agency',
+                    'chk_identity', 'chk_address', 'chk_education', 'chk_employment', 'chk_criminal', 'chk_references',
+                    'status', 'verified_on', 'revalidate_months', 'next_due'],
                 'label' => 'BGV Case', 'order' => 'id', 'required' => ['employee', 'company_name'],
                 'emp_map' => ['employee' => 'employee_id'],
             ],
@@ -280,11 +284,24 @@ class MasterController extends Controller
                 'label' => 'Agent Authorization', 'order' => 'id', 'required' => ['employee', 'company_name'],
                 'emp_map' => ['employee' => 'employee_id'],
             ],
+            'dra-certs' => [
+                'table' => 'dra_certs',
+                'cols' => ['employee' => 'string', 'company_name' => 'string', 'cert_no' => 'string', 'institute' => 'string', 'track' => 'string', 'issue_date' => 'date', 'expiry' => 'date', 'status' => 'string'],
+                'fields' => ['employee', 'company_name', 'cert_no', 'institute', 'track', 'issue_date', 'expiry', 'status'],
+                'label' => 'DRA Certification', 'order' => 'id', 'required' => ['employee'],
+                'emp_map' => ['employee' => 'employee_id'],
+            ],
             'messages' => [
                 'table' => 'messages_log',
                 'cols' => ['target' => 'string', 'company_name' => 'string', 'channels' => 'string', 'message' => 'string', 'recipients' => 'int', 'sent_at' => 'date'],
                 'fields' => ['target', 'company_name', 'channels', 'message', 'recipients', 'sent_at'],
                 'label' => 'Message', 'order' => 'id', 'required' => ['message'],
+            ],
+            'min-wages' => [
+                'table' => 'min_wages',
+                'cols' => ['state' => 'string', 'zone' => 'string', 'category' => 'string', 'monthly_min' => 'decimal', 'effective_from' => 'date', 'status' => 'string'],
+                'fields' => ['state', 'zone', 'category', 'monthly_min', 'effective_from', 'status'],
+                'label' => 'Minimum Wage', 'order' => 'id', 'required' => ['monthly_min'],
             ],
             'companies' => [
                 'table' => 'companies',
@@ -630,6 +647,17 @@ class MasterController extends Controller
             // each value to its declared column type (bool/decimal/int/date).
             $row = $this->buildRow($def, $table, $tid, $input);
 
+            // C3 — BGV re-verification scheduler: derive the next-due date from the
+            // verification date + the configured periodicity (months).
+            if ($type === 'bgv' && ! empty($row['verified_on']) && ! empty($row['revalidate_months'])) {
+                try {
+                    $row['next_due'] = \Illuminate\Support\Carbon::parse($row['verified_on'])
+                        ->addMonths((int) $row['revalidate_months'])->toDateString();
+                } catch (\Throwable $e) {
+                    // leave any manually-entered next_due as-is on a parse error
+                }
+            }
+
             $id = $input['id'] ?? null;
             if ($id) {
                 DB::table($table)->where('id', $id)
@@ -655,10 +683,60 @@ class MasterController extends Controller
                 DB::table($table)->insert($row);
             }
 
+            // B2 — DRA eligibility gate (warn + allow). When an agent is assigned to a
+            // bank / portfolio without a valid DRA certificate, allow the save but
+            // surface a warning and record an override note in the audit log.
+            if ($type === 'agent-auth' && ! empty($row['employee_id'])) {
+                $warn = $this->draGateWarning((int) $row['employee_id'], $tid, $request);
+                if ($warn) {
+                    return response()->json(['ok' => true, 'warning' => $warn]);
+                }
+            }
+
             return response()->json(['ok' => true]);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
         }
+    }
+
+    /**
+     * B2 DRA eligibility gate. Returns null when the agent holds a valid DRA
+     * certificate (status = verified and not past expiry); otherwise records an
+     * override audit note and returns a warning string for the UI.
+     */
+    private function draGateWarning(int $employeeId, $tid, Request $request): ?string
+    {
+        $valid = false;
+        if (Schema::hasTable('dra_certs')) {
+            $today = now()->toDateString();
+            $valid = DB::table('dra_certs')->where('employee_id', $employeeId)
+                ->where('status', 'verified')
+                ->where(function ($q) use ($today) {
+                    $q->whereNull('expiry')->orWhere('expiry', '>=', $today);
+                })->exists();
+        }
+        if ($valid) {
+            return null;
+        }
+        $name = DB::table('employees')->where('id', $employeeId)->value('name') ?: ('Agent #'.$employeeId);
+        try {
+            if (Schema::hasTable('activity_logs')) {
+                DB::table('activity_logs')->insert([
+                    'tenant_id' => $tid,
+                    'user_id' => optional($request->user())->id,
+                    'action' => 'dra_override',
+                    'entity' => 'agent_authorizations',
+                    'entity_id' => $employeeId,
+                    'detail' => json_encode(['note' => 'Bank/portfolio authorisation saved without a valid DRA certificate', 'employee' => $name]),
+                    'ip' => $request->ip(),
+                    'created_at' => now(),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // audit logging is best-effort; never block the save on it
+        }
+
+        return $name.' has no valid DRA certificate — the authorisation was saved and the override recorded in the audit log. Please add or renew the DRA under Field Force → DRA Certifications.';
     }
 
     /** Build a schema-safe, type-coerced DB row from a master screen's input (shared by save + import). */
