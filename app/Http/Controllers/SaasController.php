@@ -437,6 +437,33 @@ class SaasController extends Controller
         }
     }
 
+    public function deletePlan(Request $request)
+    {
+        try {
+            $this->guard($request);
+            $id = (int) $request->input('id');
+            if (! $id) {
+                return response()->json(['ok' => false, 'error' => 'Plan id is required.'], 422);
+            }
+            // Referential safety: never orphan a tenant or subscription that points at this plan.
+            $inUse = 0;
+            if (\Illuminate\Support\Facades\Schema::hasTable('tenants') && \Illuminate\Support\Facades\Schema::hasColumn('tenants', 'plan_id')) {
+                $inUse += DB::table('tenants')->where('plan_id', $id)->count();
+            }
+            if (\Illuminate\Support\Facades\Schema::hasTable('subscriptions') && \Illuminate\Support\Facades\Schema::hasColumn('subscriptions', 'plan_id')) {
+                $inUse += DB::table('subscriptions')->where('plan_id', $id)->count();
+            }
+            if ($inUse > 0) {
+                return response()->json(['ok' => false, 'error' => 'This plan is still assigned to ' . $inUse . ' tenant/subscription(s). Reassign or cancel those first, or set the plan inactive instead of deleting.'], 422);
+            }
+            DB::table('plans')->where('id', $id)->delete();
+
+            return response()->json(['ok' => true]);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
+        }
+    }
+
     // ============================================================ helpers ===
 
     /**

@@ -314,6 +314,7 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/saas/tenants/{id}/plan', [App\Http\Controllers\SaasController::class, 'tenantPlan'])->name('app.saas.tenants.plan');
     Route::get('/app/saas/plans', [App\Http\Controllers\SaasController::class, 'plans'])->name('app.saas.plans');
     Route::post('/app/saas/plans', [App\Http\Controllers\SaasController::class, 'savePlan'])->name('app.saas.plans.save');
+    Route::post('/app/saas/plans/delete', [App\Http\Controllers\SaasController::class, 'deletePlan'])->name('app.saas.plans.delete');
     // SaaS billing (super admin): subscriptions, invoices, payments, gateways + Razorpay test mode.
     Route::get('/app/billing/subscriptions', [App\Http\Controllers\BillingController::class, 'subscriptions'])->name('app.billing.subs');
     Route::post('/app/billing/subscriptions', [App\Http\Controllers\BillingController::class, 'saveSubscription'])->name('app.billing.subs.save');

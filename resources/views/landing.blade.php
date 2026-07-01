@@ -124,6 +124,23 @@
         .plan li{padding:8px 0;font-size:14.5px;color:var(--text2);display:flex;gap:10px;align-items:flex-start;}
         .plan li i{color:var(--green);margin-top:3px;font-size:13px;}
 
+        /* on-premise perpetual-licence band (under pricing) */
+        .onprem{margin-top:28px;background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;border-radius:14px;padding:clamp(24px,3.4vw,34px) clamp(22px,3.6vw,42px);display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:26px;box-shadow:0 22px 50px rgba(10,22,40,.20);position:relative;overflow:hidden;border:1px solid rgba(255,255,255,.06);}
+        .onprem::after{content:'';position:absolute;right:-70px;top:-70px;width:240px;height:240px;background:radial-gradient(circle,rgba(249,115,22,.20),transparent 70%);pointer-events:none;}
+        .onprem .op-l{display:flex;align-items:center;gap:18px;flex:1;min-width:min(100%,440px);position:relative;z-index:1;}
+        .onprem .op-ic{flex-shrink:0;width:58px;height:58px;border-radius:15px;background:linear-gradient(135deg,var(--accent),#ea580c);display:flex;align-items:center;justify-content:center;font-size:25px;color:#fff;box-shadow:0 10px 26px rgba(249,115,22,.40);}
+        .onprem .op-l .eyebrow{color:var(--accent2);margin-bottom:3px;}
+        .onprem h3{font-size:clamp(19px,2.2vw,23px);color:#fff;margin:2px 0 6px;line-height:1.22;}
+        .onprem p{color:rgba(255,255,255,.74);font-size:14.5px;max-width:540px;margin:0;}
+        .onprem .op-r{display:flex;flex-direction:column;align-items:flex-end;gap:13px;position:relative;z-index:1;}
+        .onprem .op-chips{display:flex;flex-wrap:wrap;gap:11px;justify-content:flex-end;}
+        .onprem .op-btn{display:inline-flex;align-items:center;gap:8px;background:#fff;color:var(--navy);font-weight:700;font-size:13.5px;padding:11px 20px;border-radius:10px;transition:.18s;white-space:nowrap;}
+        .onprem .op-btn:hover{background:var(--accent);color:#fff;transform:translateY(-1px);box-shadow:0 8px 20px rgba(249,115,22,.35);}
+        .onprem .op-btn i{font-size:11px;}
+        .onprem .ver{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.17);border-radius:10px;padding:11px 17px;font-weight:700;font-size:14px;color:#fff;display:flex;align-items:center;gap:9px;white-space:nowrap;}
+        .onprem .ver i{color:var(--accent2);font-size:13px;}
+        @media(max-width:760px){.onprem{flex-direction:column;align-items:flex-start;}.onprem .op-r{width:100%;align-items:flex-start;}.onprem .op-chips{justify-content:flex-start;}}
+
         /* testimonials */
         .quotes{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;}
         .quote{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:28px;}
@@ -366,6 +383,24 @@
                     </div>
                 @endforeach
             </div>
+            <div class="onprem">
+                <div class="op-l">
+                    <div class="op-ic"><i class="fas fa-server"></i></div>
+                    <div>
+                        <div class="eyebrow">On-premise &middot; Perpetual licence</div>
+                        <h3>Prefer to own it outright? Run SmartPRS on your own server.</h3>
+                        <p>A lifetime perpetual licence installed on your own infrastructure &mdash; in your office, your data, no monthly fees. Available in three editions:</p>
+                    </div>
+                </div>
+                <div class="op-r">
+                    <div class="op-chips">
+                        <span class="ver"><i class="fas fa-cube"></i> Basic</span>
+                        <span class="ver"><i class="fas fa-layer-group"></i> Advance</span>
+                        <span class="ver"><i class="fas fa-dna"></i> Collection DNA</span>
+                    </div>
+                    <a href="#contact" class="op-btn">Talk to sales <i class="fas fa-arrow-right"></i></a>
+                </div>
+            </div>
         </div>
     </section>
 
@@ -507,89 +542,75 @@
             // rev 91b (Ejaz): the WhatsApp button must CARRY the filled form details
             // into the chat, not just a fixed greeting. It also quietly saves the
             // lead to the database when the required fields are complete.
-            function spLeadWa(a) {
-                try {
-                    var f = document.getElementById('leadForm');
-                    var d = {};
-                    new FormData(f).forEach(function (v, k) { d[k] = String(v || '').trim(); });
-                    var lines = ['Hi! I would like a SmartPRS demo for my company.'];
-                    if (d.name) lines.push('Name: ' + d.name + (d.designation ? ' (' + d.designation + ')' : ''));
-                    if (d.company) lines.push('Company: ' + d.company);
-                    if (d.city) lines.push('City: ' + d.city);
-                    if (d.mobile) lines.push('Mobile: ' + d.mobile);
-                    if (d.email) lines.push('Email: ' + d.email);
-                    if (d.employees) lines.push('Employees: ' + d.employees);
-                    if (d.challenges) lines.push('Challenges: ' + d.challenges);
-                    var base = a.href.split('?')[0];
-                    var url = base + '?text=' + encodeURIComponent(lines.join('\n'));
-                    // Best-effort: also record the lead (once) when the form is complete.
-                    if (!window.__leadSaved && d.name && d.company && d.city && d.mobile && d.email) {
-                        window.__leadSaved = true;
-                        fetch('{{ route('lead.store') }}', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}', 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
-                            body: JSON.stringify(d)
-                        }).catch(function () {});
-                    }
-                    window.open(url, '_blank', 'noopener');
-                    return false;   // we opened it ourselves with the composed text
-                } catch (e) {
-                    return true;    // fall back to the plain href
-                }
+            var SP_WA = '{{ preg_replace('/\D+/', '', $c['contact']['whatsapp'] ?? '') }}';
+            function spLeadCollect(){
+                var f=document.getElementById('leadForm'), d={};
+                new FormData(f).forEach(function(v,k){ d[k]=String(v||'').trim(); });
+                return d;
             }
-            function spLeadSubmit(ev) {
-                ev.preventDefault();
-                var f = document.getElementById('leadForm');
-                var btn = document.getElementById('leadBtn');
-                var msg = document.getElementById('leadMsg');
-                // rev 118: validate the required fields IN THE BROWSER first, so the
-                // visitor is told exactly what is missing before anything is sent.
-                var required = { name: 'Full Name', company: 'Company Name', city: 'City / Location', mobile: 'Mobile Number', email: 'Official Email ID' };
-                var data = {};
-                new FormData(f).forEach(function (v, k) { data[k] = (v || '').toString().trim(); });
-                var ok9 = 'background:#dcfce7;color:#166534;border:1px solid #bbf7d0;';
-                var bad9 = 'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;';
-                var base9 = 'display:block;margin-top:14px;padding:12px 14px;border-radius:10px;font-size:14px;';
-                var miss = [];
-                Object.keys(required).forEach(function (k) { if (!data[k]) { miss.push(required[k]); } });
-                if (data.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(data.email)) { miss.push('a valid email'); }
-                if (data.mobile && data.mobile.replace(/\D/g, '').length < 10) { miss.push('a 10-digit mobile'); }
-                if (miss.length) {
-                    msg.style.cssText = base9 + bad9;
-                    msg.innerHTML = '<i class="fas fa-circle-exclamation"></i> Please add: ' + miss.join(', ') + '.';
+            function spLeadValidate(d){
+                var required={name:'Full Name',company:'Company Name',city:'City / Location',mobile:'Mobile Number',email:'Official Email ID'};
+                var miss=[];
+                Object.keys(required).forEach(function(k){ if(!d[k]) miss.push(required[k]); });
+                if(d.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.email)) miss.push('a valid email');
+                if(d.mobile && d.mobile.replace(/\D/g,'').length<10) miss.push('a 10-digit mobile');
+                return miss;
+            }
+            function spLeadMsg(html,bad){
+                var msg=document.getElementById('leadMsg');
+                var base='display:block;margin-top:14px;padding:12px 14px;border-radius:10px;font-size:14px;';
+                msg.style.cssText=base+(bad?'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;':'background:#dcfce7;color:#166534;border:1px solid #bbf7d0;');
+                msg.innerHTML=html;
+            }
+            function spLeadWaUrl(d){
+                var lines=['Hi! I would like a SmartPRS demo for my company.'];
+                if(d.name) lines.push('Name: '+d.name+(d.designation?' ('+d.designation+')':''));
+                if(d.company) lines.push('Company: '+d.company);
+                if(d.city) lines.push('City: '+d.city);
+                if(d.mobile) lines.push('Mobile: '+d.mobile);
+                if(d.email) lines.push('Email: '+d.email);
+                if(d.employees) lines.push('Employees: '+d.employees);
+                if(d.challenges) lines.push('Challenges: '+d.challenges);
+                return 'https://wa.me/'+SP_WA+'?text='+encodeURIComponent(lines.join('\n'));
+            }
+            function spLeadSave(d){
+                if(window.__leadSaved) return;
+                if(!(d.name&&d.company&&d.city&&d.mobile&&d.email)) return;
+                window.__leadSaved=true;
+                fetch('{{ route('lead.store') }}',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-TOKEN':'{{ csrf_token() }}','X-Requested-With':'XMLHttpRequest','Accept':'application/json'},body:JSON.stringify(d)}).catch(function(){});
+            }
+            // WhatsApp button: must carry the FILLED details. If the form is incomplete,
+            // ask the visitor to complete it first (never send just the greeting).
+            function spLeadWa(a){
+                var d=spLeadCollect(), miss=spLeadValidate(d);
+                if(miss.length){
+                    spLeadMsg('<i class="fas fa-circle-exclamation"></i> Please fill your details first so we receive them on WhatsApp \u2014 add: '+miss.join(', ')+'.',true);
+                    var fld=document.querySelector('#leadForm [name="name"]'); if(fld) fld.focus();
                     return false;
                 }
-                btn.disabled = true; btn.style.opacity = '.6';
-                fetch('{{ route('lead.store') }}', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}', 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
-                    body: JSON.stringify(data)
-                }).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; }, function () { return { s: r.status, j: null }; }); })
-                .then(function (res) {
-                    btn.disabled = false; btn.style.opacity = '1';
-                    if (res.s === 200 && res.j && res.j.ok) {
-                        window.__leadSaved = true;   // a later WhatsApp click must not save a duplicate
-                        msg.style.cssText = base9 + ok9;
-                        msg.innerHTML = '<i class="fas fa-circle-check"></i> ' + (res.j.message || 'Thank you! Our team will contact you shortly. ');
-                        f.reset();
-                        return;
-                    }
-                    var errs;
-                    if (res.j && res.j.errors) {
-                        errs = Object.values(res.j.errors).map(function (a) { return a[0]; }).join(' ');
-                    } else if (res.s === 429) {
-                        errs = 'Too many attempts — please wait a minute and try again, or use the WhatsApp button.';
-                    } else if (res.j && res.j.message) {
-                        errs = res.j.message;
-                    } else {
-                        errs = 'Could not submit just now — please tap “Chat on WhatsApp” and we will set up your demo right away.';
-                    }
-                    msg.style.cssText = base9 + bad9;
-                    msg.innerHTML = '<i class="fas fa-circle-exclamation"></i> ' + errs;
-                }).catch(function () {
-                    btn.disabled = false; btn.style.opacity = '1';
-                    msg.style.cssText = base9 + bad9;
-                    msg.innerHTML = '<i class="fas fa-circle-exclamation"></i> Could not submit right now — please use the WhatsApp button and we will help you immediately.';
+                window.open(spLeadWaUrl(d),'_blank','noopener');
+                spLeadSave(d);
+                spLeadMsg('<i class="fab fa-whatsapp"></i> Opening WhatsApp with your details \u2014 tap Send and our team will reply shortly.',false);
+                return false;
+            }
+            // Primary submit: open WhatsApp with the complete details (synchronously, so it
+            // is not popup-blocked) AND record the lead in the database.
+            function spLeadSubmit(ev){
+                ev.preventDefault();
+                var d=spLeadCollect(), miss=spLeadValidate(d);
+                if(miss.length){ spLeadMsg('<i class="fas fa-circle-exclamation"></i> Please add: '+miss.join(', ')+'.',true); return false; }
+                window.open(spLeadWaUrl(d),'_blank','noopener');
+                var btn=document.getElementById('leadBtn'); btn.disabled=true; btn.style.opacity='.6';
+                fetch('{{ route('lead.store') }}',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-TOKEN':'{{ csrf_token() }}','X-Requested-With':'XMLHttpRequest','Accept':'application/json'},body:JSON.stringify(d)})
+                .then(function(r){return r.json().then(function(j){return {s:r.status,j:j};},function(){return {s:r.status,j:null};});})
+                .then(function(res){
+                    btn.disabled=false; btn.style.opacity='1'; window.__leadSaved=true;
+                    var okmsg=(res.j&&res.j.message)||'Thank you! Your details are saved \u2014 tap Send on WhatsApp to confirm and our team will reply.';
+                    spLeadMsg('<i class="fas fa-circle-check"></i> '+okmsg,false);
+                    if(res.s===200&&res.j&&res.j.ok){ document.getElementById('leadForm').reset(); }
+                }).catch(function(){
+                    btn.disabled=false; btn.style.opacity='1';
+                    spLeadMsg('<i class="fab fa-whatsapp"></i> Opening WhatsApp with your details \u2014 tap Send and our team will help you right away.',false);
                 });
                 return false;
             }

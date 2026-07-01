@@ -166,6 +166,7 @@ class AppController extends Controller
             'changePasswordUrl' => url('/app/change-password'),
             'saasTenantsUrl' => url('/app/saas/tenants'),    // SaaS platform: tenant provisioning
             'saasPlansUrl' => url('/app/saas/plans'),
+            'saasPlanDeleteUrl' => url('/app/saas/plans/delete'),
             'screen' => $screen,
             // rev 97: public live demo — start the guided tour (?tour=1) and
             // mark demo-workspace sessions (floating tour button + safety).
@@ -4024,7 +4025,8 @@ CSS;
             + '<label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;padding:3px 0 7px;border-bottom:1px solid var(--border);margin-bottom:6px"><input type="checkbox" id="pl_mod_all" onclick="planToggleAll(this)"' + allOn + ' style="width:15px;height:15px"> Select all modules</label>'
             + modChecks + '</div></div>'
             + '</div>'
-            + '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px">'
+            + '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px;align-items:center">'
+            + (id ? '<button class="btn btn-outline" style="color:#dc2626;border-color:#fecaca;margin-right:auto" onclick="planDelete(' + id + ')"><i class="fas fa-trash"></i> Delete</button>' : '')
             + '<button class="btn btn-outline" onclick="document.getElementById(\'plan-ov\').remove()">Cancel</button>'
             + '<button class="btn btn-primary" onclick="planSave(' + (id || 'null') + ')">Save</button>'
             + '</div></div>';
@@ -4047,6 +4049,16 @@ CSS;
                 if (res.ok && res.j && res.j.ok) { var ov = document.getElementById('plan-ov'); if (ov) { ov.remove(); } if (typeof toast === 'function') { toast('Plan saved'); } plansLoad(); }
                 else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Could not save plan'); }
             }).catch(function () { if (typeof toast === 'function') { toast('Could not save plan'); } });
+    };
+    window.planDelete = function (id) {
+        if (!id) { return; }
+        if (!confirm('Delete this plan permanently? This cannot be undone.')) { return; }
+        fetch(cfg.saasPlanDeleteUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ id: id }) })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+            .then(function (res) {
+                if (res.ok && res.j && res.j.ok) { var ov = document.getElementById('plan-ov'); if (ov) { ov.remove(); } if (typeof toast === 'function') { toast('Plan deleted'); } plansLoad(); }
+                else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Could not delete plan'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Could not delete plan'); } });
     };
     // ---- Field-force compliance: DRA / PCC expiry alerts ---------------------
     window.__COMPLIANCE = null;
