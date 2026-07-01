@@ -422,8 +422,20 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/tests/{id}/submit', [App\Http\Controllers\TestController::class, 'submit'])->whereNumber('id')->name('app.tests.submit');
     // Biometric device: in-app sync (pull punches into attendance_logs).
     Route::post('/app/device/{id}/sync', [App\Http\Controllers\DeviceController::class, 'syncById'])->whereNumber('id')->name('app.device.sync');
+    // rev157: Biometric Device Setup — frontend-managed cloud-attendance API config (eTimeOffice).
+    Route::get('/app/biometric-config', [App\Http\Controllers\BiometricConfigController::class, 'show'])->name('app.bioconfig');
+    Route::post('/app/biometric-config', [App\Http\Controllers\BiometricConfigController::class, 'save'])->name('app.bioconfig.save');
+    Route::post('/app/biometric-config/test', [App\Http\Controllers\BiometricConfigController::class, 'test'])->name('app.bioconfig.test');
+    Route::post('/app/biometric-config/sync', [App\Http\Controllers\BiometricConfigController::class, 'sync'])->name('app.bioconfig.sync');
+    // rev161: Employee Document Tracker — real file uploads (list / upload / download / delete).
+    Route::get('/app/documents-mgr', [App\Http\Controllers\DocumentController::class, 'index'])->name('app.docmgr');
+    Route::post('/app/documents-mgr/upload', [App\Http\Controllers\DocumentController::class, 'upload'])->name('app.docmgr.upload');
+    Route::get('/app/documents-mgr/{id}/download', [App\Http\Controllers\DocumentController::class, 'download'])->whereNumber('id')->name('app.docmgr.download');
+    Route::post('/app/documents-mgr/{id}/delete', [App\Http\Controllers\DocumentController::class, 'destroy'])->whereNumber('id')->name('app.docmgr.delete');
+    Route::post('/app/documents-mgr/employee/{emp}/delete-all', [App\Http\Controllers\DocumentController::class, 'destroyForEmployee'])->whereNumber('emp')->name('app.docmgr.delemp');
     // Employee Self-Service snapshot (own profile/payslips/attendance/leave/notices).
     Route::get('/app/ess/me', [App\Http\Controllers\EssController::class, 'me'])->name('app.ess.me');
+    Route::post('/app/ess/update', [App\Http\Controllers\EssController::class, 'updateProfile'])->name('app.ess.update');
     // Onboarding checklist workflow.
     Route::get('/app/onboarding/board', [App\Http\Controllers\OnboardingController::class, 'board'])->name('app.onboarding.board');
     Route::post('/app/onboarding/item/{id}/toggle', [App\Http\Controllers\OnboardingController::class, 'toggle'])->whereNumber('id')->name('app.onboarding.toggle');

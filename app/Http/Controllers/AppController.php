@@ -124,6 +124,7 @@ class AppController extends Controller
             'mobileDevBase' => url('/app/mobile-devices'),  // rev 119: + /list, /{id}/approve|reject|revoke
             'masterBase' => url('/app/master'),       // + /{type}, /{type}/{id}/delete
             'cocUrl' => url('/app/code-of-conduct'),   // Code of Conduct read + acknowledge (+ /ack)
+            'docBase' => url('/app/documents-mgr'),   // rev161: Documents — list (+?q=), /upload, /{id}/download, /{id}/delete
             'incentiveBase' => url('/app/incentive'),   // commission/incentive calc: /template /calculate /commit
             'finYearBase' => url('/app/fin-year'),       // financial year: GET + /set
             'mySubBase' => url('/app/my-subscription'),   // tenant self-serve billing: GET + /quote /renew/order /renew/complete
@@ -153,6 +154,7 @@ class AppController extends Controller
             'performanceBase' => url('/app/performance'),           // performance review workflow
             'myPhotoUrl' => url('/app/my-photo'),                   // self-service employee photo
             'essMeUrl' => url('/app/ess/me'),                       // employee self-service snapshot
+            'essUpdateUrl' => url('/app/ess/update'),               // rev162: employee self-edit personal details
             'deviceBase' => url('/app/device'),                     // biometric device in-app sync
             'recruitmentBase' => url('/app/recruitment'),          // ATS pipeline
             'offrollAgentBase' => url('/app/offroll-agent'),        // off-roll agent KYC
@@ -1499,6 +1501,7 @@ CSS;
             if (id === 'pay-ledger') { return payLedgerScreen(); }
             if (id === 'wa-templates') { return waTplScreen(); }
             if (id === 'sys-updates') { return sysUpdatesScreen(); }
+            if (id === 'documents') { return documentsScreen(); }
             if (MASTER_MAP[id]) { return masterScreen(id); }
             if (id === 'payslip') { return payslipHistoryScreen(); }
             if (id === 'kb') { return kbScreen(); }
@@ -3806,11 +3809,45 @@ CSS;
         var no = (d.notices && d.notices.length) ? d.notices.map(function (n) {
             return '<div style="padding:6px 0;border-top:1px solid var(--border)"><div style="font-weight:600;font-size:13px">' + te(n.title) + (n.date ? ' <span style="color:var(--text3);font-size:11px;font-weight:400">' + String(n.date).slice(0, 10) + '</span>' : '') + '</div>' + (n.body ? '<div style="font-size:12px;color:var(--text2)">' + te(n.body) + '</div>' : '') + '</div>';
         }).join('') : '';
-        return '<div style="max-width:760px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px">'
-            + essCard('My profile', prof) + essCard('My attendance', attHtml)
-            + essCard('My recent payslips', pays) + essCard('My recent leave', lv)
+        var bals = d.balances || [];
+        var balHtml = bals.length ? ('<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr>'
+            + ['Type', 'Allocated', 'Used', 'Remaining'].map(function (h) { return '<th style="text-align:left;padding:5px 8px;font-size:11px;text-transform:uppercase;color:var(--text3)">' + h + '</th>'; }).join('')
+            + '</tr></thead><tbody>' + bals.map(function (b) {
+                var rem = (b.remaining == null) ? 'Unlimited' : b.remaining;
+                return '<tr><td style="padding:5px 8px;border-top:1px solid var(--border)">' + te(b.type) + '</td><td style="padding:5px 8px;border-top:1px solid var(--border)">' + (b.allocated || 0) + '</td><td style="padding:5px 8px;border-top:1px solid var(--border)">' + (b.used || 0) + '</td><td style="padding:5px 8px;border-top:1px solid var(--border);font-weight:700;color:var(--accent)">' + rem + '</td></tr>';
+            }).join('') + '</tbody></table>') : '<div style="color:var(--text3);font-size:13px">No leave balance configured.</div>';
+        var editBtn = '<div style="margin-top:12px"><button class="btn btn-outline btn-sm" onclick="essEditOpen()"><i class="fas fa-pen"></i> Edit my details</button></div>';
+        return '<div style="max-width:900px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px">'
+            + essCard('My profile', prof + editBtn) + essCard('My attendance', attHtml)
+            + essCard('My recent payslips', pays) + essCard('My leave balance', balHtml)
+            + essCard('My recent leave', lv)
             + '</div>' + (no ? essCard('Notice board', no) : '') + '</div>';
     }
+    window.essEditOpen = function () {
+        var d = window.__ESS || {}; var p = d.profile || {};
+        var qq = function (s) { return String(s == null ? '' : s).replace(/"/g, '&quot;'); };
+        var f = function (label, id, val, type) { return '<div class="fld2"><label>' + label + '</label><input id="ess_' + id + '" type="' + (type || 'text') + '" value="' + qq(val) + '"></div>'; };
+        var sel = function (label, id, val, opts) { return '<div class="fld2"><label>' + label + '</label><select id="ess_' + id + '"><option value=""></option>' + opts.map(function (o) { return '<option' + (val === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></div>'; };
+        var body = '<div class="fgrid">'
+            + f('Mobile', 'mobile', p.mobile, 'tel') + f('WhatsApp', 'whatsapp', p.whatsapp, 'tel')
+            + f('Email', 'email', p.email, 'email') + f('Date of Birth', 'dob', p.dob, 'date')
+            + sel('Gender', 'gender', p.gender, ['Male', 'Female', 'Other'])
+            + sel('Blood Group', 'blood_group', p.blood_group, ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'])
+            + f("Father's Name", 'father', p.father) + f('Spouse Name', 'spouse', p.spouse)
+            + f('Identification Mark(s)', 'id_marks', p.id_marks)
+            + '<div class="fld2"><label>Address</label><input id="ess_address" value="' + qq(p.address) + '"></div>'
+            + '</div><div style="font-size:12px;color:var(--text3);margin-top:8px">You can update your own contact and personal details. Job, salary and department are managed by HR.</div>';
+        var foot = '<button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-green" onclick="essEditSave()"><i class="fas fa-check"></i> Save</button>';
+        if (typeof openModalHTML === 'function') { openModalHTML('Edit My Details', body, foot, true); }
+    };
+    window.essEditSave = function () {
+        var g = function (id) { var el = document.getElementById('ess_' + id); return el ? el.value : ''; };
+        var payload = { mobile: g('mobile'), whatsapp: g('whatsapp'), email: g('email'), dob: g('dob'), gender: g('gender'), blood_group: g('blood_group'), father: g('father'), spouse: g('spouse'), id_marks: g('id_marks'), address: g('address') };
+        fetch(cfg.essUpdateUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Details updated'); } if (typeof closeModal === 'function') { closeModal(); } window.__ESS = null; essLoad(); } else { if (typeof toast === 'function') { toast((j && j.error) || 'Update failed'); } } })
+            .catch(function () { if (typeof toast === 'function') { toast('Update failed'); } });
+    };
     // ---- Account / My Space: change your own password ------------------------
     function changePasswordScreen() {
         if (!window.__ESS) { setTimeout(essLoad, 10); }
@@ -6717,6 +6754,153 @@ CSS;
             .then(function (j) { window.__COC = j; if (typeof render === 'function') { render(); } })
             .catch(function () { window.__COC = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
     };
+    window.docLoad = function (q) {
+        var u = cfg.docBase + (q ? ('?q=' + encodeURIComponent(q)) : '');
+        fetch(u, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__DOCS = j || { error: 'No data' }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__DOCS = { error: 'Failed to load documents.' }; if (typeof render === 'function') { render(); } });
+    };
+    window.docSearch = function () { var el = document.getElementById('doc-search'); docLoad(el ? el.value : ''); };
+    window.docKey = function (e) { if (e && e.key === 'Enter') { docSearch(); } };
+    window.docClear = function () { var el = document.getElementById('doc-search'); if (el) { el.value = ''; } docSearch(); };
+    window.docDelete = function (id) {
+        if (!confirm('Delete this document? The file will be permanently removed.')) { return; }
+        fetch(cfg.docBase + '/' + id + '/delete', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Deleted'); } window.__DOCS = null; docLoad(''); } else { if (typeof toast === 'function') { toast('Delete failed'); } } })
+            .catch(function () { if (typeof toast === 'function') { toast('Delete failed'); } });
+    };
+    window.docRowTpl = function (cats) {
+        var co = cats.map(function (c) { return '<option value="' + c + '">' + c + '</option>'; }).join('');
+        return '<div class="doc-row" style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px;position:relative">'
+            + '<button type="button" onclick="docRemoveRow(this)" title="Remove" style="position:absolute;top:8px;right:10px;background:none;border:none;color:var(--red);cursor:pointer;font-size:15px"><i class="fas fa-xmark"></i></button>'
+            + '<div class="fgrid">'
+            + '<div class="fld2"><label>Category</label><select class="doc-cat">' + co + '</select></div>'
+            + '<div class="fld2"><label>Document Name (optional)</label><input class="doc-name" placeholder="e.g. 10th Marksheet, Aadhaar"></div>'
+            + '<div class="fld2"><label>Expiry (optional)</label><input class="doc-expiry" type="date"></div>'
+            + '<div class="fld2"><label>File (PDF / image / doc, max 10 MB)</label><input class="doc-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx"></div>'
+            + '</div></div>';
+    };
+    window.docAddRow = function () {
+        var d = window.__DOCS || {}; var cats = d.categories || ['Educational Certificate', 'Other'];
+        var wrap = document.getElementById('doc-rows'); if (wrap) { wrap.insertAdjacentHTML('beforeend', docRowTpl(cats)); }
+    };
+    window.docRemoveRow = function (btn) {
+        var rows = document.querySelectorAll('#doc-rows .doc-row');
+        if (rows.length <= 1) { return; }
+        var row = btn.closest ? btn.closest('.doc-row') : null; if (row) { row.remove(); }
+    };
+    window.docOpenAdd = function (empId) {
+        var d = window.__DOCS || {};
+        var emps = d.employees || [];
+        var cats = d.categories || ['Educational Certificate', 'Personal Document / Certificate', 'Other'];
+        var eo = emps.map(function (e) { return '<option value="' + e.id + '"' + (String(e.id) === String(empId) ? ' selected' : '') + '>' + (e.name + ' (' + (e.emp_code || e.id) + ')') + '</option>'; }).join('');
+        var body = '<div class="fld2" style="margin-bottom:12px"><label>Employee</label><select id="doc-emp"><option value="">Select employee&hellip;</option>' + eo + '</select></div>'
+            + '<div style="font-size:12px;color:var(--text3);margin-bottom:8px">Add one or more documents for this employee, then Upload All.</div>'
+            + '<div id="doc-rows">' + docRowTpl(cats) + '</div>'
+            + '<button type="button" class="btn btn-outline btn-sm" onclick="docAddRow()"><i class="fas fa-plus"></i> Add another document</button>';
+        var foot = '<button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-green" onclick="docUpload()"><i class="fas fa-upload"></i> Upload All</button>';
+        if (typeof openModalHTML === 'function') { openModalHTML('Add Documents', body, foot, true); }
+    };
+    window.docUpload = function () {
+        var emp = document.getElementById('doc-emp');
+        if (!emp || !emp.value) { if (typeof toast === 'function') { toast('Select an employee'); } return; }
+        var rows = document.querySelectorAll('#doc-rows .doc-row');
+        var fd = new FormData(); fd.append('employee_id', emp.value); var any = false;
+        rows.forEach(function (row) {
+            var file = row.querySelector('.doc-file');
+            if (file && file.files && file.files[0]) {
+                fd.append('files[]', file.files[0]);
+                fd.append('categories[]', (row.querySelector('.doc-cat') || {}).value || 'Other');
+                fd.append('docNames[]', (row.querySelector('.doc-name') || {}).value || '');
+                fd.append('expiries[]', (row.querySelector('.doc-expiry') || {}).value || '');
+                any = true;
+            }
+        });
+        if (!any) { if (typeof toast === 'function') { toast('Choose at least one file'); } return; }
+        fetch(cfg.docBase + '/upload', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Uploaded ' + (j.count || 0) + ' document(s)' + (j.skipped ? ' (' + j.skipped + ' skipped)' : '')); } if (typeof closeModal === 'function') { closeModal(); } window.__DOCS = null; docLoad(''); } else { if (typeof toast === 'function') { toast((j && j.error) || 'Upload failed'); } } })
+            .catch(function () { if (typeof toast === 'function') { toast('Upload failed'); } });
+    };
+    function documentsScreen() {
+        var d = window.__DOCS;
+        if (!d) { setTimeout(function () { if (!window.__DOCS) { docLoad(''); } }, 10); return pghead('Documents', 'Loading&hellip;', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading&hellip;</div></div>'; }
+        if (d.error) { return pghead('Documents', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)">' + String(d.error) + '</div></div>'; }
+        var esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
+        var groups = {}; var order = [];
+        (d.documents || []).forEach(function (x) {
+            var k = String(x.employee_id);
+            if (!groups[k]) { groups[k] = { employee_id: x.employee_id, emp_name: x.emp_name, emp_code: x.emp_code, docs: [] }; order.push(k); }
+            groups[k].docs.push(x);
+        });
+        var rows = order.map(function (k) {
+            var g = groups[k]; var td = 'padding:11px 12px;border-top:1px solid var(--border);font-size:13px';
+            var cats = {}; g.docs.forEach(function (x) { cats[x.category] = (cats[x.category] || 0) + 1; });
+            var catStr = Object.keys(cats).map(function (c) { return esc(c) + (cats[c] > 1 ? ' (' + cats[c] + ')' : ''); }).join(', ');
+            return '<tr><td style="' + td + '"><b>' + esc(g.emp_name) + '</b> <span style="color:var(--text3)">' + esc(g.emp_code ? ('(' + g.emp_code + ')') : '') + '</span></td>'
+                + '<td style="' + td + '"><b>' + g.docs.length + '</b> document(s) <span style="color:var(--text3)">&mdash; ' + catStr + '</span></td>'
+                + '<td style="' + td + ';text-align:right;white-space:nowrap">'
+                + '<button class="btn btn-outline btn-sm" onclick="docViewEmp(' + g.employee_id + ')" title="View all documents"><i class="fas fa-eye"></i> View</button> '
+                + '<button class="btn btn-outline btn-sm" onclick="docEditEmp(' + g.employee_id + ')" title="Edit / add documents"><i class="fas fa-pen"></i> Edit</button> '
+                + '<button class="btn btn-outline btn-sm" onclick="docDeleteEmp(' + g.employee_id + ')" title="Delete all documents"><i class="fas fa-trash" style="color:var(--red)"></i></button>'
+                + '</td></tr>';
+        }).join('');
+        if (!rows) { rows = '<tr><td colspan="3" style="padding:30px;text-align:center;color:var(--text3)">No documents ' + (d.q ? 'match this search' : 'yet') + '. Click Add Document to upload.</td></tr>'; }
+        var head = pghead('Documents', 'Upload &amp; track employee documents &mdash; educational, personal, experience letters, payslips and more.', '<button class="btn btn-green" onclick="docOpenAdd()"><i class="fas fa-upload"></i> Add Document</button>');
+        var search = '<div class="card" style="padding:14px 16px;margin-bottom:14px"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><i class="fas fa-search" style="color:var(--text3)"></i>'
+            + '<input id="doc-search" placeholder="Search employee by name or ID&hellip;" value="' + esc(d.q || '') + '" style="flex:1;min-width:200px;padding:9px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:14px" onkeydown="docKey(event)">'
+            + '<button class="btn btn-primary btn-sm" onclick="docSearch()">Search</button>'
+            + '<button class="btn btn-outline btn-sm" onclick="docClear()">Clear</button></div></div>';
+        var table = '<div class="card" style="padding:0;overflow:hidden"><table style="width:100%;border-collapse:collapse"><thead><tr>'
+            + ['Employee', 'Documents', ''].map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:var(--text3)">' + h + '</th>'; }).join('')
+            + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+        return head + search + table;
+    }
+    function docEmpModal(empId, editable) {
+        var d = window.__DOCS || {};
+        var docs = (d.documents || []).filter(function (x) { return String(x.employee_id) === String(empId); });
+        if (!docs.length) { if (typeof toast === 'function') { toast('No documents for this employee'); } return; }
+        var esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+        var nm = docs[0].emp_name + (docs[0].emp_code ? ' (' + docs[0].emp_code + ')' : '');
+        var body = '<table style="width:100%;border-collapse:collapse"><thead><tr>'
+            + ['Category / Document', 'File', 'Expiry', ''].map(function (h) { return '<th style="text-align:left;padding:8px 10px;font-size:11px;text-transform:uppercase;color:var(--text3)">' + h + '</th>'; }).join('')
+            + '</tr></thead><tbody>' + docs.map(function (x) {
+                var td = 'padding:8px 10px;border-top:1px solid var(--border);font-size:13px';
+                var file = x.has_file ? '<a href="' + cfg.docBase + '/' + x.id + '/download" target="_blank" class="btn btn-outline btn-sm"><i class="fas fa-download"></i> ' + esc(x.file_name || 'File') + '</a>' : '<span style="color:var(--text3)">&mdash;</span>';
+                var del = editable ? '<button class="btn btn-outline btn-sm" onclick="docDelInModal(' + x.id + ',' + empId + ')" title="Delete"><i class="fas fa-trash" style="color:var(--red)"></i></button>' : '';
+                return '<tr><td style="' + td + '">' + esc(x.category) + (x.doc_name ? ' <span style="color:var(--text3)">&mdash; ' + esc(x.doc_name) + '</span>' : '') + '</td><td style="' + td + '">' + file + '</td><td style="' + td + '">' + esc(x.expiry || '—') + '</td><td style="' + td + ';text-align:right">' + del + '</td></tr>';
+            }).join('') + '</tbody></table>'
+            + (editable ? '<div style="margin-top:14px"><button class="btn btn-outline btn-sm" onclick="docOpenAdd(' + empId + ')"><i class="fas fa-plus"></i> Add more documents</button></div>' : '');
+        var foot = '<button class="btn btn-outline" onclick="closeModal()">Close</button>';
+        if (typeof openModalHTML === 'function') { openModalHTML((editable ? 'Edit Documents &mdash; ' : 'Documents &mdash; ') + esc(nm), body, foot, true); }
+    }
+    window.docViewEmp = function (empId) { docEmpModal(empId, false); };
+    window.docEditEmp = function (empId) { docEmpModal(empId, true); };
+    window.docDelInModal = function (id, empId) {
+        if (!confirm('Delete this document? The file will be permanently removed.')) { return; }
+        fetch(cfg.docBase + '/' + id + '/delete', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (j && j.ok) {
+                    if (window.__DOCS && window.__DOCS.documents) { window.__DOCS.documents = window.__DOCS.documents.filter(function (x) { return x.id !== id; }); }
+                    if (typeof render === 'function') { render(); }
+                    var remain = ((window.__DOCS && window.__DOCS.documents) || []).filter(function (x) { return String(x.employee_id) === String(empId); });
+                    if (remain.length) { docEditEmp(empId); } else if (typeof closeModal === 'function') { closeModal(); }
+                    if (typeof toast === 'function') { toast('Deleted'); }
+                } else { if (typeof toast === 'function') { toast('Delete failed'); } }
+            }).catch(function () { if (typeof toast === 'function') { toast('Delete failed'); } });
+    };
+    window.docDeleteEmp = function (empId) {
+        var docs = ((window.__DOCS && window.__DOCS.documents) || []).filter(function (x) { return String(x.employee_id) === String(empId); });
+        if (!docs.length) { return; }
+        if (!confirm('Delete ALL ' + docs.length + ' document(s) for ' + docs[0].emp_name + '? This permanently removes the files.')) { return; }
+        fetch(cfg.docBase + '/employee/' + empId + '/delete-all', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Deleted ' + (j.deleted || 0) + ' document(s)'); } window.__DOCS = null; docLoad(''); } else { if (typeof toast === 'function') { toast('Delete failed'); } } })
+            .catch(function () { if (typeof toast === 'function') { toast('Delete failed'); } });
+    };
     function codeOfConductScreen() {
         var d = window.__COC;
         if (!d) { setTimeout(function () { if (!window.__COC) { cocLoad(); } }, 10); return pghead('Code of Conduct', 'Loading…', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
@@ -7735,7 +7919,7 @@ CSS;
         'test-results': { type: 'test-results', title: 'Test Results', sub: 'Attempts & scores', fields: [
             { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'test', l: 'Test (exact name)' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'passed', 'failed'], optLabels: ['Pending', 'Passed', 'Failed'] }, { k: 'score', l: 'Score', type: 'number' }, { k: 'attempted_on', l: 'Attempted On', type: 'date' }] },
         'pay-cycle': { type: 'pay-cycle', title: 'Pay Cycle', sub: 'Pay cycles & cut-offs', fields: [
-            { k: 'name', l: 'Cycle Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'cycle', l: 'Cycle', type: 'select', opts: ['monthly', 'fortnightly', 'weekly'], optLabels: ['Monthly', 'Fortnightly', 'Weekly'] }, { k: 'cutoff_day', l: 'Cut-off Day', type: 'number' }, { k: 'pay_day', l: 'Pay Day', type: 'number' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+            { k: 'name', l: 'Cycle Name' }, { k: 'company_name', l: 'Company', casc: 1, cascSrc: 'company' }, { k: 'department', l: 'Department', casc: 1, noList: 1 }, { k: 'team', l: 'Team', casc: 1, noList: 1 }, { k: 'employee', l: 'Employee', casc: 1, noList: 1 }, { k: 'cycle', l: 'Cycle', type: 'select', opts: ['monthly', 'fortnightly', 'weekly', 'custom'], optLabels: ['Monthly', 'Fortnightly', 'Weekly', 'Custom Date'] }, { k: 'cycle_date', l: 'Cycle Date (for Custom)', type: 'date', noList: 1 }, { k: 'cutoff_day', l: 'Cut-off Day', type: 'number' }, { k: 'pay_day', l: 'Pay Day', type: 'number' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
         'wa-settings': { type: 'wa-settings', title: 'WhatsApp Settings', sub: 'WhatsApp provider config — Interakt is LIVE (provider "interakt" + API key, status active). Leave API URL blank for the Interakt default.', fields: [
             { k: 'company_name', l: 'Company', src: 'company' }, { k: 'provider', l: 'Provider (type: interakt)' }, { k: 'api_url', l: 'API URL (leave blank for Interakt)' }, { k: 'api_key', l: 'API Key (Interakt Secret Key)' }, { k: 'sender_number', l: 'Sender Number' }, { k: 'waba_id', l: 'WABA ID (optional)' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
         'sms-settings': { type: 'sms-settings', title: 'SMS Settings', sub: 'SMS provider config (sending wired later)', fields: [
@@ -7841,6 +8025,9 @@ CSS;
                 var labels = fl.optLabels || fl.opts;
                 var oc = fl.fill ? ' onchange="masterFillSample(' + "'ms_" + (fl.fillTarget || '') + "','" + fl.fill + "',this.value)" + '"' : '';
                 ctrl = '<select id="ms_' + fl.k + '"' + oc + ' style="' + inp + '">' + fl.opts.map(function (o, i) { return '<option value="' + o + '"' + (String(o) === String(val) ? ' selected' : '') + '>' + labels[i] + '</option>'; }).join('') + '</select>';
+            } else if (fl.casc) {
+                var cascOpts = fl.cascSrc === 'company' ? (['All'].concat(((typeof DB !== 'undefined' && DB.companies) || []).map(function (c) { return c.name; }))) : (val ? [val] : []);
+                ctrl = '<select id="ms_' + fl.k + '" onchange="masterCascade()" style="' + inp + '"><option value="">Select…</option>' + cascOpts.map(function (o) { return '<option' + (String(o) === String(val) ? ' selected' : '') + '>' + String(o).replace(/</g, '&lt;') + '</option>'; }).join('') + '</select>';
             } else if (fl.src === 'template') {
                 var tpls = (window.__MASTER[type] && window.__MASTER[type].templates) || [];
                 ctrl = '<select id="ms_' + fl.k + '" style="' + inp + '"><option value="">— pick a saved template —</option>' + tpls.map(function (o) { return '<option' + (o === val ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select>';
@@ -7879,8 +8066,37 @@ CSS;
         m.onclick = function (e) { if (e.target === m) { masterClose(); } };
         // Pre-load a sample body for any field that declares one (fills if empty).
         try { mc.fields.forEach(function (fl) { if (fl.fill && fl.fillTarget) { var sel = document.getElementById('ms_' + fl.k); if (sel) { masterFillSample('ms_' + fl.fillTarget, fl.fill, sel.value); } } }); } catch (e) {}
+        try { if (mc.fields.some(function (fl) { return fl.casc; }) && typeof masterCascade === 'function') { masterCascade(); } } catch (e) {}
     };
     window.masterClose = function () { var m = document.getElementById('master-modal'); if (m) { m.style.display = 'none'; } };
+    // rev164 — Company → Department → Team → Employee cascading dropdowns for the
+    // master form (used by Pay Cycle). Options at each level are derived from the
+    // employees actually assigned, so each depends on the parent selection.
+    window.masterCascade = function () {
+        var emps = (typeof DB !== 'undefined' && DB.employees) || [];
+        var comps = (typeof DB !== 'undefined' && DB.companies) || [];
+        var g = function (id) { var e = document.getElementById(id); return e ? e.value : ''; };
+        var uniq = function (arr) { var s = {}; var o = []; arr.forEach(function (x) { if (x && !s[x]) { s[x] = 1; o.push(x); } }); return o.sort(); };
+        var setOpts = function (id, opts) {
+            var el = document.getElementById(id); if (!el) { return; }
+            var all = ['All'].concat(opts);
+            var cur = el.value; var keep = all.indexOf(cur) >= 0 ? cur : '';
+            el.innerHTML = '<option value="">Select…</option>' + all.map(function (o) { return '<option' + (o === keep ? ' selected' : '') + '>' + String(o).replace(/</g, '&lt;') + '</option>'; }).join('');
+        };
+        // '' = nothing chosen (children stay empty); 'All' = no filter at this level.
+        var scope = function (val, base, fn) { if (val === '') { return []; } if (val === 'All') { return base; } return base.filter(fn); };
+        var compName = g('ms_company_name');
+        var compObj = comps.find(function (c) { return String(c.name) === String(compName); });
+        var compId = compObj ? compObj.id : null;
+        var inComp = scope(compName, emps, function (e) { return String(e.companyId) === String(compId); });
+        setOpts('ms_department', uniq(inComp.map(function (e) { return e.dept; })));
+        var dept = g('ms_department');
+        var inDept = scope(dept, inComp, function (e) { return String(e.dept) === String(dept); });
+        setOpts('ms_team', uniq(inDept.map(function (e) { return e.team; })));
+        var team = g('ms_team');
+        var inTeam = scope(team, inDept, function (e) { return String(e.team) === String(team); });
+        setOpts('ms_employee', uniq(inTeam.map(function (e) { return e.name; })));
+    };
     window.letterAcceptLink = function (id) {
         if (!window.confirm('Email the candidate a link to review and accept this offer?')) { return; }
         fetch(cfg.lettersBase + '/' + id + '/accept-link', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: '{}' })

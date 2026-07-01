@@ -36,7 +36,7 @@ class AppDataController extends Controller
         if (! Schema::hasTable('employees')) {
             return;
         }
-        $cols = ['department', 'designation', 'branch', 'team', 'reporting_manager', 'team_leader'];
+        $cols = ['department', 'designation', 'branch', 'team', 'reporting_manager', 'team_leader', 'father', 'spouse', 'blood_group', 'id_marks', 'gender', 'address'];
         $missing = array_values(array_filter($cols, fn ($c) => ! Schema::hasColumn('employees', $c)));
         if (! $missing) {
             return;
@@ -1083,6 +1083,14 @@ class AppDataController extends Controller
             'team' => $e['team'] ?? null,
             'reporting_manager' => $e['teamManager'] ?? ($e['reporting'] ?? null),
             'team_leader' => $e['teamLeader'] ?? ($e['leader'] ?? null),
+            // rev160: Personal Details — Father / Spouse / Blood group / ID marks (+ gender, address, dob).
+            'father' => $e['father'] ?? null,
+            'spouse' => $e['spouse'] ?? null,
+            'blood_group' => $e['bloodGroup'] ?? null,
+            'id_marks' => $e['idMarks'] ?? null,
+            'gender' => $e['gender'] ?? null,
+            'address' => $e['addr'] ?? ($e['address'] ?? null),
+            'dob' => $e['dob'] ?? null,
             'updated_at' => now(),
         ];
 

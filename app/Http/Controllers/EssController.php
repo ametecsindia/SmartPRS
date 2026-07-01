@@ -32,6 +32,7 @@ class EssController extends Controller
                 'payslips' => $this->payslips($emp),
                 'attendance' => $this->attendance($emp, $tid),
                 'leaves' => $this->leaves($emp, $tid),
+                'balances' => $this->leaveBalances($emp, $tid),
                 'notices' => $this->notices($tid),
             ]);
         } catch (\Throwable $e) {
@@ -86,6 +87,14 @@ class EssController extends Controller
             'type' => $a['type'] ?? '',
             'email' => $a['email'] ?? '',
             'mobile' => $a['mobile'] ?? '',
+            'whatsapp' => $a['whatsapp'] ?? '',
+            'address' => $a['address'] ?? '',
+            'father' => $a['father'] ?? '',
+            'spouse' => $a['spouse'] ?? '',
+            'blood_group' => $a['blood_group'] ?? '',
+            'id_marks' => $a['id_marks'] ?? '',
+            'gender' => $a['gender'] ?? '',
+            'dob' => $a['dob'] ?? '',
             'joined' => $a['doj'] ?? ($a['joined_on'] ?? null),
             'photo' => ! empty($a['photo_path']) ? url('/app/emp-photo/'.($a['emp_code'] ?? '')) : '',
         ];
@@ -165,6 +174,119 @@ class EssController extends Controller
                 ->map(fn ($n) => ['title' => $n->title, 'body' => $n->body, 'date' => $n->posted_on])->all();
         } catch (\Throwable $e) {
             return [];
+        }
+    }
+
+    /**
+     * rev162 — the employee's OWN leave balances for the current year, per type:
+     * allocated (entitlement) / used (approved) / pending / remaining. Mirrors
+     * LeaveController::computeBalances so the ESS figures match the leave module.
+     */
+    private function leaveBalances($emp, $tid): array
+    {
+        $year = now()->year;
+        $types = Schema::hasTable('leave_types')
+            ? DB::table('leave_types')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->get()
+            : collect();
+        if ($types->isEmpty()) {
+            $types = collect([
+                (object) ['name' => 'Casual Leave', 'days_per_year' => 12, 'paid' => 1],
+                (object) ['name' => 'Sick Leave', 'days_per_year' => 12, 'paid' => 1],
+                (object) ['name' => 'Earned Leave', 'days_per_year' => 15, 'paid' => 1],
+                (object) ['name' => 'Loss of Pay', 'days_per_year' => 0, 'paid' => 0],
+            ]);
+        }
+        $taken = [];
+        if ($emp && Schema::hasTable('leaves')) {
+            try {
+                $rows = DB::table('leaves')->where('employee_id', $emp->id)
+                    ->whereYear('from_date', $year)->get(['type_name', 'days', 'status']);
+                foreach ($rows as $r) {
+                    $t = $r->type_name ?: 'Leave';
+                    $taken[$t] = $taken[$t] ?? ['used' => 0.0, 'pending' => 0.0];
+                    if ($r->status === 'approved') {
+                        $taken[$t]['used'] += (float) $r->days;
+                    } elseif ($r->status === 'pending') {
+                        $taken[$t]['pending'] += (float) $r->days;
+                    }
+                }
+            } catch (\Throwable $e) {
+            }
+        }
+        $out = [];
+        foreach ($types as $t) {
+            $paid = (int) ($t->paid ?? 1) === 1;
+            $ent = (float) ($t->days_per_year ?? 0);
+            $u = $taken[$t->name]['used'] ?? 0.0;
+            $p = $taken[$t->name]['pending'] ?? 0.0;
+            $out[] = [
+                'type' => $t->name,
+                'allocated' => $ent,
+                'used' => $u,
+                'pending' => $p,
+                'remaining' => $paid ? round($ent - $u, 1) : null,
+                'paid' => $paid,
+            ];
+        }
+
+        return $out;
+    }
+
+    /** Make sure the self-editable personal columns exist (self-creating convention). */
+    private function ensureProfileCols(): void
+    {
+        if (! Schema::hasTable('employees')) {
+            return;
+        }
+        foreach (['whatsapp', 'address', 'father', 'spouse', 'blood_group', 'id_marks', 'gender', 'dob'] as $c) {
+            if (! Schema::hasColumn('employees', $c)) {
+                try {
+                    Schema::table('employees', fn ($t) => $t->string($c)->nullable());
+                } catch (\Throwable $e) {
+                }
+            }
+        }
+    }
+
+    /**
+     * rev162 — POST /app/ess/update — employee self-edit of their OWN personal
+     * details. Only contact + personal fields are editable; org-controlled fields
+     * (emp_code, salary/CTC, designation, department, company) are never touched.
+     */
+    public function updateProfile(Request $request)
+    {
+        try {
+            $emp = $this->currentEmployee($request);
+            if (! $emp) {
+                return response()->json(['ok' => false, 'error' => 'Your login is not linked to an employee record. Ask HR to link it.'], 422);
+            }
+            $v = $request->validate([
+                'mobile' => ['nullable', 'string', 'max:20'],
+                'whatsapp' => ['nullable', 'string', 'max:20'],
+                'email' => ['nullable', 'email', 'max:160'],
+                'address' => ['nullable', 'string', 'max:400'],
+                'father' => ['nullable', 'string', 'max:120'],
+                'spouse' => ['nullable', 'string', 'max:120'],
+                'blood_group' => ['nullable', 'string', 'max:8'],
+                'id_marks' => ['nullable', 'string', 'max:200'],
+                'gender' => ['nullable', 'string', 'max:20'],
+                'dob' => ['nullable', 'string', 'max:20'],
+            ]);
+            $this->ensureProfileCols();
+            $upd = [];
+            foreach ($v as $f => $val) {
+                if ($request->has($f) && Schema::hasColumn('employees', $f)) {
+                    $upd[$f] = $val;
+                }
+            }
+            if ($upd) {
+                $upd['updated_at'] = now();
+                DB::table('employees')->where('id', $emp->id)->update($upd);
+            }
+
+            return response()->json(['ok' => true]);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
         }
     }
 }
