@@ -608,7 +608,72 @@ class AppDataController extends Controller
             'grouped' => $grouped,
             'dedLines' => $dedLines,
             'ytd' => $ytd,
+            'netWords' => self::amountInWords((float) ($s['net'] ?? 0)),
         ];
+    }
+
+    /** "Rupees Twenty Thousand One Hundred One Only" (Indian numbering, incl. paise). */
+    public static function amountInWords(float $amount): string
+    {
+        $amount = round(max($amount, 0), 2);
+        $rupees = (int) floor($amount);
+        $paise = (int) round(($amount - $rupees) * 100);
+        $out = 'Rupees '.self::numToWordsIndian($rupees);
+        if ($paise > 0) {
+            $out .= ' and '.self::numToWordsIndian($paise).' Paise';
+        }
+
+        return $out.' Only';
+    }
+
+    /** Integer → words with Indian grouping (crore / lakh / thousand / hundred). */
+    private static function numToWordsIndian(int $n): string
+    {
+        if ($n <= 0) {
+            return 'Zero';
+        }
+        $ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+        $tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+        $two = function (int $num) use ($ones, $tens) {
+            if ($num < 20) {
+                return $ones[$num];
+            }
+            $t = intdiv($num, 10);
+            $o = $num % 10;
+
+            return trim($tens[$t].($o ? ' '.$ones[$o] : ''));
+        };
+        $three = function (int $num) use ($ones, $two) {
+            $h = intdiv($num, 100);
+            $rest = $num % 100;
+            $s = $h ? $ones[$h].' Hundred' : '';
+            if ($rest) {
+                $s .= ($s ? ' ' : '').$two($rest);
+            }
+
+            return $s;
+        };
+        $crore = intdiv($n, 10000000);
+        $n %= 10000000;
+        $lakh = intdiv($n, 100000);
+        $n %= 100000;
+        $thousand = intdiv($n, 1000);
+        $hundred = $n % 1000;
+        $parts = [];
+        if ($crore) {
+            $parts[] = $three($crore).' Crore';
+        }
+        if ($lakh) {
+            $parts[] = $two($lakh).' Lakh';
+        }
+        if ($thousand) {
+            $parts[] = $two($thousand).' Thousand';
+        }
+        if ($hundred) {
+            $parts[] = $three($hundred);
+        }
+
+        return implode(' ', $parts);
     }
 
     /**

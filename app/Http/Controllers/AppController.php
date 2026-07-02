@@ -8280,7 +8280,7 @@ CSS;
             + '</tr></table></div>';
 
         var net = '<div style="background:#0c1929;color:#fff;border-radius:6px;padding:10px 16px;margin-top:8px"><table style="width:100%"><tr>'
-            + '<td>Net Pay (August 2026)<div style="color:#cbd5e1;font-size:10px">Net = Gross earnings (A+B) &#8377;18,500.00 + reimbursements (C) &#8377;3,000.00 &#8722; total deductions &#8377;1,399.00</div></td>'
+            + '<td>Net Pay (August 2026)<div style="font-size:11px;font-weight:700;margin-top:2px">Rupees Twenty Thousand One Hundred One Only</div><div style="color:#cbd5e1;font-size:10px">Net = Gross earnings (A+B) &#8377;18,500.00 + reimbursements (C) &#8377;3,000.00 &#8722; total deductions &#8377;1,399.00</div></td>'
             + '<td style="text-align:right;font-size:18px;font-weight:700">&#8377;20,101.00</td></tr></table></div>';
 
         var sheet = '<div style="width:700px;max-width:100%;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;margin:0 auto">' + hdr

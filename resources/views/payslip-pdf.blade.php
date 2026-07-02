@@ -191,6 +191,7 @@
         <tr>
             <td>
                 Net Pay ({{ $monthLabel }})
+                <div style="color:#fff;font-size:11px;font-weight:bold;margin-top:2px">{{ $netWords ?? '' }}</div>
                 <div class="words">Net = Gross earnings (A+B){{ $reimbC > 0 ? ' + reimbursements (C) '.$m($reimbC) : '' }} &minus; total deductions {{ $m($s['total_ded']) }}</div>
             </td>
             <td style="text-align:right;" class="big">{{ $m($s['net']) }}</td>
