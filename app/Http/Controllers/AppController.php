@@ -8145,7 +8145,7 @@ CSS;
     function inr(n) { return '₹' + Number(Math.round(n)).toLocaleString('en-IN'); }
     // Effective statutory rates: server-provided (window.__RATES) overlaid on safe defaults.
     function spRates() {
-        var d = { pf_wage_cap: 15000, pf_rate: 12, esi_threshold: 21000, esi_employee_rate: 0.75, esi_employer_rate: 3.25, pt_amount: 200, std_deduction: 50000, rebate_87a_limit: 700000, cess_rate: 4, comm_tds_rate: 5, no_pan_tds_rate: 20, tds_slabs: [{ upto: 300000, rate: 0 }, { upto: 700000, rate: 5 }, { upto: 1000000, rate: 10 }, { upto: 1200000, rate: 15 }, { upto: 1500000, rate: 20 }, { upto: 0, rate: 30 }] };
+        var d = { pf_wage_cap: 15000, pf_rate: 12, esi_threshold: 21000, esi_employee_rate: 0.75, esi_employer_rate: 3.25, pt_amount: 200, std_deduction: 50000, rebate_87a_limit: 700000, cess_rate: 4, comm_tds_rate: 5, no_pan_tds_rate: 20, conveyance_enabled: 0, conveyance_rate: 0, tds_slabs: [{ upto: 300000, rate: 0 }, { upto: 700000, rate: 5 }, { upto: 1000000, rate: 10 }, { upto: 1200000, rate: 15 }, { upto: 1500000, rate: 20 }, { upto: 0, rate: 30 }] };
         var r = window.__RATES || {};
         var out = {}; for (var k in d) { out[k] = (r[k] != null) ? r[k] : d[k]; }
         if (!out.tds_slabs || !out.tds_slabs.length) { out.tds_slabs = d.tds_slabs; }
@@ -9035,6 +9035,11 @@ CSS;
         var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
         return '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">' + label + '</label><input type="number" step="any" id="rate_' + key + '" value="' + (val != null ? val : '') + '" style="' + inp + '">' + (hint ? '<div style="font-size:11px;color:var(--text3);margin-top:3px">' + hint + '</div>' : '') + '</div>';
     }
+    function rateToggle(label, key, val) {
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var on = Number(val) ? 1 : 0;
+        return '<div><label style="font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px">' + label + '</label><select id="rate_' + key + '" style="' + inp + '"><option value="1"' + (on ? ' selected' : '') + '>Enabled</option><option value="0"' + (on ? '' : ' selected') + '>Disabled</option></select></div>';
+    }
     function rateSettingsRender(d) {
         var r = (d && d.rates) || spRates();
         var canManage = !d || d.canManage !== false;
@@ -9057,6 +9062,8 @@ CSS;
             + rateField('Health & edu cess (%)', 'cess_rate', r.cess_rate)
             + rateField('Commission TDS 194H (%)', 'comm_tds_rate', r.comm_tds_rate)
             + rateField('No-PAN higher TDS (%)', 'no_pan_tds_rate', r.no_pan_tds_rate)
+            + rateToggle('Conveyance allowance', 'conveyance_enabled', r.conveyance_enabled)
+            + rateField('Conveyance rate (% of Basic, PF cap)', 'conveyance_rate', r.conveyance_rate)
             + '</div>';
         var slabTbl = '<h3 style="margin:20px 0 6px;font-size:15px">Income-tax slabs (new regime)</h3>'
             + '<p style="font-size:12px;color:var(--text3);margin:0 0 8px">Annual taxable income up to the amount is taxed at the rate beside it. Put 0 in the last row to mean "and above".</p>'
@@ -9073,7 +9080,7 @@ CSS;
         m.onclick = function (e) { if (e.target === m) { rateSettingsClose(); } };
     }
     window.rateSettingsSave = function () {
-        var keys = ['pf_wage_cap', 'pf_rate', 'pt_amount', 'esi_threshold', 'esi_employee_rate', 'esi_employer_rate', 'std_deduction', 'rebate_87a_limit', 'cess_rate', 'comm_tds_rate', 'no_pan_tds_rate'];
+        var keys = ['pf_wage_cap', 'pf_rate', 'pt_amount', 'esi_threshold', 'esi_employee_rate', 'esi_employer_rate', 'std_deduction', 'rebate_87a_limit', 'cess_rate', 'comm_tds_rate', 'no_pan_tds_rate', 'conveyance_enabled', 'conveyance_rate'];
         var payload = {};
         keys.forEach(function (k) { var el = document.getElementById('rate_' + k); if (el && el.value !== '') { payload[k] = Number(el.value); } });
         var uptos = document.querySelectorAll('.slab_upto'); var rs = document.querySelectorAll('.slab_rate');

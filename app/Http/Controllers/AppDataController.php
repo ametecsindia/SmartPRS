@@ -579,6 +579,7 @@ class AppDataController extends Controller
             'Professional Tax' => (float) ($s['pt'] ?? 0),
             'TDS' => (float) ($s['tds'] ?? 0),
             'Labour Welfare Fund' => (float) ($s['lwf'] ?? 0),
+            'Conveyance' => (float) ($s['conveyance'] ?? 0),
         ], fn ($v) => $v != 0.0);
 
         $ytd = $this->payslipYtd((int) $e->id, $month);
@@ -1085,8 +1086,14 @@ class AppDataController extends Controller
         $esiEmployee = $esiEligible ? (float) ceil($gross * ((float) ($r['esi_employee_rate'] ?? 0.75)) / 100) : 0.0;
         $esiEmployer = $esiEligible ? (float) ceil($gross * ((float) ($r['esi_employer_rate'] ?? 3.25)) / 100) : 0.0;
 
+        // Optional Conveyance deduction — SAME FORMULA AS PF: rate% of the PF wage
+        // base (min(Basic + DA, cap)). Off unless enabled + rate > 0 in Statutory Settings.
+        $convRate = (float) ($r['conveyance_rate'] ?? 0);
+        $conveyance = (! empty($r['conveyance_enabled']) && $convRate > 0) ? round($pfBase * $convRate / 100, 2) : 0.0;
+
         return [
             'pf' => $pfEmployee, 'esi' => $esiEmployee, 'pt' => self::ptForGross($gross, $r),
+            'conveyance' => $conveyance,
             'pf_wage' => round($pfBase, 2),
             'pf_employer' => $pfEmployer, 'pf_eps' => $eps, 'pf_epf_employer' => $epfEmployer, 'pf_edli' => $edli,
             'esi_employer' => $esiEmployer,
@@ -1108,10 +1115,12 @@ class AppDataController extends Controller
         $tds = self::salaryTdsMonthly($ctc);
         // Optional Labour Welfare Fund (state-specific) — OFF unless enabled in Settings.
         $lwf = (! empty($r['lwf_enabled'])) ? (float) ($r['lwf_employee'] ?? 0) : 0.0;
-        $totalDed = round($pf + $esi + $pt + $tds + $lwf, 2);
+        // Optional Conveyance deduction — computed like PF (rate% of capped Basic).
+        $conveyance = (float) ($st['conveyance'] ?? 0);
+        $totalDed = round($pf + $esi + $pt + $tds + $lwf + $conveyance, 2);
 
         return [
-            'gross' => $gross, 'basic' => $basic, 'hra' => $hra, 'special' => $special,
+            'gross' => $gross, 'basic' => $basic, 'hra' => $hra, 'special' => $special, 'conveyance' => $conveyance,
             'pf' => $pf, 'esi' => $esi, 'pt' => $pt, 'tds' => $tds, 'lwf' => round($lwf, 2),
             'pf_wage' => $st['pf_wage'], 'pf_employer' => $st['pf_employer'], 'pf_eps' => $st['pf_eps'],
             'pf_epf_employer' => $st['pf_epf_employer'], 'pf_edli' => $st['pf_edli'], 'esi_employer' => $st['esi_employer'],
@@ -1275,6 +1284,11 @@ class AppDataController extends Controller
         $lwf = (! empty($r['lwf_enabled'])) ? (float) ($r['lwf_employee'] ?? 0) : 0.0;
         if ($lwf > 0) {
             $deductions['Labour Welfare Fund'] = round(($deductions['Labour Welfare Fund'] ?? 0) + $lwf, 2);
+        }
+        // Optional Conveyance deduction — SAME FORMULA AS PF (rate% of capped Basic+DA).
+        $conveyance = (float) ($st['conveyance'] ?? 0);
+        if ($conveyance > 0) {
+            $deductions['Conveyance'] = round(($deductions['Conveyance'] ?? 0) + $conveyance, 2);
         }
         $totalDed = round(array_sum($deductions), 2);
 

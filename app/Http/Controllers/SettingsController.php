@@ -40,6 +40,8 @@ class SettingsController extends Controller
             'no_pan_tds_rate' => 20,      // higher TDS % when deductee has no PAN
             'lwf_enabled' => false,       // Labour Welfare Fund deduction (state-specific) — OFF by default
             'lwf_employee' => 0,          // LWF employee amount deducted per payroll month (₹) when enabled
+            'conveyance_enabled' => 0,    // Conveyance allowance toggle (0 = off). When enabled + amount > 0, a Conveyance line is carved from Special Allowance (gross/net unchanged).
+            'conveyance_rate' => 0,       // Conveyance deduction rate (% of Basic+DA, capped like PF) — same formula as PF; used when enabled.
             'incentive_min_compliance' => 60, // F1 — min compliance score (0–100) to pay an incentive without an override note
             'data_retention_months' => 84,    // G5 — record / recording retention period (months); 84 = 7 years
             'contact_window_start' => '08:00', // H1 — lawful borrower-contact window start (RBI 08:00–19:00)
@@ -103,6 +105,7 @@ class SettingsController extends Controller
             'esi_threshold' => $num, 'esi_employee_rate' => $num, 'esi_employer_rate' => $num,
             'pt_amount' => $num, 'std_deduction' => $num, 'rebate_87a_limit' => $num,
             'cess_rate' => $num, 'comm_tds_rate' => $num, 'no_pan_tds_rate' => $num,
+            'conveyance_enabled' => $num, 'conveyance_rate' => $num,
             'tds_slabs' => ['nullable', 'array'],
             'tds_slabs.*.upto' => ['nullable', 'numeric', 'min:0'],
             'tds_slabs.*.rate' => ['nullable', 'numeric', 'min:0'],

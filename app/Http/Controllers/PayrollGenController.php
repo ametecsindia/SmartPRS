@@ -698,6 +698,7 @@ class PayrollGenController extends Controller
                 'basic' => $s['basic'],
                 'hra' => $s['hra'],
                 'special' => $s['special'],
+                'conveyance' => $s['conveyance'] ?? 0,
                 'pf' => $s['pf'],
                 'esi' => $s['esi'],
                 'pt' => $s['pt'],
@@ -1284,6 +1285,9 @@ class PayrollGenController extends Controller
                 $deductions = ! empty($r['deductionsMap'])
                     ? $r['deductionsMap']
                     : ['PF' => $r['pf'], 'ESI' => $r['esi'], 'Professional Tax' => $r['pt'], 'TDS' => $r['tds']];
+                if (empty($r['deductionsMap']) && ! empty($r['conveyance'])) {
+                    $deductions['Conveyance'] = $r['conveyance'];
+                }
                 $slip = ApprovalService::safeRow('payslips', [
                     'uuid' => (string) Str::uuid(),
                     'tenant_id' => $tid,
