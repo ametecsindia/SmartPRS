@@ -38,6 +38,8 @@ class SettingsController extends Controller
             'cess_rate' => 4,             // health & education cess %
             'comm_tds_rate' => 5,         // Sec 194H commission TDS %
             'no_pan_tds_rate' => 20,      // higher TDS % when deductee has no PAN
+            'lwf_enabled' => false,       // Labour Welfare Fund deduction (state-specific) — OFF by default
+            'lwf_employee' => 0,          // LWF employee amount deducted per payroll month (₹) when enabled
             'incentive_min_compliance' => 60, // F1 — min compliance score (0–100) to pay an incentive without an override note
             'data_retention_months' => 84,    // G5 — record / recording retention period (months); 84 = 7 years
             'contact_window_start' => '08:00', // H1 — lawful borrower-contact window start (RBI 08:00–19:00)

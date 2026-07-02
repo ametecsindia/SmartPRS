@@ -7855,7 +7855,7 @@ CSS;
         'late-policy': { type: 'late-policy', title: 'Late Policy', sub: 'Per-company grace + late-cut rule (applied in payroll). A "late" = first punch-in after shift start (09:30) + grace.', help: '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.5;color:var(--text2)"><div style="font-weight:700;color:var(--text);margin-bottom:8px"><i class="fas fa-circle-info" style="color:#f97316;margin-right:6px"></i>How attendance affects pay</div><div style="margin-bottom:10px">A day is <b>late</b> when the first punch-in is after <b>Shift Start + Grace</b>. Pick a <b>Calculation Mode</b> below. Set values per company &mdash; or override for a <b>team</b> or <b>one employee</b> via <b>Applies To</b>.</div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:10px 0"><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px 10px"><div style="font-weight:700;color:var(--text);font-size:12px">Simple</div><div style="font-size:11.5px">Free lates, then a flat cut (half / full / 1-per-N) per extra late.</div></div><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px 10px"><div style="font-weight:700;color:var(--text);font-size:12px">Tiered L1/L2/L3</div><div style="font-size:11.5px">Bigger cut the later they are, by your minute thresholds.</div></div><div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px 10px"><div style="font-weight:700;color:var(--text);font-size:12px">Net hours</div><div style="font-size:11.5px">No cut if total hours worked meets the full-day target.</div></div></div><div style="font-weight:700;color:var(--text);margin:12px 0 4px">Tiered example (grace 10 min)</div><div style="display:flex;gap:3px;margin:6px 0 2px;font-size:10px;text-align:center;color:#fff"><div style="flex:1;background:#22c55e;border-radius:4px 0 0 4px;padding:4px 2px">till 09:40<br>on time</div><div style="flex:1;background:#fbbf24;padding:4px 2px">09:41-10:00<br>L1</div><div style="flex:1;background:#fb923c;padding:4px 2px">10:01-10:30<br>L2</div><div style="flex:1;background:#ef4444;border-radius:0 4px 4px 0;padding:4px 2px">after 10:30<br>L3</div></div><div style="font-size:12px;margin-top:4px">e.g. L1 after 1 min &rarr; 0.25 day, L2 after 20 &rarr; 0.5, L3 after 60 &rarr; 1 day (your numbers). First <b>Free Lates</b> forgiven.</div><div style="font-weight:700;color:var(--text);margin:12px 0 4px">Net-hours example (full 9h, half 4.5h)</div><div style="font-size:12px">Worked 9h+ &rarr; <b>no cut</b> even if late &middot; 4.5&ndash;9h &rarr; <b>half day</b> &middot; under 4.5h &rarr; <b>full day</b>.</div><div style="font-weight:700;color:var(--text);margin:12px 0 4px">Break budget (any mode)</div><div style="font-size:12px">If a day&#39;s total break exceeds <b>Break Budget</b>: <b>Half-day</b>, or <b>0.25 day per 30 min</b> over. Breaks = gaps between a punch-out and the next punch-in.</div><div style="margin-top:10px;color:var(--text3);font-size:11.5px">Cuts lower paid days in that month&#39;s payroll. Leave a field 0 or blank to ignore it.</div></div>', fields: [
             { k: 'company_name', l: 'Company', src: 'company' }, { k: 'scope', l: 'Applies To', type: 'select', opts: ['company', 'team', 'employee'], optLabels: ['Whole company', 'A team', 'One employee'] }, { k: 'scope_target', l: 'Team name / Emp code (if not company)' }, { k: 'mode', l: 'Calculation Mode', type: 'select', opts: ['simple', 'tiered', 'net_hours'], optLabels: ['Simple (free lates + flat cut)', 'Tiered (L1/L2/L3 by minutes late)', 'Net working hours (make-up time)'] }, { k: 'shift_start', l: 'Shift Start (HH:MM)' }, { k: 'shift_end', l: 'Shift End (HH:MM)' }, { k: 'grace_min', l: 'Grace (min)', type: 'number' }, { k: 'full_day_hours', l: 'Full-day Hours', type: 'number' }, { k: 'half_day_hours', l: 'Half-day Hours (net mode)', type: 'number' }, { k: 'lates_before_cut', l: 'Free Lates / month', type: 'number' }, { k: 'cut_mode', l: 'Simple Cut Rule', type: 'select', opts: ['none', 'half_day_per_late', 'one_day_per_n', 'full_day_per_late'], optLabels: ['No cut (flag only)', 'Half-day per extra late', '1 day per N extra lates', 'Full day per extra late'] }, { k: 'cut_n', l: 'N (for 1 day per N)', type: 'number' }, { k: 'l1_min', l: 'L1 after (min late)', type: 'number' }, { k: 'l1_cut', l: 'L1 cut (days)', type: 'number' }, { k: 'l2_min', l: 'L2 after (min late)', type: 'number' }, { k: 'l2_cut', l: 'L2 cut (days)', type: 'number' }, { k: 'l3_min', l: 'L3 after (min late)', type: 'number' }, { k: 'l3_cut', l: 'L3 cut (days)', type: 'number' }, { k: 'break_budget', l: 'Break Budget (min/day)', type: 'number' }, { k: 'break_cut', l: 'Break Over-budget', type: 'select', opts: ['none', 'half_day', 'per_30min'], optLabels: ['No cut', 'Half-day if over', '0.25 day / 30 min over'] }, { k: 'addl_late', l: 'Notes' }, { k: 'weekoff_action', l: 'Week-off Action' }, { k: 'no_cut_on_weekoff', l: 'No Cut on Week-off?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }] },
         'salary-setup': { type: 'salary-setup', title: 'Salary Structure', sub: 'Define how each company splits monthly pay (CTC/12) into components. Payroll uses these instead of the default Basic 50% / HRA 40% when present.', help: '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.55;color:var(--text2)"><div style="font-weight:700;color:var(--text);margin-bottom:8px"><i class="fas fa-circle-info" style="color:#f97316;margin-right:6px"></i>How salary components work</div><div style="margin-bottom:8px">Monthly <b>Gross = CTC / 12</b>. Each <b>Earning</b> component takes a slice of it; a <b>Balance</b> component (Special Allowance) absorbs whatever is left so the parts always add up to gross. <b>PF</b> is computed on the component named <b>Basic</b>.</div><table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="background:#eef2f7"><th style="text-align:left;padding:6px 8px">Base</th><th style="text-align:left;padding:6px 8px">Means</th></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>pct_gross</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">Value % of monthly gross (e.g. Basic 50)</td></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>pct_basic</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">Value % of the Basic component (e.g. HRA 40)</td></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>fixed</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">A flat rupee amount per month</td></tr><tr><td style="padding:6px 8px;border-top:1px solid var(--border)"><b>balance</b></td><td style="padding:6px 8px;border-top:1px solid var(--border)">The leftover of gross (use for Special Allowance)</td></tr></table><div style="margin-top:10px;font-weight:700;color:var(--text)">Example structure (Seq order)</div><div style="font-size:12px;margin-top:2px">1 Basic = pct_gross 50 &middot; 2 HRA = pct_basic 40 &middot; 3 Conveyance = fixed 1600 &middot; 4 Special Allowance = balance. Add Deduction components (e.g. Loan EMI = fixed) the same way; PF/ESI/PT are added automatically.</div><div style="margin-top:10px;color:var(--text3);font-size:11.5px">Leave Company blank to apply to all companies, or set it for a per-company structure. No components = the default fixed formula is used.</div></div>', fields: [
-            { k: 'company_name', l: 'Company (blank = all)', src: 'company' }, { k: 'scope', l: 'Applies To', type: 'select', opts: ['company', 'team', 'employee'], optLabels: ['Whole company', 'A team', 'One employee'] }, { k: 'scope_target', l: 'Team name / Emp code (if not company)' }, { k: 'seq', l: 'Seq (order)', type: 'number' }, { k: 'code', l: 'Code' }, { k: 'name', l: 'Component Name' }, { k: 'ctype', l: 'Type', type: 'select', opts: ['earning', 'deduction'], optLabels: ['Earning', 'Deduction'] }, { k: 'base', l: 'Base', type: 'select', opts: ['pct_gross', 'pct_basic', 'fixed', 'balance'], optLabels: ['% of Gross', '% of Basic', 'Fixed amount', 'Balance (remainder)'] }, { k: 'calc_value', l: 'Value (% or amount)', type: 'number' }, { k: 'taxable', l: 'Taxable?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }] },
+            { k: 'company_name', l: 'Company (blank = all)', src: 'company' }, { k: 'scope', l: 'Applies To', type: 'select', opts: ['company', 'team', 'employee'], optLabels: ['Whole company', 'A team', 'One employee'] }, { k: 'scope_target', l: 'Team name / Emp code (if not company)' }, { k: 'seq', l: 'Seq (order)', type: 'number' }, { k: 'code', l: 'Code' }, { k: 'name', l: 'Component Name' }, { k: 'ctype', l: 'Type', type: 'select', opts: ['earning', 'deduction'], optLabels: ['Earning', 'Deduction'] }, { k: 'category', l: 'Category (earnings only)', type: 'select', opts: ['fixed', 'variable', 'reimbursement'], optLabels: ['Fixed (guaranteed)', 'Variable (performance)', 'Reimbursement (non-taxable, on top)'] }, { k: 'base', l: 'Base', type: 'select', opts: ['pct_gross', 'pct_basic', 'fixed', 'balance'], optLabels: ['% of Gross', '% of Basic', 'Fixed amount', 'Balance (remainder)'] }, { k: 'calc_value', l: 'Value (% or amount)', type: 'number' }, { k: 'taxable', l: 'Taxable?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }] },
         'incentive-schemes': { type: 'incentive-schemes', title: 'Incentive Schemes', sub: 'Portfolio incentive schemes', fields: [
             { k: 'name', l: 'Scheme Name' }, { k: 'portfolio', l: 'Portfolio' }, { k: 'basis', l: 'Basis' }, { k: 'clawback', l: 'Clawback?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
         'points-ledger': { type: 'points-ledger', title: 'Points Ledger', sub: 'Every points entry (auto-applied rules show "Auto:" in the Note; you can also add manual one-off entries). The Leaderboard ranks employees by the sum of these.', fields: [
@@ -8169,9 +8169,10 @@ CSS;
     window.psSetMonth = function (m) { window.__psMonth = m; if (typeof render === 'function') { render(); } };
     function payslipHistoryScreen() {
         var ps = window.__PAYSLIPS || [];
+        var sampleBtn = '<button class="btn btn-ghost btn-sm" onclick="viewSamplePayslip()"><i class="fas fa-eye"></i> View Sample Payslip</button>';
         var title = (typeof SCREENS !== 'undefined' && SCREENS.payslip && SCREENS.payslip.title) || 'Payslips';
         if (!ps.length) {
-            return pghead(title, 'Monthly payslip history', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No payslips yet — open Payroll → Generate Payroll.</div></div>';
+            return pghead(title, 'Monthly payslip history', sampleBtn) + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No payslips yet — open Payroll → Generate Payroll.</div></div>';
         }
         var months = [];
         ps.forEach(function (p) { if (months.indexOf(p.month) < 0) { months.push(p.month); } });
@@ -8217,10 +8218,118 @@ CSS;
             + statBox(inr(totDed), 'Total Deductions', '#ef4444', 'fa-scissors')
             + statBox(inr(totNet), 'Total Net Pay', '#16a34a', 'fa-wallet')
             + '</div>';
-        return pghead(title, 'Monthly payslip history — ' + months.length + ' month(s) on record', '')
+        return pghead(title, 'Monthly payslip history — ' + months.length + ' month(s) on record', sampleBtn)
             + band
             + '<div class="card"><div class="card-header"><div><h3>Payslips — ' + labelFor(sel) + '</h3><p>' + inMonth.length + ' employee(s) · net payable ' + inr(totNet) + '</p></div><div class="actions">' + filter + '</div></div><div class="table-wrap"><table><thead><tr><th>Code</th><th>Employee</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Status</th><th style="text-align:right">Payslip</th></tr></thead><tbody>' + (inMonth.length ? rows : '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:24px">No payslips match the filters.</td></tr>') + '</tbody></table></div></div>';
     }
+    window.viewSamplePayslip = function () {
+        var me = function (l, v) { return '<td style="padding:4px 10px 4px 0;vertical-align:top;width:33%"><div style="font-size:9px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + l + '</div><div style="font-size:12px">' + v + '</div></td>'; };
+        var th = function (t, a) { return '<th style="text-align:' + a + ';padding:4px 8px;background:var(--bg2,#f1f5f9);font-size:9px;text-transform:uppercase;color:var(--text3)">' + t + '</th>'; };
+        var er = function (n, mn, y) { return '<tr><td style="padding:3px 8px;border-bottom:1px solid var(--border)">' + n + '</td><td style="padding:3px 8px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono)">' + mn + '</td><td style="padding:3px 8px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);color:var(--text3)">' + (y || '') + '</td></tr>'; };
+        var gr = function (t) { return '<tr><td colspan="3" style="padding:4px 8px;background:var(--bg2,#f8fafc);font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:var(--text2)">' + t + '</td></tr>'; };
+        var tot = function (n, v, bd) { return '<tr><td style="padding:4px 8px;border-top:' + bd + ';font-weight:700">' + n + '</td><td style="padding:4px 8px;border-top:' + bd + ';text-align:right;font-family:var(--mono);font-weight:700">' + v + '</td><td style="border-top:' + bd + '"></td></tr>'; };
+        var lg = function (f, m) { return '<tr><td style="padding:4px 8px;border-bottom:1px solid var(--border);font-weight:600;white-space:nowrap;vertical-align:top">' + f + '</td><td style="padding:4px 8px;border-bottom:1px solid var(--border);color:var(--text2)">' + m + '</td></tr>'; };
+        var ls = function (t) { return '<tr><td colspan="2" style="padding:6px 8px;background:var(--bg2,#f8fafc);font-weight:700;font-size:12px">' + t + '</td></tr>'; };
+
+        var banner = '<div style="background:var(--bg2,#eff6ff);border:1px solid var(--border);border-left:4px solid #3b82f6;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--text2)">This is a <b>sample</b> of a fully-configured collection-industry payslip. It shows every section the real PDF can produce and explains what each field means. Your actual payslips are filled from the employee record, salary structure and the monthly payroll run.</div>';
+
+        var hdr = '<div style="background:#0c1929;color:#fff;padding:12px 16px;border-radius:8px 8px 0 0"><table style="width:100%"><tr>'
+            + '<td style="width:54px;vertical-align:middle"><div style="width:42px;height:42px;border-radius:9px;background:#f97316;color:#fff;text-align:center;line-height:42px;font-size:21px;font-weight:700">A</div></td>'
+            + '<td style="vertical-align:middle"><div style="font-size:16px;font-weight:700">Apex Collections Pvt. Ltd.</div>'
+            + '<div style="color:#9fb0c4;font-size:11px">HITEC City, Hyderabad, Telangana &#8211; 500081 &#183; GSTIN: 27ABCDE1234F1Z5 &#183; PAN: ABCDE1234F</div>'
+            + '<div style="color:#9fb0c4;font-size:11px">Ph: +91 40 1234 5678 &#183; hr@apexcollections.in</div></td>'
+            + '<td style="text-align:right;vertical-align:middle;white-space:nowrap"><div style="font-weight:700;letter-spacing:.5px">PAYSLIP</div><div style="color:#9fb0c4;font-size:11px">August 2026</div><div style="color:#9fb0c4;font-size:11px">ID: PRS/202608/A0028</div></td>'
+            + '</tr></table></div>';
+
+        var meta = '<table style="width:100%;border-collapse:collapse;margin:8px 0"><tbody>'
+            + '<tr>' + me('Employee', 'Satya Kumar') + me('Employee Code', 'A0028') + me('Designation', 'Field Recovery Executive') + '</tr>'
+            + '<tr>' + me('Department', 'Collections &#8211; Field') + me('Branch / Location', 'Hyderabad') + me('Date of Joining', '01 Apr 2024') + '</tr>'
+            + '<tr>' + me('PAN', 'ABCDE1234F') + me('PF No. (UAN)', '100200000000') + me('ESI', 'Applicable') + '</tr>'
+            + '<tr>' + me('Bank A/C', 'XXXX4821 (SBIN0001234)') + me('Pay Period', 'August 2026') + me('Paid Days / LOP', '31 / 0') + '</tr>'
+            + '<tr>' + me('Employee Type', 'Field') + me('Annual CTC', '&#8377;2,40,000.00') + me('Pay Date', '31 Aug 2026') + '</tr>'
+            + '</tbody></table>';
+
+        var earn = '<table style="width:100%;border-collapse:collapse;border:1px solid var(--border)"><thead><tr>' + th('Earnings', 'left') + th('Month', 'right') + th('YTD', 'right') + '</tr></thead><tbody>'
+            + gr('A &#183; Fixed (guaranteed)')
+            + er('Basic', '&#8377;9,000.00', '&#8377;45,000.00')
+            + er('HRA', '&#8377;3,600.00', '&#8377;18,000.00')
+            + er('Conveyance', '&#8377;1,600.00', '&#8377;8,000.00')
+            + er('Special Allowance', '&#8377;800.00', '&#8377;4,000.00')
+            + gr('B &#183; Variable (performance)')
+            + er('Collection Incentive', '&#8377;2,000.00', '&#8377;9,400.00')
+            + er('Recovery Commission', '&#8377;1,500.00', '&#8377;7,000.00')
+            + tot('Gross Earnings (A + B)', '&#8377;18,500.00', '1.5px solid #0c1929')
+            + gr('C &#183; Reimbursements (non-taxable, paid on top)')
+            + er('Fuel Reimbursement', '&#8377;3,000.00', '&#8377;15,000.00')
+            + tot('Reimbursements (C)', '&#8377;3,000.00', '1px dashed var(--border)')
+            + '</tbody></table>';
+
+        var ded = '<table style="width:100%;border-collapse:collapse;border:1px solid var(--border)"><thead><tr>' + th('Deductions', 'left') + th('Month', 'right') + th('YTD', 'right') + '</tr></thead><tbody>'
+            + er('PF (12% of Basic)', '&#8377;1,080.00', '&#8377;5,400.00')
+            + er('ESI (0.75% of wage)', '&#8377;139.00', '&#8377;695.00')
+            + er('Professional Tax', '&#8377;150.00', '&#8377;750.00')
+            + er('TDS (income tax)', '&#8377;0.00', '&#8211;')
+            + er('Labour Welfare Fund', '&#8377;30.00', '&#8377;150.00')
+            + tot('Total Deductions', '&#8377;1,399.00', '1.5px solid #0c1929')
+            + '</tbody></table>';
+
+        var memo = '<div style="border:1px solid var(--border);border-radius:6px;background:var(--bg2,#f8fafc);padding:8px 10px;margin-top:8px;font-size:11px">'
+            + '<div style="font-size:9px;text-transform:uppercase;color:var(--text3);margin-bottom:4px">Employer contribution &mdash; cost to company (not deducted)</div>'
+            + '<table style="width:100%"><tr>'
+            + '<td>Employer PF<br><b>&#8377;1,080.00</b></td><td>Employer ESI<br><b>&#8377;602.33</b></td><td>EDLI + Gratuity<br><b>&#8377;477.90</b></td><td>Monthly CTC<br><b>&#8377;23,660.23</b></td>'
+            + '</tr></table></div>';
+
+        var net = '<div style="background:#0c1929;color:#fff;border-radius:6px;padding:10px 16px;margin-top:8px"><table style="width:100%"><tr>'
+            + '<td>Net Pay (August 2026)<div style="color:#cbd5e1;font-size:10px">Net = Gross earnings (A+B) &#8377;18,500.00 + reimbursements (C) &#8377;3,000.00 &#8722; total deductions &#8377;1,399.00</div></td>'
+            + '<td style="text-align:right;font-size:18px;font-weight:700">&#8377;20,101.00</td></tr></table></div>';
+
+        var sheet = '<div style="width:700px;max-width:100%;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;margin:0 auto">' + hdr
+            + '<div style="padding:10px 12px">' + meta
+            + '<table style="width:100%;table-layout:fixed;border-collapse:collapse"><tr>'
+            + '<td style="width:54%;vertical-align:top;padding-right:6px">' + earn + '</td>'
+            + '<td style="width:46%;vertical-align:top;padding-left:6px">' + ded + memo + '</td>'
+            + '</tr></table>'
+            + net + '</div></div>';
+
+        var legend = '<h3 style="margin:6px 0 6px;font-size:14px">What every field means</h3><table style="width:100%;border-collapse:collapse;font-size:12px;border:1px solid var(--border)"><tbody>'
+            + ls('Header &mdash; employer identity')
+            + lg('Company block', 'Legal name, registered address, GSTIN and PAN of the employer. Proves the payslip is from a real, registered company &mdash; the first thing a bank checks for a loan.')
+            + lg('Payslip ID', 'Unique code (PRS/YYYYMM/EmpCode) used to verify the payslip is authentic and not forged.')
+            + ls('Employee block')
+            + lg('Designation / Dept / Branch', 'Role, team and office. With the joining date they show seniority and tenure, which banks weigh for loans.')
+            + lg('PAN', 'Income-tax number, used for TDS and Form 16.')
+            + lg('PF No. (UAN)', '12-digit Universal Account Number linking all PF contributions.')
+            + lg('ESI', 'Whether Employees State Insurance applies (auto when monthly wage is &le; &#8377;21,000).')
+            + lg('Paid Days / LOP', 'Days actually paid vs Loss-of-Pay (unpaid absence). Fewer paid days lower the pay proportionally.')
+            + lg('Annual CTC', 'Total yearly cost-to-company; monthly wage = CTC &#247; 12.')
+            + ls('Earnings')
+            + lg('A &#183; Fixed', 'Guaranteed monthly pay (Basic, HRA, Conveyance, allowances). Banks lend against this stable portion.')
+            + lg('B &#183; Variable', 'Performance pay (collection incentive, recovery commission). Banks usually discount this as it fluctuates.')
+            + lg('C &#183; Reimbursements', 'Bills-based payouts (fuel, field allowance). Non-taxable, paid on top, and excluded from the PF/ESI wage base.')
+            + lg('Gross Earnings (A + B)', 'The wage on which statutory deductions are computed.')
+            + lg('Month / YTD', 'Each line shows this month plus the financial-year-to-date total (from April).')
+            + ls('Deductions')
+            + lg('PF', 'Provident Fund &mdash; 12% of Basic (capped at &#8377;15,000 Basic).')
+            + lg('ESI', '0.75% of wage when eligible (wage &le; &#8377;21,000).')
+            + lg('Professional Tax', 'State tax by salary slab (Telangana shown).')
+            + lg('TDS', 'Monthly income-tax deducted at source (new regime).')
+            + lg('Labour Welfare Fund', 'Optional state levy; appears only when enabled in Settings.')
+            + ls('Employer contribution (memo)')
+            + lg('Employer PF / ESI / EDLI / Gratuity', 'What the company pays over and above salary. NOT deducted from the employee &mdash; shown so the true cost-to-company is transparent.')
+            + ls('Net pay')
+            + lg('Net Pay', 'Gross earnings (A+B) + reimbursements (C) &#8722; total deductions. The amount credited to the bank account.')
+            + '</tbody></table>';
+
+        // Open the sample straight in a NEW TAB (no popup) — full-size replica + Print.
+        var winCss = ':root{--border:#e2e8f0;--text2:#334155;--text3:#64748b;--bg2:#f8fafc;--mono:Consolas,monospace}body{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;margin:0;padding:22px;background:#eef1f5}.wrap{max-width:760px;margin:0 auto}h3{font-size:14px;margin:16px 0 6px}@media print{body{background:#fff;padding:0}.noprint{display:none}}';
+        var doc = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Sample Payslip &mdash; SmartPRS</title><style>' + winCss + '</style></head><body>'
+            + '<div class="noprint" style="max-width:760px;margin:0 auto 12px;text-align:right"><button onclick="window.print()" style="padding:8px 14px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer">Print / Save as PDF</button></div>'
+            + '<div class="wrap">' + banner + sheet + legend + '</div></body></html>';
+        var w = window.open('', '_blank');
+        if (! w) { if (typeof toast === 'function') { toast('Popup blocked — allow popups for this site, then click View Sample Payslip again.'); } return; }
+        w.document.write(doc);
+        w.document.close();
+    };
     window.psSetCo = function (v) { window.__psCo = v; if (typeof render === 'function') { render(); } };
     window.psSetQ = function (v) { window.__psQ = v; if (typeof render === 'function') { render(); } };
     // Bulk export the visible (month + company + search) payslips to CSV — works

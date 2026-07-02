@@ -448,6 +448,7 @@ class PayrollGenController extends Controller
                         .(! empty($r->gross_amount) ? ': gross Rs '.number_format((float) $r->gross_amount, 2).' - TDS Rs '.number_format((float) ($r->tds_amount ?? 0), 2).' =' : ':')
                         .' Rs '.number_format((float) $r->amount, 2)
                         .($payout !== '' ? ' (payout '.substr($payout, 0, 10).')' : ''),
+                    'purpose' => trim((string) (($r->purpose ?? '') ?: 'Commission')) ?: 'Commission',
                     'amount' => (float) $r->amount,
                 ];
             }
@@ -665,6 +666,13 @@ class PayrollGenController extends Controller
                 : AppDataController::computeSlip($ctc * $factor, $rates);
             $commission = (float) ($commByEmp[$e->id] ?? 0.0);
             $commRows = $commRowsByEmp[$e->id] ?? [];
+            // rev165 — split commission entries by Purpose so incentive and
+            // commission show as SEPARATE variable lines (sum still = $commission).
+            $commMap = [];
+            foreach ($commRows as $cr) {
+                $pu = trim((string) ($cr['purpose'] ?? 'Commission')) ?: 'Commission';
+                $commMap[$pu] = round(($commMap[$pu] ?? 0) + (float) ($cr['amount'] ?? 0), 2);
+            }
             $gross = round($s['gross'] + $commission, 2);
             $net = round($s['net'] + $commission, 2);
             $note = $this->calcNote($ctc, $s, (bool) $lop, $present, $leave, $working, $factor, $lateDays, $lateCut, $breakCut, $pol, $commission, array_column($commRows, 'label'));
@@ -681,6 +689,7 @@ class PayrollGenController extends Controller
                 'lateCut' => $lop ? round($lateCut, 2) : null,
                 'breakCut' => $lop ? round($breakCut, 2) : null,
                 'commission' => round($commission, 2),
+                'commissionMap' => $commMap,
                 'commissionIds' => array_column($commRows, 'id'),
                 'note' => $note,
                 'factor' => round($factor, 4),
@@ -1260,7 +1269,16 @@ class PayrollGenController extends Controller
                 $earnings = ! empty($r['earnings'])
                     ? $r['earnings']
                     : ['Basic' => $r['basic'], 'HRA' => $r['hra'], 'Special Allowance' => $r['special']];
-                if (! empty($r['commission'])) {
+                if (! empty($r['commissionMap'])) {
+                    // Each commission Purpose becomes its own variable earning line
+                    // (e.g. Recovery Commission, Collection Incentive).
+                    foreach ($r['commissionMap'] as $cpurp => $camt) {
+                        if ((float) $camt == 0.0) {
+                            continue;
+                        }
+                        $earnings[$cpurp] = round(($earnings[$cpurp] ?? 0) + (float) $camt, 2);
+                    }
+                } elseif (! empty($r['commission'])) {
                     $earnings['Commission'] = $r['commission'];
                 }
                 $deductions = ! empty($r['deductionsMap'])

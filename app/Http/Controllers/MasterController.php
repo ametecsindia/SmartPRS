@@ -215,8 +215,8 @@ class MasterController extends Controller
             ],
             'salary-setup' => [
                 'table' => 'salary_components',
-                'cols' => ['company_name' => 'string', 'scope' => 'string', 'scope_target' => 'string', 'code' => 'string', 'name' => 'string', 'ctype' => 'string', 'base' => 'string', 'calc_value' => 'decimal', 'seq' => 'int', 'calc_type' => 'string', 'taxable' => 'bool'],
-                'fields' => ['company_name', 'scope', 'scope_target', 'code', 'name', 'ctype', 'base', 'calc_value', 'seq', 'taxable'],
+                'cols' => ['company_name' => 'string', 'scope' => 'string', 'scope_target' => 'string', 'code' => 'string', 'name' => 'string', 'ctype' => 'string', 'category' => 'string', 'base' => 'string', 'calc_value' => 'decimal', 'seq' => 'int', 'calc_type' => 'string', 'taxable' => 'bool'],
+                'fields' => ['company_name', 'scope', 'scope_target', 'code', 'name', 'ctype', 'category', 'base', 'calc_value', 'seq', 'taxable'],
                 'label' => 'Salary Component', 'order' => 'seq', 'required' => ['code', 'name'],
             ],
             'incentive-schemes' => [

@@ -620,7 +620,7 @@ class SalaryApprovalController extends Controller
                 $lines['Remarks'] = $remarks;
             }
 
-            \App\Services\MailService::queue([
+            $payload = [
                 'tenant_id' => $emp->tenant_id,
                 'company_id' => $slip->company_id ?? $emp->company_id,
                 'to' => $emp->email,
@@ -629,9 +629,27 @@ class SalaryApprovalController extends Controller
                 'heading' => $subject,
                 'intro' => $intro,
                 'lines' => $lines,
-                'body' => $status === 'disbursed' ? 'Acknowledging confirms you have received this salary; the timestamp is recorded as your e-signature.' : '',
+                'body' => $status === 'disbursed' ? 'Your payslip is attached. Acknowledging confirms you have received this salary; the timestamp is recorded as your e-signature.' : '',
                 'kind' => 'salary.'.$status,
-            ]);
+            ];
+
+            // rev168 (Ejaz): attach the actual payslip PDF when salary is disbursed.
+            // Best-effort — a PDF/render problem must never block the notification.
+            if ($status === 'disbursed' && $month !== '') {
+                try {
+                    $pdf = app(\App\Http\Controllers\AppDataController::class)
+                        ->payslipPdfString((int) $slip->employee_id, (string) $month);
+                    if ($pdf) {
+                        $payload['attach_b64'] = base64_encode($pdf);
+                        $payload['attach_name'] = 'payslip-'.($emp->emp_code ?? $slip->employee_id).'-'.$month.'.pdf';
+                        $payload['attach_mime'] = 'application/pdf';
+                    }
+                } catch (\Throwable $ex) {
+                    // attachment is optional; the email still sends without it
+                }
+            }
+
+            \App\Services\MailService::queue($payload);
         } catch (\Throwable $e) {
             // notifications are best-effort
         }

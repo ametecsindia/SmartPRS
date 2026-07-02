@@ -455,6 +455,43 @@ class AppDataController extends Controller
         $month = $request->query('month', now()->format('Y-m'));
         $rates = SettingsController::rates($e->tenant_id);
 
+        $data = $this->payslipViewData($e, $company, $month, $rates);
+
+        return \Barryvdh\DomPDF\Facade\Pdf::loadView('payslip-pdf', $data)
+            ->setPaper('a4', 'portrait')
+            ->download('payslip-'.$code.'-'.$month.'.pdf');
+    }
+
+    /**
+     * Render the payslip PDF for an employee id + month as raw bytes, for emailing
+     * (e.g. attached on disbursement). Best-effort — returns null on any failure so
+     * a mail problem never blocks the salary action.
+     */
+    public function payslipPdfString(int $employeeId, string $month): ?string
+    {
+        try {
+            $e = DB::table('employees')->where('id', $employeeId)->whereNull('deleted_at')->first();
+            if (! $e) {
+                return null;
+            }
+            $company = DB::table('companies')->find($e->company_id);
+            $rates = SettingsController::rates($e->tenant_id);
+            $data = $this->payslipViewData($e, $company, $month, $rates);
+
+            return \Barryvdh\DomPDF\Facade\Pdf::loadView('payslip-pdf', $data)
+                ->setPaper('a4', 'portrait')->output();
+        } catch (\Throwable $ex) {
+            return null;
+        }
+    }
+
+    /**
+     * Build the full view-data array for the payslip PDF (prefers the stored slip
+     * for the month; falls back to a full-CTC computation). Shared by the download
+     * route and the email attachment. READ-ONLY — recomputes nothing stored.
+     */
+    private function payslipViewData($e, $company, string $month, array $rates): array
+    {
         // Prefer the actual generated payslip for this month (it carries the real
         // proration, late/break cuts and the calculation note); fall back to a
         // full-CTC computation if no run exists yet.
@@ -487,7 +524,71 @@ class AppDataController extends Controller
             $s = self::computeSlip((float) $e->ctc, $rates);
         }
 
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('payslip-pdf', [
+        // --- rev162 (Payslip Phase 1, DISPLAY-ONLY): richer, A4 payslip metadata.
+        // Everything below is READ-ONLY and additive. It never changes net pay or
+        // any stored figure; it only enriches what the PDF prints.
+        $emp = $this->payslipEmployeeMeta($e);
+        $employer = self::payslipEmployerCost($s, $rates);
+        $payslipId = 'PRS/'.str_replace('-', '', $month).'/'.$e->emp_code;
+
+        // Paid days / LOP — read from the calc note if it recorded proration,
+        // otherwise assume a full month (no LOP).
+        $totalDays = \Illuminate\Support\Carbon::parse($month.'-01')->daysInMonth;
+        $paidDays = $totalDays;
+        $lopDays = 0;
+        if ($note && preg_match('/Paid\s+([\d.]+)\s+of\s+(\d+)\s+days/i', $note, $pm)) {
+            $paidDays = (float) $pm[1];
+            $totalDays = (int) $pm[2];
+            $lopDays = round($totalDays - $paidDays, 1);
+        }
+
+        // Approved leave taken this financial-year, compact per type. Defensive.
+        $leaveStr = '';
+        try {
+            if (Schema::hasTable('leaves')) {
+                $yr = (int) substr($month, 0, 4);
+                $lrows = DB::table('leaves')->where('employee_id', $e->id)
+                    ->where('status', 'approved')->whereYear('from_date', $yr)
+                    ->get(['type_name', 'days']);
+                $agg = [];
+                foreach ($lrows as $lr) {
+                    $k = $lr->type_name ?: 'Leave';
+                    $agg[$k] = ($agg[$k] ?? 0) + (float) $lr->days;
+                }
+                $parts = [];
+                foreach ($agg as $k => $v) {
+                    $parts[] = $k.' '.rtrim(rtrim(number_format($v, 1), '0'), '.');
+                }
+                $leaveStr = implode('  ·  ', $parts);
+            }
+        } catch (\Throwable $ex) {
+            $leaveStr = '';
+        }
+
+        // --- P2 (Fixed/Variable/Reimbursement grouping) + P3 (financial-year-to-date).
+        // DISPLAY-ONLY: read-only classification + aggregation; no figure is recomputed.
+        $earnForGroup = $earnMap ?: array_filter([
+            'Basic' => (float) ($s['basic'] ?? 0),
+            'HRA' => (float) ($s['hra'] ?? 0),
+            'Special Allowance' => (float) ($s['special'] ?? 0),
+            'Commission' => (float) ($s['commission'] ?? 0),
+        ], fn ($v) => $v != 0.0);
+        $dedForShow = $dedMap ?: array_filter([
+            'PF' => (float) ($s['pf'] ?? 0),
+            'ESI' => (float) ($s['esi'] ?? 0),
+            'Professional Tax' => (float) ($s['pt'] ?? 0),
+            'TDS' => (float) ($s['tds'] ?? 0),
+            'Labour Welfare Fund' => (float) ($s['lwf'] ?? 0),
+        ], fn ($v) => $v != 0.0);
+
+        $ytd = $this->payslipYtd((int) $e->id, $month);
+        $grouped = $this->payslipGroupEarnings($e, $earnForGroup, $ytd['earn'] ?? []);
+        $dedLines = [];
+        foreach ($dedForShow as $dn => $dv) {
+            $dedLines[] = ['name' => $dn, 'amt' => (float) $dv, 'ytd' => (float) ($ytd['ded'][$dn] ?? 0)];
+        }
+
+        return [
             'e' => $e,
             'company' => $company,
             'brand' => ConfigController::brandFor($e->tenant_id, $e->company_id),
@@ -497,9 +598,164 @@ class AppDataController extends Controller
             'note' => $note,
             'earnMap' => $earnMap,
             'dedMap' => $dedMap,
-        ]);
+            'emp' => $emp,
+            'employer' => $employer,
+            'payslipId' => $payslipId,
+            'paidDays' => $paidDays,
+            'lopDays' => $lopDays,
+            'totalDays' => $totalDays,
+            'leaveStr' => $leaveStr,
+            'grouped' => $grouped,
+            'dedLines' => $dedLines,
+            'ytd' => $ytd,
+        ];
+    }
 
-        return $pdf->download('payslip-'.$code.'-'.$month.'.pdf');
+    /**
+     * Resolve display names for the payslip header (designation / department /
+     * branch / DOJ). READ-ONLY — used only by the PDF. Prefers a string column
+     * if present, else looks up the *_id reference table; never throws.
+     */
+    private function payslipEmployeeMeta($e): array
+    {
+        $name = function (string $strCol, string $idCol, string $table) use ($e) {
+            $v = property_exists($e, $strCol) ? trim((string) ($e->$strCol ?? '')) : '';
+            if ($v !== '') {
+                return $v;
+            }
+            $id = property_exists($e, $idCol) ? ($e->$idCol ?? null) : null;
+            if ($id) {
+                try {
+                    return (string) (DB::table($table)->where('id', $id)->value('name') ?? '—');
+                } catch (\Throwable $ex) {
+                    return '—';
+                }
+            }
+            return '—';
+        };
+        $doj = (property_exists($e, 'doj') && $e->doj)
+            ? \Illuminate\Support\Carbon::parse($e->doj)->format('d M Y') : '—';
+
+        return [
+            'designation' => $name('designation', 'designation_id', 'designations'),
+            'department' => $name('department', 'department_id', 'departments'),
+            'branch' => $name('branch', 'branch_id', 'branches'),
+            'doj' => $doj,
+            'type' => ucfirst((string) ($e->type ?? '')),
+        ];
+    }
+
+    /**
+     * Indicative EMPLOYER cost for the CTC memo block (employer PF, employer ESI,
+     * EDLI, gratuity accrual, and total monthly CTC). READ-ONLY and NEVER added
+     * to employee deductions. Uses exact figures from computeSlip when available,
+     * otherwise derives them from the stored employee PF/ESI so the memo always
+     * stays consistent with the deductions actually shown.
+     */
+    public static function payslipEmployerCost(array $s, ?array $rates = null): array
+    {
+        $r = $rates ?: SettingsController::defaults();
+        $basic = (float) ($s['basic'] ?? 0);
+        $empPf = isset($s['pf_employer']) ? (float) $s['pf_employer'] : (float) ($s['pf'] ?? 0);
+        $eeRate = (float) ($r['esi_employee_rate'] ?? 0.75);
+        $erRate = (float) ($r['esi_employer_rate'] ?? 3.25);
+        $empEsi = isset($s['esi_employer'])
+            ? (float) $s['esi_employer']
+            : ($eeRate > 0 ? round((float) ($s['esi'] ?? 0) * $erRate / $eeRate, 2) : 0.0);
+        $edli = isset($s['pf_edli']) ? (float) $s['pf_edli'] : round(min($basic, 15000.0) * 0.5 / 100, 2);
+        $gratuity = round($basic * 4.81 / 100, 2);
+        $ctc = round((float) ($s['gross'] ?? 0) + $empPf + $empEsi + $edli + $gratuity, 2);
+
+        return [
+            'pf' => round($empPf, 2), 'esi' => round($empEsi, 2),
+            'edli' => round($edli, 2), 'gratuity' => $gratuity, 'ctc' => $ctc,
+        ];
+    }
+
+    /**
+     * Financial-year-to-date (Apr→current month) totals per earning/deduction plus
+     * gross/deductions/net, aggregated from stored payslips. READ-ONLY. Month keys
+     * are 'YYYY-MM' (zero-padded) so lexicographic range compare is correct.
+     */
+    private function payslipYtd(int $empId, string $month): array
+    {
+        $out = ['earn' => [], 'ded' => [], 'gross' => 0.0, 'ded_total' => 0.0, 'net' => 0.0];
+        try {
+            $y = (int) substr($month, 0, 4);
+            $mm = (int) substr($month, 5, 2);
+            $fyStart = sprintf('%04d-04', $mm >= 4 ? $y : $y - 1);
+            $rows = DB::table('payslips')->where('employee_id', $empId)
+                ->where('month', '>=', $fyStart)->where('month', '<=', $month)
+                ->get(['earnings', 'deductions', 'gross', 'total_ded', 'net']);
+            foreach ($rows as $row) {
+                $en = json_decode($row->earnings ?: '{}', true) ?: [];
+                $dd = json_decode($row->deductions ?: '{}', true) ?: [];
+                foreach ($en as $k => $v) {
+                    $out['earn'][$k] = ($out['earn'][$k] ?? 0) + (float) $v;
+                }
+                foreach ($dd as $k => $v) {
+                    $out['ded'][$k] = ($out['ded'][$k] ?? 0) + (float) $v;
+                }
+                $out['gross'] += (float) $row->gross;
+                $out['ded_total'] += (float) $row->total_ded;
+                $out['net'] += (float) $row->net;
+            }
+        } catch (\Throwable $ex) {
+        }
+
+        return $out;
+    }
+
+    /**
+     * Classify earning lines into Fixed / Variable / Reimbursement for the grouped
+     * payslip. Uses the component's Category (from salary_components) when set, else
+     * a name heuristic. READ-ONLY. Returns groups[] + subtotals[].
+     */
+    private function payslipGroupEarnings($e, array $earnMap, array $ytdEarn): array
+    {
+        $catMap = [];
+        try {
+            $rows = DB::table('salary_components')
+                ->when(property_exists($e, 'tenant_id') && $e->tenant_id, fn ($q) => $q->where('tenant_id', $e->tenant_id))
+                ->get(['code', 'name', 'category']);
+            foreach ($rows as $rc) {
+                $cat = strtolower(trim((string) ($rc->category ?? '')));
+                if ($cat === '') {
+                    continue;
+                }
+                if (! empty($rc->name)) {
+                    $catMap[strtolower(trim($rc->name))] = $cat;
+                }
+                if (! empty($rc->code)) {
+                    $catMap[strtolower(trim($rc->code))] = $cat;
+                }
+            }
+        } catch (\Throwable $ex) {
+        }
+        $classify = function (string $name) use ($catMap) {
+            $lc = strtolower(trim($name));
+            if (isset($catMap[$lc]) && in_array($catMap[$lc], ['fixed', 'variable', 'reimbursement'], true)) {
+                return $catMap[$lc];
+            }
+            if (str_contains($lc, 'reimburs')) {
+                return 'reimbursement';
+            }
+            foreach (['commission', 'incentive', 'bonus', 'overtime', 'arrear', 'ex-gratia', 'ex gratia', 'payout', 'variable'] as $kw) {
+                if (str_contains($lc, $kw)) {
+                    return 'variable';
+                }
+            }
+            return 'fixed';
+        };
+        $groups = ['fixed' => [], 'variable' => [], 'reimbursement' => []];
+        $sub = ['fixed' => 0.0, 'variable' => 0.0, 'reimbursement' => 0.0];
+        foreach ($earnMap as $name => $amt) {
+            $g = $classify((string) $name);
+            $groups[$g][] = ['name' => $name, 'amt' => (float) $amt, 'ytd' => (float) ($ytdEarn[$name] ?? 0)];
+            $sub[$g] += (float) $amt;
+        }
+
+        return ['groups' => $groups, 'sub' => $sub];
     }
 
     /** Statutory reports (PF / ESI challans, TDS statement) as downloadable PDFs. */
@@ -785,11 +1041,13 @@ class AppDataController extends Controller
         $esi = $st['esi'];
         $pt = $st['pt'];
         $tds = self::salaryTdsMonthly($ctc);
-        $totalDed = round($pf + $esi + $pt + $tds, 2);
+        // Optional Labour Welfare Fund (state-specific) — OFF unless enabled in Settings.
+        $lwf = (! empty($r['lwf_enabled'])) ? (float) ($r['lwf_employee'] ?? 0) : 0.0;
+        $totalDed = round($pf + $esi + $pt + $tds + $lwf, 2);
 
         return [
             'gross' => $gross, 'basic' => $basic, 'hra' => $hra, 'special' => $special,
-            'pf' => $pf, 'esi' => $esi, 'pt' => $pt, 'tds' => $tds,
+            'pf' => $pf, 'esi' => $esi, 'pt' => $pt, 'tds' => $tds, 'lwf' => round($lwf, 2),
             'pf_wage' => $st['pf_wage'], 'pf_employer' => $st['pf_employer'], 'pf_eps' => $st['pf_eps'],
             'pf_epf_employer' => $st['pf_epf_employer'], 'pf_edli' => $st['pf_edli'], 'esi_employer' => $st['esi_employer'],
             'total_ded' => $totalDed, 'net' => round($gross - $totalDed, 2),
@@ -834,7 +1092,22 @@ class AppDataController extends Controller
         $isBasic = fn (array $c) => str_contains(strtolower((string) ($c['code'] ?? '').' '.(string) ($c['name'] ?? '')), 'basic');
         $nameOf = fn (array $c) => (string) (($c['name'] ?? '') ?: ($c['code'] ?? 'Component'));
 
-        $earnComps = array_values(array_filter($comps, fn ($c) => ($c['ctype'] ?? 'earning') !== 'deduction'));
+        // A component is a REIMBURSEMENT when its category says so, or its name/code
+        // clearly is one. Reimbursements are paid on top of the wage: they are carved
+        // out of the "balance" and EXCLUDED from the statutory (PF/ESI/PT) wage base,
+        // matching how bills-based reimbursements are treated. With none present the
+        // maths is byte-identical to before (wage gross = gross).
+        $isReimb = function (array $c) {
+            $cat = strtolower(trim((string) ($c['category'] ?? '')));
+            if ($cat === 'reimbursement') {
+                return true;
+            }
+            $txt = strtolower((string) ($c['code'] ?? '').' '.(string) ($c['name'] ?? ''));
+            return str_contains($txt, 'reimburs');
+        };
+        $allEarn = array_values(array_filter($comps, fn ($c) => ($c['ctype'] ?? 'earning') !== 'deduction'));
+        $reimbComps = array_values(array_filter($allEarn, $isReimb));
+        $earnComps = array_values(array_filter($allEarn, fn ($c) => ! $isReimb($c)));
         $dedComps = array_values(array_filter($comps, fn ($c) => ($c['ctype'] ?? '') === 'deduction'));
 
         // Resolve Basic first (so pct_basic components can reference it).
@@ -845,6 +1118,25 @@ class AppDataController extends Controller
                 $basic += $base === 'fixed' ? $val($c) : ($val($c) / 100 * $gross);
             }
         }
+
+        // Reimbursement amounts (usually fixed; pct supported). Summed OUT of the
+        // wage gross used for the balance split and statutory deductions.
+        $reimbursements = [];
+        $reimbTotal = 0.0;
+        foreach ($reimbComps as $c) {
+            $base = $baseOf($c);
+            if ($base === 'pct_basic') {
+                $amt = $val($c) / 100 * $basic;
+            } elseif ($base === 'fixed') {
+                $amt = $val($c);
+            } else { // pct_gross / anything else
+                $amt = $val($c) / 100 * $gross;
+            }
+            $amt = round($amt, 2);
+            $reimbursements[$nameOf($c)] = ($reimbursements[$nameOf($c)] ?? 0) + $amt;
+            $reimbTotal += $amt;
+        }
+        $wageGross = round($gross - $reimbTotal, 2);
 
         $earnings = [];
         $earnSum = 0.0;
@@ -867,9 +1159,10 @@ class AppDataController extends Controller
             $earnSum += $amt;
         }
 
-        // Balance components share the remainder so earnings reconcile to gross.
+        // Balance components share the remainder so earnings reconcile to the WAGE
+        // gross (gross minus reimbursements). With no reimbursements this is gross.
         $balanceComps = array_values(array_filter($earnComps, fn ($c) => $baseOf($c) === 'balance'));
-        $remainder = round($gross - $earnSum, 2);
+        $remainder = round($wageGross - $earnSum, 2);
         if ($balanceComps) {
             $n = count($balanceComps);
             $each = round($remainder / $n, 2);
@@ -896,7 +1189,7 @@ class AppDataController extends Controller
                 $da += (float) $ea;
             }
         }
-        $st = self::statutory($gross, $basic + $da, $r);
+        $st = self::statutory($wageGross, $basic + $da, $r);
         $pf = $st['pf'];
         $esi = $st['esi'];
         $pt = $st['pt'];
@@ -913,9 +1206,15 @@ class AppDataController extends Controller
             }
             $deductions[$nameOf($c)] = round(($deductions[$nameOf($c)] ?? 0) + round($amt, 2), 2);
         }
+        // Optional Labour Welfare Fund (state-specific) — OFF unless enabled in Settings.
+        $lwf = (! empty($r['lwf_enabled'])) ? (float) ($r['lwf_employee'] ?? 0) : 0.0;
+        if ($lwf > 0) {
+            $deductions['Labour Welfare Fund'] = round(($deductions['Labour Welfare Fund'] ?? 0) + $lwf, 2);
+        }
         $totalDed = round(array_sum($deductions), 2);
 
-        // Legacy keys for the fixed-column preview.
+        // Legacy keys for the fixed-column preview (computed on wage earnings only,
+        // before reimbursements are folded into the display map).
         $hra = 0.0;
         foreach ($earnings as $name => $amt) {
             if (stripos($name, 'hra') !== false || stripos($name, 'rent') !== false) {
@@ -924,10 +1223,17 @@ class AppDataController extends Controller
         }
         $special = round($earnSum - $basic - $hra, 2);
 
+        // Fold reimbursements into the earnings map so they appear on the slip.
+        // gross stays CTC/12 = wage earnings + reimbursements, so net = gross - deductions.
+        foreach ($reimbursements as $rn => $ra) {
+            $earnings[$rn] = round(($earnings[$rn] ?? 0) + $ra, 2);
+        }
+
         return [
             'gross' => $gross, 'basic' => round($basic, 2), 'hra' => round($hra, 2), 'special' => $special,
             'earnings' => $earnings, 'deductions' => $deductions,
-            'pf' => $pf, 'esi' => $esi, 'pt' => $pt, 'tds' => $tds,
+            'reimbursements' => round($reimbTotal, 2), 'reimbursement_map' => $reimbursements, 'wage_gross' => $wageGross,
+            'pf' => $pf, 'esi' => $esi, 'pt' => $pt, 'tds' => $tds, 'lwf' => round($lwf, 2),
             'pf_wage' => $st['pf_wage'], 'pf_employer' => $st['pf_employer'], 'pf_eps' => $st['pf_eps'],
             'pf_epf_employer' => $st['pf_epf_employer'], 'pf_edli' => $st['pf_edli'], 'esi_employer' => $st['esi_employer'],
             'total_ded' => $totalDed, 'net' => round($gross - $totalDed, 2),
