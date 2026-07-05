@@ -48,10 +48,23 @@ return [
     | Shared secret for OFFLINE self-contained License Codes (rev146). The
     | Super Admin signs a key with it; the client verifies the signature
     | locally — no server needed. It MUST be identical on the Super Admin and
-    | on every client install (it is the same baked default unless overridden;
-    | if you set SMARTPRS_LICENCE_SECRET, set the SAME value everywhere).
+    | on every client install.
+    |
+    | rev166 SECURITY: no working default is shipped. The signing/verifying
+    | secret has no usable fallback in production — see LicenseService::offlineSecret(),
+    | which refuses to sign or verify a License Code unless SMARTPRS_LICENCE_SECRET
+    | is set, so codes can never be forged with a default lifted from the source.
+    | The check is at point-of-use (NOT config load) so setup, migrations and any
+    | non-licensing operation still run when the secret is absent.
+    | Generate a strong random value (e.g. `php artisan key:generate --show`) and
+    | set the SAME value on the licensing server and in each client's .env.
     */
-    'licence_secret' => env('SMARTPRS_LICENCE_SECRET', 'SmartPRS-Ametecs-Offline-LC-v1-9f3c7a2e8b6d41f5'),
+    'licence_secret' => env('SMARTPRS_LICENCE_SECRET'),
+
+    // rev167 — per-install account email a License Code is matched against.
+    // Set per client at build/install (blank = no email lock). Compared to the
+    // 'a' claim inside offline License Codes — see LicenseService offline keys.
+    'licence_email' => env('SMARTPRS_LICENCE_EMAIL'),
 
     'default_company_code' => env('SMARTPRS_DEFAULT_COMPANY_CODE', 'DEMO'),
 

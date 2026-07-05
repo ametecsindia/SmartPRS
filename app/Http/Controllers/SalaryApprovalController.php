@@ -254,6 +254,11 @@ class SalaryApprovalController extends Controller
             $q = DB::table('payslips as p')
                 ->join('employees as e', 'e.id', '=', 'p.employee_id')
                 ->where('p.run_id', $id)
+                // rev165 SECURITY: scope to the run's tenant + company so a user
+                // with a null tenant_id can never read another tenant's payslip
+                // lines (defence-in-depth; mirrors the fallback query below).
+                ->where('p.tenant_id', $run->tenant_id)
+                ->where('p.company_id', $run->company_id)
                 ->orderBy('e.emp_code');
             $rows = $q->get($cols);
 

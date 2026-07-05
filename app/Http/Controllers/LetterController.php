@@ -53,7 +53,11 @@ class LetterController extends Controller
         // Prefer the template chosen on the letter; else the latest of that type.
         $tpl = null;
         if (! empty($letter->template_id)) {
-            $tpl = DB::table('letters')->where('id', $letter->template_id)->where('is_template', 1)->first();
+            // rev165 SECURITY: scope the template to the caller's tenant so a crafted
+            // template_id can't merge another tenant's letter body into the PDF.
+            $tpl = DB::table('letters')->where('id', $letter->template_id)
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+                ->where('is_template', 1)->first();
         }
         if (! $tpl) {
             $tpl = DB::table('letters')

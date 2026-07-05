@@ -104,13 +104,27 @@ class OnpremClientController extends Controller
         $this->guard($request);
         LicenseService::ensureTables();
         self::ensureSaleCols();
-        $clients = DB::table('onprem_clients')->orderByDesc('id')->limit(300)->get();
+        // rev168 — search across company / contact / email / mobile / GSTIN.
+        $q = trim((string) $request->query('q', ''));
+        $clients = DB::table('onprem_clients')
+            ->when($q !== '', function ($query) use ($q) {
+                $like = '%'.$q.'%';
+                $query->where(function ($w) use ($like) {
+                    $w->where('company', 'like', $like)
+                        ->orWhere('contact_name', 'like', $like)
+                        ->orWhere('email', 'like', $like)
+                        ->orWhere('mobile', 'like', $like)
+                        ->orWhere('gstin', 'like', $like);
+                });
+            })
+            ->orderByDesc('id')->limit(300)->get();
         $licences = DB::table('licences')->orderByDesc('id')->get()->groupBy('client_id');
         $payments = DB::table('onprem_payments')->orderByDesc('id')->get()->groupBy('client_id');
 
         return view('admin.onprem', [
             'clients' => $clients, 'licences' => $licences, 'payments' => $payments,
             'revealId' => (int) $request->query('reveal', 0),
+            'q' => $q,
         ]);
     }
 
@@ -266,8 +280,15 @@ class OnpremClientController extends Controller
         // separator. Left blank = the key works on any machine.
         $hwRaw = (string) $request->input('hardware', '');
         $hwLocks = preg_split('/[\s,;]+/', trim($hwRaw), -1, PREG_SPLIT_NO_EMPTY) ?: [];
-        $key = LicenseService::makeOfflineKey($c->edition, $expiry, $c->expiry_mode ?? 'renew', $c->company, $hwLocks);
-        $lockNote = $hwLocks ? ' Locked to device: '.implode(', ', $hwLocks).'.' : '';
+        // rev167 — optional EMAIL lock: defaults to the client's registered email
+        // so the install activates only where SMARTPRS_LICENCE_EMAIL matches.
+        // Clear the field to issue an email-agnostic code.
+        $emailLock = trim((string) $request->input('email', $c->email ?? ''));
+        $key = LicenseService::makeOfflineKey($c->edition, $expiry, $c->expiry_mode ?? 'renew', $c->company, $hwLocks, $emailLock);
+        $lockBits = [];
+        if ($emailLock !== '') { $lockBits[] = 'email '.$emailLock; }
+        if ($hwLocks) { $lockBits[] = 'device '.implode(', ', $hwLocks); }
+        $lockNote = $lockBits ? ' Locked to '.implode(' + ', $lockBits).'.' : '';
         // rev147 — record it so it can be REVOKED later (hybrid revocation).
         LicenseService::recordOffline($id, $c->edition, $expiry, $c->expiry_mode ?? 'renew', $key);
 
@@ -541,5 +562,31 @@ class OnpremClientController extends Controller
         LicenseService::event($lic->id, 'revoked', 'Revoked by '.$request->user()->name);
 
         return redirect()->route('admin.onprem')->with('success', 'Licence revoked — activation and updates are blocked for it.');
+    }
+
+    /**
+     * rev168 — DELETE a client and all its local licence/payment records. This
+     * removes the sales/licence bookkeeping row on THIS panel; it does not reach
+     * the client's installed server. Any offline code already issued keeps
+     * working until it expires unless you REVOKE it first (revoke, then delete).
+     */
+    public function destroy(Request $request, int $id)
+    {
+        $this->guard($request);
+        $c = DB::table('onprem_clients')->where('id', $id)->first();
+        abort_unless($c, 404);
+        try {
+            $licIds = DB::table('licences')->where('client_id', $id)->pluck('id')->all();
+            if ($licIds) {
+                DB::table('licence_events')->whereIn('licence_id', $licIds)->delete();
+            }
+            DB::table('licences')->where('client_id', $id)->delete();
+            DB::table('onprem_payments')->where('client_id', $id)->delete();
+            DB::table('onprem_clients')->where('id', $id)->delete();
+        } catch (\Throwable $e) {
+            return redirect()->route('admin.onprem')->with('success', 'Could not delete this client: '.$e->getMessage());
+        }
+
+        return redirect()->route('admin.onprem')->with('success', 'Client "'.$c->company.'" and its licence records were deleted.');
     }
 }

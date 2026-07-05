@@ -810,10 +810,33 @@ class BillingController extends Controller
                     .($inv->due_on ? Carbon::parse($inv->due_on)->format('d M Y') : 'the due date').'.';
             $pdfData = $b['pdf']->output();
 
-            Mail::send([], [], function ($mail) use ($b, $pdfData, $subject, $tenantName, $intro) {
+            // rev 170 (Ejaz): invoices/receipts now use the BRANDED email template
+            // (same as the welcome mail) with the full Ametecs identity footer —
+            // no more plain "thank you" mails.
+            $html = view('emails.generic', [
+                'brand' => [
+                    'display_name' => 'SmartPRS by Ametecs',
+                    'color' => '#f97316',
+                    'logo' => url('/images/logo.png'),
+                    'tagline' => '',
+                ],
+                'platform' => true,
+                'heading' => $paid ? 'Payment received — thank you!' : 'Your SmartPRS invoice',
+                'toName' => $tenantName,
+                'intro' => $intro,
+                'lines' => [
+                    'Invoice' => $inv->number,
+                    'Amount (incl. GST)' => '₹'.$total,
+                    'Status' => $paid ? 'PAID' : ('Due by '.($inv->due_on ? Carbon::parse($inv->due_on)->format('d M Y') : '—')),
+                ],
+                'bodyText' => 'Your GST tax invoice is attached as a PDF for your records.',
+                'ctaLabel' => 'Open your workspace',
+                'ctaUrl' => url('/login'),
+            ])->render();
+
+            Mail::send([], [], function ($mail) use ($b, $pdfData, $subject, $tenantName, $html) {
                 $mail->to($b['to'], $tenantName)->subject($subject)
-                    ->html('<p>Dear '.e($tenantName).',</p><p>'.e($intro).'</p>'
-                        .'<p>Regards,<br>SmartPRS Billing</p>')
+                    ->html($html)
                     ->attachData($pdfData, $b['file'], ['mime' => 'application/pdf']);
             });
 

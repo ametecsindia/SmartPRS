@@ -55,6 +55,15 @@
         </form>
     </details>
 
+    <form method="GET" action="{{ route('admin.onprem') }}" style="display:flex;gap:8px;align-items:center;margin-bottom:18px;flex-wrap:wrap;">
+        <input type="text" name="q" value="{{ $q ?? '' }}" placeholder="Search company, contact, email, mobile or GSTIN…" style="flex:1;min-width:240px;padding:10px 14px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:14px;">
+        <button class="btn btn-primary" type="submit"><i class="fas fa-magnifying-glass"></i> Search</button>
+        @if (!empty($q ?? ''))
+            <a class="btn btn-outline" href="{{ route('admin.onprem') }}">Clear</a>
+            <span style="font-size:12px;color:#64748b;">{{ $clients->count() }} match{{ $clients->count() === 1 ? '' : 'es' }} for “{{ $q }}”</span>
+        @endif
+    </form>
+
     @forelse ($clients as $c)
         @php
             $lics = $licences->get($c->id, collect());
@@ -117,6 +126,7 @@
                     <form method="POST" action="{{ route('admin.onprem.deactivate', $c->id) }}" style="display:inline;" onsubmit="return confirm('Release the server binding so the client can activate on a NEW server?');">@csrf<button class="btn btn-outline">Release server binding</button></form>
                     <form method="POST" action="{{ route('admin.onprem.revoke', $c->id) }}" style="display:inline;" onsubmit="return confirm('REVOKE this licence? Activation and updates will be blocked for it.');">@csrf<button class="btn btn-outline" style="color:#dc2626;border-color:#fca5a5;">Revoke</button></form>
                 @endif
+                <form method="POST" action="{{ route('admin.onprem.delete', $c->id) }}" style="display:inline;margin-left:auto;" onsubmit="return confirm('DELETE {{ addslashes($c->company) }} and all its licence records here? This cannot be undone. (Tip: Revoke first if the client should be blocked.)');">@csrf<button class="btn btn-outline" style="color:#b91c1c;border-color:#fca5a5;background:#fef2f2;"><i class="fas fa-trash"></i> Delete</button></form>
             </div>
             @if ($live && $revealId === (int) $c->id)
                 <div style="margin-top:12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px 14px;font-family:Consolas,monospace;font-size:16px;letter-spacing:1px;">

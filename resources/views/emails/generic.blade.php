@@ -1,8 +1,19 @@
 @php
     $color = $brand['color'] ?? '#f97316';
     $appName = $brand['display_name'] ?? ($brand['name'] ?? 'SmartPRS');
-    $logo = $brand['logo'] ?? '';
     $tagline = $brand['tagline'] ?? '';
+    // rev 170: platform mails (welcome/credentials, password reset, quotations,
+    // invoices/receipts) carry the full Ametecs identity + the SmartPRS logo by
+    // default; tenant/company mails keep the tenant's own brand untouched.
+    $platform = ! empty($platform);
+    // rev 171 (Ejaz): platform mails use the Ametecs BRAND NAVY header
+    // (matches the website), with orange kept as the CTA button accent.
+    // Tenant/company mails still use the tenant's own brand colour.
+    $headerBg = $platform ? '#0c1929' : $color;
+    $logo = $brand['logo'] ?? '';
+    if ($platform && empty($logo)) {
+        $logo = url('/images/logo.png');
+    }
 @endphp
 <!DOCTYPE html>
 <html lang="en">
@@ -18,7 +29,7 @@
                 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);">
                     <!-- Header -->
                     <tr>
-                        <td style="background:{{ $color }};padding:20px 28px;">
+                        <td style="background:{{ $headerBg }};padding:20px 28px;">
                             @if ($logo)
                                 <img src="{{ $logo }}" alt="{{ $appName }}" height="34" style="max-height:34px;vertical-align:middle;">
                             @else
@@ -68,10 +79,31 @@
                     <!-- Footer -->
                     <tr>
                         <td style="padding:18px 28px;background:#f8fafc;border-top:1px solid #e2e8f0;">
-                            <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.5;">
-                                {{ $tagline ?: 'This is an automated message from '.$appName.'.' }}<br>
-                                Please do not reply to this email.
-                            </p>
+                            @if ($platform)
+                                <p style="margin:0 0 8px;font-size:13px;color:#334155;font-weight:bold;">
+                                    SmartPRS — a product of Ametecs India Private Limited
+                                </p>
+                                <p style="margin:0 0 8px;font-size:12px;color:#64748b;line-height:1.6;">
+                                    Modern Profound Techpark, Ground Floor, Hive Space, opp. Google,<br>
+                                    Whitefields, Kondapur, Hyderabad, Telangana, India — 500084<br>
+                                    GSTIN: 36AAHCT0971F1ZB
+                                </p>
+                                <p style="margin:0 0 8px;font-size:12px;color:#64748b;line-height:1.6;">
+                                    Email: <a href="mailto:admin@ametecsindia.com" style="color:{{ $color }};text-decoration:none;">admin@ametecsindia.com</a>
+                                    &nbsp;·&nbsp; Sales: <a href="mailto:sales@ametecsindia.com" style="color:{{ $color }};text-decoration:none;">sales@ametecsindia.com</a><br>
+                                    WhatsApp: <a href="https://wa.me/919000098877" style="color:{{ $color }};text-decoration:none;">+91 90000 98877</a>
+                                    &nbsp;·&nbsp; Web: <a href="https://www.ametecsindia.com" style="color:{{ $color }};text-decoration:none;">www.ametecsindia.com</a>
+                                </p>
+                                <p style="margin:0;font-size:11px;color:#94a3b8;line-height:1.5;">
+                                    This is an automated message — please do not reply to this email. For help, write to admin@ametecsindia.com.
+                                </p>
+                            @else
+                                <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.5;">
+                                    {{ $tagline ?: 'This is an automated message from '.$appName.'.' }}<br>
+                                    Please do not reply to this email.<br>
+                                    <span style="color:#cbd5e1;">Powered by SmartPRS · Ametecs India Private Limited</span>
+                                </p>
+                            @endif
                         </td>
                     </tr>
                 </table>

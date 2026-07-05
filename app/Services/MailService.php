@@ -99,6 +99,21 @@ class MailService
                 'updated_at' => now(),
             ]);
             $msg['log_id'] = $id;
+            // rev 170: CRITICAL mails (login credentials, password reset,
+            // quotations) are sent INLINE — 'sync' => true — so they go out
+            // even when no queue worker is running (the silent failure that
+            // locked a paying client out of their new workspace). Everything
+            // else stays on the queue as before.
+            if (! empty($msg['sync'])) {
+                try {
+                    self::deliver($msg);
+                } catch (\Throwable $e) {
+                    // deliver() already marked the mail_log row failed
+                    Log::warning('MailService sync send failed ('.($msg['kind'] ?? '?').'): '.$e->getMessage());
+                }
+
+                return $id;
+            }
             SendNotification::dispatch($msg);
 
             return $id;
@@ -157,6 +172,7 @@ class MailService
 
             $data = [
                 'brand' => $brand,
+                'platform' => ! empty($msg['platform']),   // rev 170: full Ametecs identity footer
                 'heading' => $msg['heading'] ?? ($msg['subject'] ?? ''),
                 'toName' => $msg['to_name'] ?? '',
                 'intro' => $msg['intro'] ?? '',

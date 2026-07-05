@@ -1232,6 +1232,35 @@ class PayrollGenController extends Controller
                 // Replace the existing draft: drop its payslips then the run.
                 DB::table('payslips')->where('run_id', $existing->id)->delete();
                 DB::table('payroll_runs')->where('id', $existing->id)->delete();
+                // rev165 DATA INTEGRITY: also reverse the COMMISSION side of the old
+                // run. The first generate inserted a commission_payments debit
+                // (reference "run #<id> · …") and set commissions.locked_at; if we
+                // don't undo them, regenerating leaves a passbook debit pointing at a
+                // deleted run + a lock for a run that no longer exists, and the
+                // recompute's whereNull('locked_at') skips those commissions while
+                // they still fold into the new payslip. Best-effort; never blocks.
+                try {
+                    if (Schema::hasTable('commission_payments')) {
+                        $refLike = 'run #'.$existing->id.' %';
+                        $freedCids = DB::table('commission_payments')
+                            ->where('mode', 'payslip')->where('reference', 'like', $refLike)
+                            ->pluck('commission_id')->all();
+                        DB::table('commission_payments')
+                            ->where('mode', 'payslip')->where('reference', 'like', $refLike)->delete();
+                        if ($freedCids && Schema::hasColumn('commissions', 'locked_at')) {
+                            $clear = ['locked_at' => null, 'updated_at' => now()];
+                            if (Schema::hasColumn('commissions', 'locked_by')) {
+                                $clear['locked_by'] = null;
+                            }
+                            if (Schema::hasColumn('commissions', 'lock_source')) {
+                                $clear['lock_source'] = null;
+                            }
+                            DB::table('commissions')->whereIn('id', $freedCids)->update($clear);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    // best-effort; a regenerate must not fail on the reversal.
+                }
             }
 
             $c = $this->compute($request, $company, $month, $lop);

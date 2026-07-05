@@ -63,23 +63,26 @@ class BiometricConfigController extends Controller
             return $deny;
         }
         $r = $this->row($request);
+        // rev169 — clients ship BLANK: return only SAVED values (empty when no
+        // config exists yet). Defaults appear as placeholder hints in the UI,
+        // never as pre-filled values, and no Ametecs data is ever baked in.
         $config = [
-            'provider' => $r->provider ?? 'eTimeOffice',
-            'enabled' => (bool) ($r->enabled ?? false),
-            'base_url' => $r->base_url ?? 'https://api.etimeoffice.com/api',
-            'endpoint' => $r->endpoint ?? 'DownloadPunchDataMCID',
-            'corp_id' => $r->corp_id ?? '',
-            'username' => $r->username ?? '',
-            'empcode' => $r->empcode ?? 'ALL',
-            'emp_prefix' => $r->emp_prefix ?? '',
+            'provider' => $r?->provider ?? '',
+            'enabled' => (bool) ($r?->enabled ?? false),
+            'base_url' => $r?->base_url ?? '',
+            'endpoint' => $r?->endpoint ?? '',
+            'corp_id' => $r?->corp_id ?? '',
+            'username' => $r?->username ?? '',
+            'empcode' => $r?->empcode ?? '',
+            'emp_prefix' => $r?->emp_prefix ?? '',
         ];
 
         return response()->json([
             'ok' => true,
             'config' => $config,
-            'hasPassword' => ! empty($r->password ?? null),
-            'lastSyncAt' => $r->last_sync_at ?? null,
-            'lastStatus' => $r->last_status ?? null,
+            'hasPassword' => ! empty($r?->password),
+            'lastSyncAt' => $r?->last_sync_at ?? null,
+            'lastStatus' => $r?->last_status ?? null,
         ]);
     }
 

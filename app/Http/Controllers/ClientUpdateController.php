@@ -277,6 +277,16 @@ class ClientUpdateController extends Controller
                 }
             }
         }
+        // rev167 — optional EMAIL LOCK: when the key carries an account email it
+        // activates ONLY where this install's configured licence email
+        // (SMARTPRS_LICENCE_EMAIL) matches. Absent claim = works on any email.
+        $lockEmail = LicenseService::normalizeEmail((string) ($data['a'] ?? ''));
+        if ($lockEmail !== '') {
+            $deviceEmail = LicenseService::normalizeEmail((string) config('smartprs.licence_email'));
+            if ($deviceEmail === '' || ! hash_equals($lockEmail, $deviceEmail)) {
+                return ['ok' => false, 'error' => 'This License Code is issued for a different account email than the one configured on this installation. Please contact Ametecs (WhatsApp 9000098877).'];
+            }
+        }
         // rev147 — hybrid: if the server is reachable AND says this key is
         // revoked/suspended, block now and remember it; offline → trust the key.
         if (in_array(self::serverLicenceStatus($key), ['revoked', 'suspended'], true)) {
@@ -294,6 +304,7 @@ class ClientUpdateController extends Controller
                 'expiry_mode' => ($data['m'] ?? 'renew') === 'notify' ? 'notify' : 'renew',
                 'fingerprint' => self::fingerprint(),
                 'hw' => $locks ?: null,
+                'email' => $lockEmail ?: null,
                 'issued' => $data['i'] ?? now()->toDateString(),
                 'offline' => true,
             ],
@@ -387,6 +398,8 @@ class ClientUpdateController extends Controller
             'edition' => Edition::label(),
             'activated' => self::activated(),
             'state' => self::state(),
+            'deviceEmail' => (string) config('smartprs.licence_email'),
+            'deviceIds' => self::machineHardwareIds(),
         ]);
     }
 

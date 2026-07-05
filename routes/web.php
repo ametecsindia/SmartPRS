@@ -164,7 +164,7 @@ if (! $spOnPrem || \App\Services\Edition::level() >= 3) {
 
 Route::middleware('guest')->group(function () {
     Route::get('/login', [AuthController::class, 'show'])->name('login');
-    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:5,1'); // rev165 SECURITY: cap brute-force / credential-stuffing (5/min per IP)
     // Dedicated platform Super Admin login portal.
     Route::get('/super', [AuthController::class, 'showSuper'])->name('login.super');
     // Branded per-company login portal: /c/{company-slug}
@@ -207,6 +207,7 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/admin/onprem/{id}/renew', [App\Http\Controllers\OnpremClientController::class, 'renewAmc'])->name('admin.onprem.renew');
     Route::post('/admin/onprem/{id}/deactivate', [App\Http\Controllers\OnpremClientController::class, 'deactivate'])->name('admin.onprem.deactivate');
     Route::post('/admin/onprem/{id}/revoke', [App\Http\Controllers\OnpremClientController::class, 'revoke'])->name('admin.onprem.revoke');
+    Route::post('/admin/onprem/{id}/delete', [App\Http\Controllers\OnpremClientController::class, 'destroy'])->name('admin.onprem.delete');
     Route::get('/admin/releases', [App\Http\Controllers\ReleaseController::class, 'index'])->name('admin.releases');
     Route::post('/admin/releases', [App\Http\Controllers\ReleaseController::class, 'upload'])->name('admin.releases.upload');
     Route::post('/admin/releases/{id}/apply', [App\Http\Controllers\ReleaseController::class, 'applyPlatform'])->name('admin.releases.apply');
@@ -306,6 +307,10 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/users/{id}/status', [App\Http\Controllers\UserController::class, 'setStatus'])->name('app.users.status');
     Route::post('/app/users/{id}/password', [App\Http\Controllers\UserController::class, 'setPassword'])->name('app.users.password');
     Route::post('/app/change-password', [App\Http\Controllers\AuthController::class, 'changePassword'])->name('app.change.password');
+    // rev 170: mandatory create-your-password screen for freshly provisioned
+    // admins (no current password needed — guarded by users.must_set_password).
+    Route::get('/app/first-password', [App\Http\Controllers\AuthController::class, 'showFirstPassword'])->name('app.first.password');
+    Route::post('/app/first-password', [App\Http\Controllers\AuthController::class, 'doFirstPassword'])->name('app.first.password.save')->middleware('throttle:10,1');
     // SaaS Platform (super admin): tenant provisioning + plans.
     Route::get('/app/saas/tenants', [App\Http\Controllers\SaasController::class, 'tenants'])->name('app.saas.tenants');
     Route::post('/app/saas/tenants', [App\Http\Controllers\SaasController::class, 'provisionTenant'])->name('app.saas.tenants.create');
@@ -332,6 +337,7 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/branding', [App\Http\Controllers\ConfigController::class, 'brandingSave'])->name('app.branding.save');
     // rev 131: company logo UPLOAD (multipart) + serve (in-app <img>; PDFs read the local file).
     Route::post('/app/branding/logo', [App\Http\Controllers\ConfigController::class, 'brandingLogoUpload'])->name('app.branding.logo.upload');
+    Route::post('/app/branding/app-logo', [App\Http\Controllers\ConfigController::class, 'appLogoUpload'])->name('app.branding.applogo');
     Route::get('/app/branding/logo/{companyId}', [App\Http\Controllers\ConfigController::class, 'brandingLogoServe'])->name('app.branding.logo');
     Route::get('/app/attendance-report/logs/{code}/{date}', [App\Http\Controllers\AttendanceReportController::class, 'logs'])->name('app.attreport.logs');
     Route::post('/app/attendance-report/rating', [App\Http\Controllers\AttendanceReportController::class, 'saveRating'])->name('app.attreport.rating');

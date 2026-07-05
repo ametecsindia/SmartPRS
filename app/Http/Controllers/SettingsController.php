@@ -33,8 +33,8 @@ class SettingsController extends Controller
             'esi_employee_rate' => 0.75,  // ESI employee %
             'esi_employer_rate' => 3.25,  // ESI employer %
             'pt_amount' => 200,           // Professional Tax / month (₹)
-            'std_deduction' => 50000,     // salary standard deduction (₹)
-            'rebate_87a_limit' => 700000, // 87A rebate: nil tax up to this (₹)
+            'std_deduction' => 75000,      // rev165: salary standard deduction (₹) — new regime
+            'rebate_87a_limit' => 1200000, // rev165: 87A rebate — nil tax up to ₹12L (new regime)
             'cess_rate' => 4,             // health & education cess %
             'comm_tds_rate' => 5,         // Sec 194H commission TDS %
             'no_pan_tds_rate' => 20,      // higher TDS % when deductee has no PAN
@@ -46,12 +46,13 @@ class SettingsController extends Controller
             'data_retention_months' => 84,    // G5 — record / recording retention period (months); 84 = 7 years
             'contact_window_start' => '08:00', // H1 — lawful borrower-contact window start (RBI 08:00–19:00)
             'contact_window_end' => '19:00',   // H1 — lawful borrower-contact window end
-            'tds_slabs' => [              // new-regime annual slabs; upto 0 = "and above"
-                ['upto' => 300000, 'rate' => 0],
-                ['upto' => 700000, 'rate' => 5],
-                ['upto' => 1000000, 'rate' => 10],
-                ['upto' => 1200000, 'rate' => 15],
-                ['upto' => 1500000, 'rate' => 20],
+            'tds_slabs' => [              // rev165: new-regime annual slabs (FY2025-26); upto 0 = "and above"
+                ['upto' => 400000, 'rate' => 0],
+                ['upto' => 800000, 'rate' => 5],
+                ['upto' => 1200000, 'rate' => 10],
+                ['upto' => 1600000, 'rate' => 15],
+                ['upto' => 2000000, 'rate' => 20],
+                ['upto' => 2400000, 'rate' => 25],
                 ['upto' => 0, 'rate' => 30],
             ],
         ];

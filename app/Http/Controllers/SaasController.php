@@ -196,6 +196,17 @@ class SaasController extends Controller
             } catch (\Throwable $e) {
                 // role pivot best-effort
             }
+            // rev 170: guarantee a password path that does NOT depend on email.
+            // The new admin is forced to CREATE their own password on first
+            // entry into /app (AppController redirects to /app/first-password
+            // while this flag is set). Fixes the lock-out when the credentials
+            // email silently fails (no platform SMTP / worker down).
+            try {
+                AuthController::ensureFirstPasswordCol();
+                DB::table('users')->where('id', $userId)->update(['must_set_password' => 1]);
+            } catch (\Throwable $e) {
+                // best-effort — without the column, behaviour is simply as before
+            }
             // rev 108: the welcome email teaches them their branded sign-in page.
             self::sendAdminInvite($userId, $v['admin_name'], $email, $tenantId, $v['name'], $tempPassword,
                 array_merge($v['extra_lines'] ?? [], ['Your branded sign-in page: '.url('/c/'.$slug).' — bookmark it!']));
@@ -524,10 +535,14 @@ class SaasController extends Controller
                 'updated_at' => now(),
             ]);
             $link = url('/reset-password/'.$token.'?email='.urlencode($email));
-            $lines = ['Organisation' => $tenantName, 'Login email' => $email, 'Role' => 'Admin'];
+            // rev 171 (Ejaz): the sign-in URL is the BRANDED company page
+            // /c/{slug} — never the generic /login — and the login email is
+            // the registration email itself.
+            $slug = DB::table('tenants')->where('id', $tenantId)->value('subdomain');
+            $lines = ['Organisation' => $tenantName, 'Login email (your registration email)' => $email, 'Role' => 'Admin'];
             if ($tempPassword) {
                 $lines['Temporary password'] = $tempPassword;
-                $lines['Sign in at'] = url('/login');
+                $lines['Sign in at'] = $slug ? url('/c/'.$slug) : url('/login');
             }
             // Plan / payment summary etc. supplied by the caller (self-serve signup).
             foreach ($extraLines as $k => $val) {
@@ -537,17 +552,19 @@ class SaasController extends Controller
                 'tenant_id' => $tenantId,
                 'to' => $email,
                 'to_name' => $name,
-                'subject' => 'Your SmartPRS admin account for '.$tenantName,
-                'heading' => 'Welcome to SmartPRS',
+                'subject' => 'Welcome to SmartPRS — your admin account for '.$tenantName,
+                'heading' => 'Welcome to SmartPRS by Ametecs',
                 'intro' => $tempPassword
-                    ? 'Your SmartPRS workspace for "'.$tenantName.'" is ready! Sign in with the login email and temporary password below, and please change the password right away (or use the button at the end of this email).'
-                    : 'An administrator account has been created for you on SmartPRS for "'.$tenantName.'". Set your password to get started — this link is valid for 72 hours.',
+                    ? 'Thank you for choosing SmartPRS, a product of Ametecs India Private Limited. Your workspace for "'.$tenantName.'" is ready! Sign in at your company page below using your registration email and the temporary password — on your first entry the app will ask you to create your own password.'
+                    : 'Thank you for choosing SmartPRS, a product of Ametecs India Private Limited. An administrator account has been created for you for "'.$tenantName.'". Set your password to get started — this link is valid for 72 hours.',
                 'lines' => $lines,
                 'body' => 'As the admin you can add your companies, employees, users and run payroll.'
                     .($tempPassword ? ' For security, change the temporary password after your first sign-in (Account settings → Change password).' : ' After setting your password, sign in at the SmartPRS login page.'),
                 'cta_label' => $tempPassword ? 'Change your password' : 'Set your password',
                 'cta_url' => $link,
                 'kind' => 'tenant.admin_invite',
+                'sync' => true,       // rev 170: credentials must not wait on a queue worker
+                'platform' => true,   // rev 170: full Ametecs identity + contact footer
             ]);
         } catch (\Throwable $e) {
             // invite is best-effort; the tenant + admin still exist and a reset can be re-sent

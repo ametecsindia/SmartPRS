@@ -360,6 +360,8 @@ class AuthController extends Controller
                         'cta_label' => 'Reset password',
                         'cta_url' => $link,
                         'kind' => 'auth.reset',
+                        'sync' => true,       // rev 170: reset links must not wait on a queue worker
+                        'platform' => true,   // rev 170: full Ametecs identity + contact footer
                     ]);
                 }
             }
@@ -411,6 +413,7 @@ class AuthController extends Controller
                 'password' => Hash::make($v['password']),
                 'updated_at' => now(),
             ]);
+            self::clearMustSetPassword((int) $user->id);   // rev 170: password is now the user's own
             DB::table('user_password_resets')->where('id', $row->id)->update(['used_at' => now(), 'updated_at' => now()]);
             // Invalidate any other outstanding tokens for this email.
             DB::table('user_password_resets')->where('email', $email)->whereNull('used_at')->update(['used_at' => now()]);
@@ -437,6 +440,7 @@ class AuthController extends Controller
                 'password' => Hash::make($v['password']),
                 'updated_at' => now(),
             ]);
+            self::clearMustSetPassword((int) $user->id);   // rev 170
 
             return response()->json(['ok' => true, 'message' => 'Password changed.']);
         } catch (\Illuminate\Validation\ValidationException $e) {
@@ -444,5 +448,85 @@ class AuthController extends Controller
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
         }
+    }
+
+    // ================================================= rev 170: first password ===
+    //
+    // BUG FIX (Ejaz, 5 Jul 2026): a paid self-serve signup auto-signs the new
+    // admin into their fresh workspace, but the temporary password reaches them
+    // ONLY by email — and that email is best-effort. If the platform SMTP is not
+    // configured (or the mail worker is down) the email silently never arrives,
+    // and the admin is left inside the app with NO way to learn or set a
+    // password (Change Password demands the current one). These endpoints
+    // guarantee a password path that does not depend on email at all: every
+    // newly provisioned tenant admin carries users.must_set_password = 1 and is
+    // forced by AppController::show() onto this screen to CREATE their own
+    // password before the app opens. Any other password-set path (reset link,
+    // change-password) also clears the flag.
+
+    /** Self-healing users.must_set_password column (project convention). */
+    public static function ensureFirstPasswordCol(): void
+    {
+        try {
+            if (Schema::hasTable('users') && ! Schema::hasColumn('users', 'must_set_password')) {
+                Schema::table('users', fn (Blueprint $t) => $t->boolean('must_set_password')->default(false));
+            }
+        } catch (\Throwable $e) {
+            // non-fatal — worst case the redirect never triggers (old behaviour)
+        }
+    }
+
+    /** Clear the flag once the user demonstrably knows their password. */
+    public static function clearMustSetPassword(int $userId): void
+    {
+        try {
+            if (Schema::hasColumn('users', 'must_set_password')) {
+                DB::table('users')->where('id', $userId)->update(['must_set_password' => 0, 'updated_at' => now()]);
+            }
+        } catch (\Throwable $e) {
+            // non-fatal
+        }
+    }
+
+    /** Does this user still owe us a first password? (schema-tolerant) */
+    public static function mustSetPassword($user): bool
+    {
+        try {
+            return ! empty($user) && Schema::hasColumn('users', 'must_set_password')
+                && (bool) DB::table('users')->where('id', $user->id)->value('must_set_password');
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** GET /app/first-password — the mandatory create-your-password screen. */
+    public function showFirstPassword(Request $request)
+    {
+        if (! self::mustSetPassword($request->user())) {
+            return redirect('/app');   // nothing owed — straight into the app
+        }
+
+        return view('auth.first-password', ['user' => $request->user()]);
+    }
+
+    /** POST /app/first-password — set it (no current password required). */
+    public function doFirstPassword(Request $request)
+    {
+        $v = $request->validate([
+            'password' => ['required', 'string', 'min:8', 'confirmed'],
+        ]);
+        $user = $request->user();
+        // Guard: ONLY honoured while the flag is set — this endpoint can never
+        // be used to overwrite a password the user already chose.
+        if (! self::mustSetPassword($user)) {
+            return redirect('/app');
+        }
+        DB::table('users')->where('id', $user->id)->update([
+            'password' => Hash::make($v['password']),
+            'updated_at' => now(),
+        ]);
+        self::clearMustSetPassword((int) $user->id);
+
+        return redirect('/app')->with('status', 'Password created — welcome to SmartPRS!');
     }
 }

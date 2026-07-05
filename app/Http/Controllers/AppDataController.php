@@ -1010,28 +1010,25 @@ class AppDataController extends Controller
      * It is a good-faith estimate — actual TDS depends on the employee's
      * declarations/exemptions, which a payroll admin can still override.
      */
-    public static function salaryTdsMonthly(float $annualCtc): float
+    public static function salaryTdsMonthly(float $annualCtc, ?array $rates = null): float
     {
-        $std = 75000.0;
+        // rev165: drive standard deduction / 87A rebate / slabs / cess from the
+        // admin-editable Statutory Settings instead of a hardcoded table that
+        // ignored config and disagreed with SettingsController::defaults(). Shares
+        // the slab + cess maths with newRegimeTax() so the payslip TDS and the 24Q
+        // return always use the same numbers.
+        $r = $rates ?: SettingsController::defaults();
+        $std = (float) ($r['std_deduction'] ?? 0);
+        $rebate = (float) ($r['rebate_87a_limit'] ?? 0);
         $taxable = max(0.0, $annualCtc - $std);
-        if ($taxable <= 1200000.0) {
-            return 0.0; // 87A rebate (new regime)
+        $tax = self::newRegimeTax($taxable, $r); // 0 up to the rebate ceiling; slabs + cess above it
+        if ($taxable > $rebate) {
+            // Marginal relief: total tax (incl. cess) can't exceed the income
+            // earned above the rebate ceiling.
+            $tax = min($tax, ($taxable - $rebate) * (1 + (float) ($r['cess_rate'] ?? 0) / 100));
         }
-        $slabs = [[400000.0, 0.0], [800000.0, 0.05], [1200000.0, 0.10], [1600000.0, 0.15], [2000000.0, 0.20], [2400000.0, 0.25], [PHP_FLOAT_MAX, 0.30]];
-        $tax = 0.0;
-        $prev = 0.0;
-        foreach ($slabs as [$upto, $rate]) {
-            if ($taxable <= $prev) {
-                break;
-            }
-            $tax += (min($taxable, $upto) - $prev) * $rate;
-            $prev = $upto;
-        }
-        // Marginal relief: tax can't exceed the income earned above the ₹12L rebate ceiling.
-        $tax = min($tax, $taxable - 1200000.0);
-        $tax = max(0.0, $tax) * 1.04; // 4% health & education cess
 
-        return round($tax / 12, 2);
+        return round(max(0.0, $tax) / 12, 2);
     }
 
     /**
@@ -1112,7 +1109,7 @@ class AppDataController extends Controller
         $pf = $st['pf'];
         $esi = $st['esi'];
         $pt = $st['pt'];
-        $tds = self::salaryTdsMonthly($ctc);
+        $tds = self::salaryTdsMonthly($ctc, $r);
         // Optional Labour Welfare Fund (state-specific) — OFF unless enabled in Settings.
         $lwf = (! empty($r['lwf_enabled'])) ? (float) ($r['lwf_employee'] ?? 0) : 0.0;
         // Optional Conveyance deduction — computed like PF (rate% of capped Basic).
@@ -1267,7 +1264,7 @@ class AppDataController extends Controller
         $pf = $st['pf'];
         $esi = $st['esi'];
         $pt = $st['pt'];
-        $tds = self::salaryTdsMonthly($ctc);
+        $tds = self::salaryTdsMonthly($ctc, $r);
         $deductions = ['PF' => $pf, 'ESI' => $esi, 'Professional Tax' => $pt, 'TDS' => $tds];
         foreach ($dedComps as $c) {
             $base = $baseOf($c);

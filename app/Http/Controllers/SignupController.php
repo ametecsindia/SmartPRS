@@ -401,6 +401,11 @@ class SignupController extends Controller
                 // fall back to the emailed credentials
             }
 
+            // rev 171 (Ejaz): every "sign in here" pointer uses the BRANDED
+            // company page /c/{slug}, not the generic /login.
+            $slug = DB::table('tenants')->where('id', $tid)->value('subdomain');
+            $loginUrl = $slug ? url('/c/'.$slug) : url('/login');
+
             // WhatsApp welcome via Interakt (best-effort; never blocks signup).
             // Set SMARTPRS_WA_SEND_PASSWORD=false to keep the password email-only.
             try {
@@ -414,7 +419,7 @@ class SignupController extends Controller
                         'bodyValues' => [
                             $s->admin_name,                                   // {{1}} name
                             $s->company,                                      // {{2}} company
-                            url('/login'),                                    // {{3}} sign-in URL
+                            $loginUrl,                                        // {{3}} sign-in URL (branded /c/{slug})
                             $s->admin_email,                                  // {{4}} login email
                             $sendPw ? (string) ($res['temp_password'] ?? '') : 'sent to your email',  // {{5}} temp password
                         ],
@@ -444,9 +449,9 @@ class SignupController extends Controller
             return response()->json([
                 'ok' => true,
                 'message' => $autoIn
-                    ? 'Payment received and your workspace is ready! Taking you in now… (Your login details were also emailed to '.$s->admin_email.' — please change the temporary password after your first sign-in.)'
-                    : 'Payment received and your workspace is ready! We have emailed '.$s->admin_email.' your login email and a temporary password (please change it after your first sign-in).',
-                'redirect' => $autoIn ? url('/app') : url('/login'),
+                    ? 'Payment received and your workspace is ready! Taking you in now — you will create your own password in the next step. (A backup copy of your login details was also emailed to '.$s->admin_email.'.)'
+                    : 'Payment received and your workspace is ready! Sign in at '.$loginUrl.' using your registration email '.$s->admin_email.' — you will create your own password on first entry (details also emailed to you).',
+                'redirect' => $autoIn ? url('/app') : $loginUrl,
                 'autoIn' => $autoIn,
             ]);
         } catch (\Throwable $e) {
@@ -647,6 +652,8 @@ class SignupController extends Controller
                     'attach_b64' => base64_encode($pdf->output()),
                     'attach_name' => $quoteNo.'.pdf',
                     'attach_mime' => 'application/pdf',
+                    'sync' => true,       // rev 170: quotations must not wait on a queue worker
+                    'platform' => true,   // rev 170: full Ametecs identity + contact footer
                 ]);
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning('Quotation email failed: '.$e->getMessage());

@@ -74,6 +74,12 @@ class AppController extends Controller
 
     public function show(Request $request, ?string $screen = null)
     {
+        // rev 170: a freshly provisioned admin must CREATE their password before
+        // the app opens (fixes the silent-email lock-out after paid signup).
+        if (AuthController::mustSetPassword($request->user())) {
+            return redirect('/app/first-password');
+        }
+
         $path = resource_path('prototype/app.html');
         abort_unless(is_file($path), 404, 'Prototype not found.');
 
@@ -109,6 +115,7 @@ class AppController extends Controller
             'brandingUrl' => route('app.branding'),
             'brandingSaveUrl' => route('app.branding.save'),
             'brandingLogoUrl' => route('app.branding.logo.upload'),
+            'appLogoUrl' => route('app.branding.applogo'),
             'empImportUrl' => route('app.employees.import'),
             'empTemplateUrl' => route('app.employees.template'),
             'stateUrl' => route('app.state'),
@@ -124,6 +131,7 @@ class AppController extends Controller
             'mobileDevBase' => url('/app/mobile-devices'),  // rev 119: + /list, /{id}/approve|reject|revoke
             'masterBase' => url('/app/master'),       // + /{type}, /{type}/{id}/delete
             'cocUrl' => url('/app/code-of-conduct'),   // Code of Conduct read + acknowledge (+ /ack)
+            'bioUrl' => url('/app/biometric-config'),   // rev157: Biometric Device Setup screen (test + sync)
             'docBase' => url('/app/documents-mgr'),   // rev161: Documents — list (+?q=), /upload, /{id}/download, /{id}/delete
             'incentiveBase' => url('/app/incentive'),   // commission/incentive calc: /template /calculate /commit
             'finYearBase' => url('/app/fin-year'),       // financial year: GET + /set
@@ -594,7 +602,7 @@ CSS;
     var PERM_NAV = {
         dashboard: ['dashboard', 'platform-dashboard', 'how-it-works', 'notifications'],
         employees: ['emp-list', 'emp-add', 'idcard', 'teams', 'onboarding-board', 'recruitment', 'bgv', 'documents', 'roster', 'offroll-agents', 'transfers'],
-        attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'geofence', 'geofence-list', 'late-policy', 'overtime'],
+        attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'biometric-setup', 'geofence', 'geofence-list', 'late-policy', 'overtime'],
         leave: ['leave-apply', 'leave-types', 'holidays'],
         payroll: ['pay-cycle', 'salary-schedules', 'salary-setup', 'salary-gen', 'salary-approval', 'payslip', 'deductions', 'payout-recon', 'live-salary', 'pay-ledger'],
         commissions: ['commissions', 'incentive-schemes', 'clawbacks', 'bonus-enc'],
@@ -1083,7 +1091,7 @@ CSS;
         'documents': 'fa-folder-open', 'onboarding-board': 'fa-clipboard-check', 'exits': 'fa-door-open', 'transfers': 'fa-right-left',
         'recruitment': 'fa-user-tie', 'bgv': 'fa-user-shield',
         'att-daily': 'fa-calendar-check', 'att-report': 'fa-table-list', 'att-manual': 'fa-pen-to-square',
-        'att-zkteco': 'fa-fingerprint', 'biometric-devices': 'fa-fingerprint', 'geofence': 'fa-map-location-dot',
+        'att-zkteco': 'fa-fingerprint', 'biometric-devices': 'fa-fingerprint', 'biometric-setup': 'fa-sliders', 'geofence': 'fa-map-location-dot',
         'geofence-list': 'fa-draw-polygon', 'late-policy': 'fa-business-time',
         'leave-apply': 'fa-calendar-day', 'leave-types': 'fa-list-ul', 'holidays': 'fa-umbrella-beach',
         'salary-setup': 'fa-sitemap', 'salary-schedules': 'fa-calendar-days', 'salary-gen': 'fa-gears',
@@ -1479,7 +1487,7 @@ CSS;
             var MM = { 'departments': 'Departments', 'branches': 'Branches', 'banks': 'Banks', 'designations': 'Designations', 'holidays': 'Holidays', 'leave-types': 'Leave Types', 'biometric-devices': 'Biometric Devices', 'assets': 'Assets', 'complaints': 'Complaints', 'helpdesk': 'HR Helpdesk', 'deductions': 'Deductions Ledger', 'payout-recon': 'Payout Reconciliation', 'salary-schedules': 'Salary Schedules', 'tds-returns': 'TDS Returns',
                 'teams': 'Teams', 'bgv': 'Background Verification', 'documents': 'Documents', 'offroll-agents': 'Off-roll Agents', 'geofence': 'Geofence Rules', 'geofence-list': 'Geofence Rules', 'late-policy': 'Late Policy', 'salary-setup': 'Salary Setup', 'incentive-schemes': 'Incentive Schemes', 'points-ledger': 'Points Ledger', 'points-rules': 'Points Rules', 'tests': 'Tests', 'training-programs': 'Training Programs', 'training-records': 'Training Records', 'code-of-conduct': 'Code of Conduct', 'faqs': 'FAQs', 'escalations': 'Escalations', 'agent-auth': 'Agent Authorization', 'dra-certs': 'DRA Certifications', 'min-wages': 'Minimum Wages', 'overtime': 'Overtime Register', 'policies': 'Policy Repository', 'messages': 'Messages', 'companies': 'Companies', 'letters-offer': 'Offer Letters', 'letters-increment': 'Increment Letters', 'letters-warning': 'Warning Letters', 'letters-relieving': 'Relieving Letters', 'letters-nda': 'NDA / Confidentiality', 'letters-templates': 'Letter Templates',
                 'roster': 'Roster', 'onboarding-board': 'Onboarding', 'awards': 'Awards & Rewards', 'performance': 'Performance', 'notice-board': 'Notice Board', 'notice': 'Notice Board', 'feature-flags': 'Feature Flags', 'training-content': 'Training Content', 'test-results': 'Test Results', 'pay-cycle': 'Pay Cycle', 'wa-settings': 'WhatsApp Settings', 'sms-settings': 'SMS Settings', 'sms-templates': 'SMS Templates', 'att-manual': 'Manual Attendance', 'att-zkteco': 'ZKTeco Devices' };
-            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } }
+            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } SCREENS['biometric-setup'] = { title: 'Biometric Device Setup', type: 'custom' }; }
         } catch (e) {}
         if (typeof renderCustom !== 'function' || renderCustom.__wrapped) { return; }
         var _rc = renderCustom;
@@ -1491,6 +1499,7 @@ CSS;
             if (id === 'onboarding-board') { return onboardingScreen(); }
             if (id === 'performance') { return performanceScreen(); }
             if (id === 'code-of-conduct') { return codeOfConductScreen(); }
+            if (id === 'biometric-setup') { return biometricSetupScreen(); }
             if (id === 'late-policy') { return latePolicyScreen(); }
             if (id === 'incentive-schemes') { return schemesScreen(); }
             if (id === 'mobile-devices') { return mobileDevicesScreen(); }
@@ -6901,6 +6910,83 @@ CSS;
             .then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Deleted ' + (j.deleted || 0) + ' document(s)'); } window.__DOCS = null; docLoad(''); } else { if (typeof toast === 'function') { toast('Delete failed'); } } })
             .catch(function () { if (typeof toast === 'function') { toast('Delete failed'); } });
     };
+    function bioLoad() {
+        fetch(cfg.bioUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__BIO = j || { error: 'No data' }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__BIO = { error: 'Failed to load biometric configuration.' }; if (typeof render === 'function') { render(); } });
+    }
+    function bioCollect() {
+        var g = function (id) { var el = document.getElementById(id); return el ? el.value : ''; };
+        var ck = document.getElementById('bio-enabled');
+        return {
+            provider: g('bio-provider'), base_url: g('bio-base'), endpoint: g('bio-endpoint'),
+            corp_id: g('bio-corp'), username: g('bio-user'), password: g('bio-pass'),
+            empcode: g('bio-empcode'), emp_prefix: g('bio-prefix'),
+            enabled: (ck && ck.checked) ? 1 : 0
+        };
+    }
+    function bioMsg(html) { var b = document.getElementById('bio-result'); if (b) { b.innerHTML = html; } }
+    function bioPost(url, body, busy) {
+        bioMsg('<span style="color:var(--text3)">' + busy + '&hellip;</span>');
+        return fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body) }).then(function (r) { return r.json(); });
+    }
+    window.bioSave = function () {
+        bioPost(cfg.bioUrl, bioCollect(), 'Saving').then(function (j) {
+            if (j && j.ok) { window.__BIO = null; bioMsg('<span style="color:var(--green)">Saved.</span>'); bioLoad(); }
+            else { bioMsg('<span style="color:var(--red)">' + ((j && j.error) || 'Save failed') + '</span>'); }
+        }).catch(function () { bioMsg('<span style="color:var(--red)">Save failed</span>'); });
+    }
+    window.bioTest = function () {
+        bioPost(cfg.bioUrl + '/test', bioCollect(), 'Testing connection').then(function (j) {
+            if (j && j.ok) {
+                var pv = String(j.preview || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+                bioMsg('<div style="color:var(--green);margin-bottom:6px">Connected. Parsed ' + (j.parsed || 0) + ' punch(es).</div><pre style="white-space:pre-wrap;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:240px;overflow:auto;font-size:12px">' + pv + '</pre>');
+            } else { bioMsg('<span style="color:var(--red)">' + ((j && j.error) || 'Test failed') + '</span>'); }
+        }).catch(function () { bioMsg('<span style="color:var(--red)">Test failed</span>'); });
+    }
+    window.bioSync = function () {
+        bioPost(cfg.bioUrl + '/sync', { days: 1 }, 'Syncing punches').then(function (j) {
+            if (j && j.ok) {
+                var extra = j.unmatched ? (' ' + j.unmatched + ' code(s) had no matching employee.') : '';
+                bioMsg('<span style="color:var(--green)">Imported ' + (j.imported || 0) + ' punch(es) for ' + (j.matched || 0) + ' employee row(s).' + extra + '</span>');
+            } else { bioMsg('<span style="color:var(--red)">' + ((j && j.error) || 'Sync failed') + '</span>'); }
+        }).catch(function () { bioMsg('<span style="color:var(--red)">Sync failed</span>'); });
+    }
+    function biometricSetupScreen() {
+        var d = window.__BIO;
+        if (!d) { setTimeout(function () { if (!window.__BIO) { bioLoad(); } }, 10); return pghead('Biometric Device Setup', 'Loading&hellip;', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading&hellip;</div></div>'; }
+        if (d.error) { return pghead('Biometric Device Setup', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)">' + String(d.error) + '</div></div>'; }
+        var esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
+        var c = d.config || {};
+        var fld = function (label, id, val, type, ph, help) {
+            return '<div style="margin-bottom:14px"><label style="display:block;font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">' + esc(label) + '</label>'
+                + '<input id="' + id + '" type="' + (type || 'text') + '" value="' + esc(val) + '" placeholder="' + esc(ph || '') + '" autocomplete="off" style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:14px">'
+                + (help ? '<div style="font-size:12px;color:var(--text3);margin-top:4px">' + esc(help) + '</div>' : '') + '</div>';
+        };
+        var pwPh = d.hasPassword ? 'Saved — leave blank to keep current password' : 'Device API password';
+        var statusBar = d.lastSyncAt ? '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:9px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:var(--text2)"><i class="fas fa-clock"></i> Last sync: ' + esc(d.lastSyncAt) + ' &mdash; ' + esc(d.lastStatus || '') + '</div>' : '';
+        var html = pghead('Biometric Device Setup', 'Connect a cloud attendance API. Punches import into Attendance &amp; payroll automatically every hour.', '')
+            + '<div class="card" style="padding:22px 24px;max-width:580px">'
+            + statusBar
+            + '<label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:16px"><input id="bio-enabled" type="checkbox"' + (c.enabled ? ' checked' : '') + '> Enable automatic hourly sync</label>'
+            + fld('Provider', 'bio-provider', c.provider || '', 'text', 'eTimeOffice', 'Cloud attendance provider name.')
+            + fld('API Base URL', 'bio-base', c.base_url || '', 'text', 'https://api.etimeoffice.com/api')
+            + fld('Endpoint', 'bio-endpoint', c.endpoint || '', 'text', 'DownloadPunchDataMCID')
+            + fld('Corporate ID', 'bio-corp', c.corp_id || '', 'text', 'Your eTimeOffice corporate ID')
+            + fld('Username', 'bio-user', c.username || '', 'text', 'API username')
+            + fld('Password', 'bio-pass', '', 'password', pwPh, '')
+            + fld('Employee code filter', 'bio-empcode', c.empcode || '', 'text', 'ALL', 'Usually ALL.')
+            + fld('Employee ID prefix', 'bio-prefix', c.emp_prefix || '', 'text', 'e.g. A', 'If the device returns 12345 and your employees are A12345, enter A. Leave blank when codes match exactly.')
+            + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">'
+            + '<button class="btn btn-primary" onclick="bioSave()"><i class="fas fa-floppy-disk"></i> Save</button>'
+            + '<button class="btn btn-outline" onclick="bioTest()"><i class="fas fa-plug"></i> Test connection</button>'
+            + '<button class="btn btn-outline" onclick="bioSync()"><i class="fas fa-rotate"></i> Sync now</button>'
+            + '</div>'
+            + '<div id="bio-result" style="margin-top:14px;font-size:13px"></div>'
+            + '</div>';
+        return html;
+    }
     function codeOfConductScreen() {
         var d = window.__COC;
         if (!d) { setTimeout(function () { if (!window.__COC) { cocLoad(); } }, 10); return pghead('Code of Conduct', 'Loading…', '') + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
@@ -8145,7 +8231,7 @@ CSS;
     function inr(n) { return '₹' + Number(Math.round(n)).toLocaleString('en-IN'); }
     // Effective statutory rates: server-provided (window.__RATES) overlaid on safe defaults.
     function spRates() {
-        var d = { pf_wage_cap: 15000, pf_rate: 12, esi_threshold: 21000, esi_employee_rate: 0.75, esi_employer_rate: 3.25, pt_amount: 200, std_deduction: 50000, rebate_87a_limit: 700000, cess_rate: 4, comm_tds_rate: 5, no_pan_tds_rate: 20, conveyance_enabled: 0, conveyance_rate: 0, tds_slabs: [{ upto: 300000, rate: 0 }, { upto: 700000, rate: 5 }, { upto: 1000000, rate: 10 }, { upto: 1200000, rate: 15 }, { upto: 1500000, rate: 20 }, { upto: 0, rate: 30 }] };
+        var d = { pf_wage_cap: 15000, pf_rate: 12, esi_threshold: 21000, esi_employee_rate: 0.75, esi_employer_rate: 3.25, pt_amount: 200, std_deduction: 75000, rebate_87a_limit: 1200000, cess_rate: 4, comm_tds_rate: 5, no_pan_tds_rate: 20, conveyance_enabled: 0, conveyance_rate: 0, tds_slabs: [{ upto: 400000, rate: 0 }, { upto: 800000, rate: 5 }, { upto: 1200000, rate: 10 }, { upto: 1600000, rate: 15 }, { upto: 2000000, rate: 20 }, { upto: 2400000, rate: 25 }, { upto: 0, rate: 30 }] };
         var r = window.__RATES || {};
         var out = {}; for (var k in d) { out[k] = (r[k] != null) ? r[k] : d[k]; }
         if (!out.tds_slabs || !out.tds_slabs.length) { out.tds_slabs = d.tds_slabs; }
@@ -8792,7 +8878,17 @@ CSS;
                 + '</div>';
         }).join('');
         if (!(d.companies || []).length) { cards = '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No companies found for this tenant.</div></div>'; }
-        return pghead('Company Branding', 'Logo, colour and display name per company', '') + cards;
+        var appLogoCard = ''
+            + '<div class="card" style="padding:18px;margin-bottom:18px;border:1.5px solid var(--accent)">'
+            + '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
+            + '<img src="/images/logo.png?t=' + Date.now() + '" alt="SmartPRS" style="height:40px;max-width:200px;object-fit:contain;background:#0c1929;padding:6px 10px;border-radius:8px">'
+            + '<div style="flex:1;min-width:220px"><h3 style="margin:0 0 3px;font-size:16px">Global SmartPRS Logo</h3>'
+            + '<div style="font-size:12px;color:var(--text3)">Shown in the sidebar, login, activation and every PDF. Replacing it applies to ALL companies on this install.</div></div>'
+            + (d.canManage ? '<label class="btn btn-primary btn-sm" style="cursor:pointer;margin:0"><i class="fas fa-upload"></i> Change logo (all companies)<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="appLogoUpload(this)"></label>' : '<span style="font-size:12px;color:var(--text3)">Admin only</span>')
+            + '</div>'
+            + '<div style="font-size:11.5px;color:var(--text3);margin-top:8px">PNG / JPG / WebP, up to 2&nbsp;MB. A backup of the current logo is kept automatically.</div>'
+            + '</div>';
+        return pghead('Company Branding', 'The global SmartPRS logo for all companies, plus each company logo, colour and display name', '') + appLogoCard + cards;
     }
     // rev 131: upload a company logo file (stored locally; used by app + every PDF).
     window.brandingUploadLogo = function (cid, input) {
@@ -8803,6 +8899,18 @@ CSS;
         fetch(cfg.brandingLogoUrl, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
             .then(function (r) { return r.json(); }).then(function (d) {
                 if (d && d.ok) { window.__BRANDING = null; if (typeof toast === 'function') { toast('Logo uploaded — it now appears on documents'); } if (typeof render === 'function') { render(); } }
+                else if (typeof toast === 'function') { toast((d && d.error) || 'Upload failed — admin only'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Upload failed'); } });
+    };
+    window.appLogoUpload = function (input) {
+        var f = input && input.files && input.files[0]; if (!f) { return; }
+        if (f.size > 2 * 1024 * 1024) { if (typeof toast === 'function') { toast('Logo too large — keep it under 2 MB'); } input.value = ''; return; }
+        if ((f.type || '').indexOf('image/') !== 0) { if (typeof toast === 'function') { toast('Use a PNG, JPG or WebP image'); } input.value = ''; return; }
+        var fd = new FormData(); fd.append('logo', f);
+        if (typeof toast === 'function') { toast('Uploading logo…'); }
+        fetch(cfg.appLogoUrl, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
+            .then(function (r) { return r.json(); }).then(function (d) {
+                if (d && d.ok) { if (typeof toast === 'function') { toast('Logo updated for all companies — reloading…'); } setTimeout(function () { location.reload(); }, 800); }
                 else if (typeof toast === 'function') { toast((d && d.error) || 'Upload failed — admin only'); }
             }).catch(function () { if (typeof toast === 'function') { toast('Upload failed'); } });
     };

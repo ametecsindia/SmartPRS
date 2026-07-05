@@ -154,14 +154,29 @@ class LicenseService
     // ===================================================== offline keys (rev146)
     // A self-contained, SIGNED License Code the client verifies locally — no
     // server round-trip. Format:  SPRSX1.<payload-b64url>.<sig-hex>
-    // payload = {e:edition, x:expiry(YYYY-MM-DD), m:mode, c:company, i:issued}
+    // payload = {e:edition, x:expiry(YYYY-MM-DD), m:mode, c:company, i:issued,
+    //            a:account-email (rev167), h:[hardware-ids] (rev147)}
     // sig     = first 40 hex of HMAC-SHA256(payload-b64url, licence_secret).
+    // a/h are OPTIONAL locks the client enforces ONLY when present: a → must
+    // equal SMARTPRS_LICENCE_EMAIL; every h → must be one of the device's
+    // MAC/UUID/serial IDs. Absent claim = works on any email/device.
 
     public const OFFLINE_PREFIX = 'SPRSX1';
 
     private static function offlineSecret(): string
     {
-        return (string) (config('smartprs.licence_secret') ?: 'smartprs-offline-fallback');
+        $secret = (string) config('smartprs.licence_secret');
+        if ($secret !== '') {
+            return $secret;
+        }
+        // rev166: no working default in production — refuse to sign/verify a
+        // License Code with a guessable fallback. Kept at point-of-use so setup,
+        // migrations and every non-licensing request still run without the secret
+        // (LicenseGate is fail-soft and lets requests through if this throws).
+        if (app()->environment('production')) {
+            throw new \RuntimeException('SMARTPRS_LICENCE_SECRET is not set. Set a strong, secret value (identical on the licensing server and every client install) before issuing or verifying License Codes.');
+        }
+        return 'dev-insecure-licence-secret-DO-NOT-USE-IN-PRODUCTION';
     }
 
     private static function b64u(string $bin): string
@@ -186,12 +201,18 @@ class LicenseService
         return strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $s));
     }
 
+    /** Normalise an account email for licence-lock comparison (rev167). */
+    public static function normalizeEmail(string $s): string
+    {
+        return strtolower(trim($s));
+    }
+
     /**
      * Build a signed offline License Code for a client (Super Admin side).
      * $hwLocks (optional) — MAC / serial / UUID / GUID strings the licence is
      * locked to; when present, the client activates only on a matching device.
      */
-    public static function makeOfflineKey(string $edition, ?string $expiresOn, string $mode = 'renew', string $company = '', array $hwLocks = []): string
+    public static function makeOfflineKey(string $edition, ?string $expiresOn, string $mode = 'renew', string $company = '', array $hwLocks = [], string $email = ''): string
     {
         $payload = [
             'e' => strtolower($edition),
@@ -209,6 +230,12 @@ class LicenseService
         }
         if ($hw) {
             $payload['h'] = array_values(array_unique($hw));
+        }
+        // rev167 — optional account-email lock (matched on the client against
+        // SMARTPRS_LICENCE_EMAIL). Blank = the code is not email-locked.
+        $em = self::normalizeEmail($email);
+        if ($em !== '') {
+            $payload['a'] = $em;
         }
         $b = self::b64u((string) json_encode($payload));
         $sig = substr(hash_hmac('sha256', $b, self::offlineSecret()), 0, 40);

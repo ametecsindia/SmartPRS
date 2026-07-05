@@ -44,6 +44,13 @@
         <button class="btn" type="submit"><i class="fas fa-key"></i> Activate</button>
     </form>
 
+    <div class="note" style="margin-top:18px">
+        <div style="font-weight:700;color:#334155;margin-bottom:6px"><i class="fas fa-desktop" style="color:#f97316"></i> This device — share these with Ametecs to receive your License Code</div>
+        @if(!empty($deviceEmail ?? '')) <div><strong>Account email:</strong> {{ $deviceEmail }}</div> @endif
+        @if(!empty($deviceIds ?? [])) <div style="word-break:break-all"><strong>Hardware ID(s):</strong> {{ implode(', ', $deviceIds) }}</div> @endif
+        @if(empty($deviceEmail ?? '') && empty($deviceIds ?? [])) <div>No account email or hardware ID is configured — your code will not be email/device locked.</div> @endif
+    </div>
+
     <div class="note"><i class="fas fa-headset" style="color:#f97316"></i> Need help? Ametecs India — ejaz@ametecsindia.com · WhatsApp 9000098877. Activation needs internet on this server for one minute; after that SmartPRS runs fully offline.</div>
 </div>
 </body>

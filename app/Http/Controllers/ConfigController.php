@@ -285,6 +285,49 @@ class ConfigController extends Controller
         return response()->json(['ok' => true, 'logo' => $map[$cid]['logo'].'?t='.time()]);
     }
 
+    /**
+     * POST /app/branding/app-logo — rev169. Replace the GLOBAL SmartPRS product
+     * logo (public/images/logo.png) shown in the sidebar, login, activation and
+     * every PDF. One file, so it applies to ALL companies on this install (SaaS
+     * or on-prem, all editions). Any admin may set it; the current logo is backed
+     * up automatically before replacement.
+     */
+    public function appLogoUpload(Request $request)
+    {
+        abort_unless($this->canManage($request), 403);
+        $request->validate([
+            'logo' => ['required', 'file', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
+        ]);
+        $dest = public_path('images/logo.png');
+        try {
+            if (is_file($dest)) {
+                @copy($dest, public_path('images/logo-backup-'.date('YmdHis').'.png'));
+            }
+        } catch (\Throwable $e) {
+        }
+        $file = $request->file('logo');
+        $done = false;
+        // Normalise to a real PNG at images/logo.png so every asset('images/logo.png') updates.
+        if (function_exists('imagecreatefromstring')) {
+            try {
+                $im = @imagecreatefromstring((string) @file_get_contents($file->getRealPath()));
+                if ($im !== false) {
+                    @imagesavealpha($im, true);
+                    @imagepng($im, $dest);
+                    @imagedestroy($im);
+                    $done = is_file($dest);
+                }
+            } catch (\Throwable $e) {
+            }
+        }
+        if (! $done) {
+            $file->move(public_path('images'), 'logo.png');
+        }
+        @clearstatcache();
+
+        return response()->json(['ok' => true, 'logo' => url('/images/logo.png').'?t='.time()]);
+    }
+
     /** GET /app/branding/logo/{companyId} — serve the uploaded company logo. */
     public function brandingLogoServe(Request $request, $companyId)
     {
