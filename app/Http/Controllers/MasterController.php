@@ -151,8 +151,8 @@ class MasterController extends Controller
             'salary-schedules' => [
                 'table' => 'salary_schedules',
                 'cols' => ['name' => 'string', 'company_name' => 'string', 'pay_cycle' => 'string',
-                    'applicable_to' => 'string', 'status' => 'string'],
-                'fields' => ['name', 'company_name', 'pay_cycle', 'applicable_to', 'status'],
+                    'pay_day' => 'string', 'applicable_to' => 'string', 'status' => 'string'],
+                'fields' => ['name', 'company_name', 'pay_cycle', 'pay_day', 'applicable_to', 'status'],
                 'label' => 'Schedule',
                 'order' => 'name',
                 'required' => ['name', 'company_name'],
@@ -650,6 +650,7 @@ class MasterController extends Controller
             $tid = $request->user()->tenant_id ?? DB::table('tenants')->value('id');
 
             $input = (array) $request->input('item', []);
+            $input = AppDataController::stripHtmlDeep($input); // rev172 (H3) — strip HTML from all master free-text (complaints, helpdesk, titles…) against stored XSS
             foreach ($def['required'] ?? ['name'] as $rf) {
                 if (empty($input[$rf])) {
                     return response()->json(['ok' => false, 'error' => ucfirst(str_replace('_', ' ', $rf)).' is required'], 422);

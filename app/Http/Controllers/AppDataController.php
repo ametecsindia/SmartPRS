@@ -36,7 +36,7 @@ class AppDataController extends Controller
         if (! Schema::hasTable('employees')) {
             return;
         }
-        $cols = ['department', 'designation', 'branch', 'team', 'reporting_manager', 'team_leader', 'father', 'spouse', 'blood_group', 'id_marks', 'gender', 'address'];
+        $cols = ['department', 'designation', 'branch', 'team', 'reporting_manager', 'team_leader', 'father', 'spouse', 'blood_group', 'id_marks', 'gender', 'address', 'pt_state'];
         $missing = array_values(array_filter($cols, fn ($c) => ! Schema::hasColumn('employees', $c)));
         if (! $missing) {
             return;
@@ -46,6 +46,24 @@ class AppDataController extends Controller
                 $t->string($c)->nullable();
             }
         });
+    }
+
+    /**
+     * rev172 (H3) — recursively strip HTML tags and angle-brackets from every
+     * string in an array. Used to sanitise user-entered names / free-text before
+     * saving, so stored values can never inject script when later rendered into
+     * the SPA via innerHTML. Numbers/bools/keys are left untouched.
+     */
+    public static function stripHtmlDeep($val)
+    {
+        if (is_array($val)) {
+            return array_map([self::class, 'stripHtmlDeep'], $val);
+        }
+        if (is_string($val)) {
+            return trim(str_replace(['<', '>'], '', strip_tags($val)));
+        }
+
+        return $val;
     }
 
     /** Keep only the array keys that are real columns on $table (schema-tolerant insert). */
@@ -146,6 +164,7 @@ class AppDataController extends Controller
                 'esi' => $col('esi_applicable') === 'yes' ? 'Yes' : 'No',
                 'pan' => $col('pan') ?? '',
                 'uan' => $col('uan') ?? '',
+                'ptState' => $col('pt_state') ?? '',
                 'bankName' => $col('bank_name') ?? '',
                 'bankAcc' => $col('bank_acc') ?? '',
                 'ifsc' => $col('ifsc') ?? '',
@@ -288,6 +307,7 @@ class AppDataController extends Controller
                 continue;
             }
             $row = array_combine($header, array_pad($cells, count($header), null));
+            $row = self::stripHtmlDeep($row); // rev172 (H3) — sanitise imported free-text against stored XSS
             $name = trim((string) ($row['name'] ?? ''));
             if ($name === '') {
                 continue;
@@ -454,6 +474,25 @@ class AppDataController extends Controller
         $company = DB::table('companies')->find($e->company_id);
         $month = $request->query('month', now()->format('Y-m'));
         $rates = SettingsController::rates($e->tenant_id);
+
+        // rev172 — non-HR users may download ONLY their own payslip, and only if
+        // the company's payslip download policy allows it (Payslips → Download
+        // Policy). HR/Admin can always download (and email) any payslip.
+        $user = $request->user();
+        if (! $user->hasAnyRole(['super_admin', 'admin', 'hr_manager'])) {
+            $own = ! empty($user->employee_id)
+                ? ((int) $user->employee_id === (int) $e->id)
+                : (($e->email ?? '') !== '' && strcasecmp((string) $user->email, (string) $e->email) === 0)
+                    || strcasecmp((string) $user->name, (string) $e->name) === 0;
+            if (! $own) {
+                return response('You can only download your own payslip.', 403)
+                    ->header('Content-Type', 'text/plain; charset=utf-8');
+            }
+            if (! SettingsController::payslipSelfAllowed($e, $rates)) {
+                return response('Payslip download is disabled by your company\'s policy. Please contact HR for a copy.', 403)
+                    ->header('Content-Type', 'text/plain; charset=utf-8');
+            }
+        }
 
         $data = $this->payslipViewData($e, $company, $month, $rates);
 
@@ -1121,7 +1160,7 @@ class AppDataController extends Controller
             'pf' => $pf, 'esi' => $esi, 'pt' => $pt, 'tds' => $tds, 'lwf' => round($lwf, 2),
             'pf_wage' => $st['pf_wage'], 'pf_employer' => $st['pf_employer'], 'pf_eps' => $st['pf_eps'],
             'pf_epf_employer' => $st['pf_epf_employer'], 'pf_edli' => $st['pf_edli'], 'esi_employer' => $st['esi_employer'],
-            'total_ded' => $totalDed, 'net' => round($gross - $totalDed, 2),
+            'total_ded' => $totalDed, 'net' => round(max(0, $gross - $totalDed), 2), // rev172 (M6) — never a negative payslip
         ];
     }
 
@@ -1312,7 +1351,7 @@ class AppDataController extends Controller
             'pf' => $pf, 'esi' => $esi, 'pt' => $pt, 'tds' => $tds, 'lwf' => round($lwf, 2),
             'pf_wage' => $st['pf_wage'], 'pf_employer' => $st['pf_employer'], 'pf_eps' => $st['pf_eps'],
             'pf_epf_employer' => $st['pf_epf_employer'], 'pf_edli' => $st['pf_edli'], 'esi_employer' => $st['esi_employer'],
-            'total_ded' => $totalDed, 'net' => round($gross - $totalDed, 2),
+            'total_ded' => $totalDed, 'net' => round(max(0, $gross - $totalDed), 2), // rev172 (M6) — never a negative payslip
         ];
     }
 
@@ -1427,6 +1466,11 @@ class AppDataController extends Controller
         }
 
         $e = (array) $request->input('employee', []);
+        // rev172 (H3) — neutralise stored XSS at the source: employee names and
+        // free-text fields are rendered into the SPA via innerHTML in many places
+        // with inconsistent escaping, so strip any HTML/angle-brackets on save.
+        // Legitimate names never contain < or >. Also cleans the references rows.
+        $e = self::stripHtmlDeep($e);
         if (empty($e['name'])) {
             return response()->json(['ok' => false, 'error' => 'Name required'], 422);
         }
@@ -1452,6 +1496,7 @@ class AppDataController extends Controller
             'email' => $e['email'] ?? null,
             'pan' => $e['pan'] ?? null,
             'uan' => $e['uan'] ?? null,
+            'pt_state' => $e['ptState'] ?? null,
             'bank_name' => $e['bankName'] ?? null,
             'bank_acc' => $e['bankAcc'] ?? null,
             'ifsc' => $e['ifsc'] ?? null,

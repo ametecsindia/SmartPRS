@@ -349,6 +349,7 @@ class RecruitmentController extends Controller
                 'skills' => ['nullable', 'string'],
                 'resume_url' => ['nullable', 'string', 'max:500'],
             ]);
+            $v = AppDataController::stripHtmlDeep($v); // rev172 (H3) — candidate free-text can't inject script when rendered in the SPA
             $row = ['tenant_id' => $tid, 'name' => $v['name'], 'position' => $v['position'] ?? null,
                 'company_name' => $v['company_name'] ?? null, 'source' => $v['source'] ?? null,
                 'stage' => $v['stage'] ?? 'applied', 'mobile' => $v['mobile'] ?? null, 'email' => $v['email'] ?? null,

@@ -273,6 +273,7 @@ class AttendanceReportController extends Controller
         }
 
         $last = DB::table('attendance_logs')
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId)) // rev172 — emp codes repeat across tenants
             ->where('emp_code', $code)->where('log_date', $today)
             ->orderByDesc('punch_at')->orderByDesc('id')->first();
         $direction = ($last && $last->direction === 'in') ? 'out' : 'in';
@@ -338,6 +339,7 @@ class AttendanceReportController extends Controller
         }
         $code = $emp->emp_code ?? ('USER-'.$user->id);
         $last = DB::table('attendance_logs')
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId)) // rev172 — emp codes repeat across tenants
             ->where('emp_code', $code)->where('log_date', now()->toDateString())
             ->orderByDesc('punch_at')->orderByDesc('id')->first();
         $next = ($last && $last->direction === 'in') ? 'out' : 'in';
@@ -443,7 +445,7 @@ class AttendanceReportController extends Controller
             ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
             ->where('emp_code', $code)->where('log_date', $date)->first();
 
-        $emp = DB::table('attendance_logs')->where('emp_code', $code)->where('log_date', $date)->value('emp_name');
+        $emp = DB::table('attendance_logs')->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))->where('emp_code', $code)->where('log_date', $date)->value('emp_name');
 
         return response()->json([
             'emp_code' => $code,

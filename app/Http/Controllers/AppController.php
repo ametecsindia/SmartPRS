@@ -1674,7 +1674,10 @@ CSS;
             : '<div style="width:74px;height:74px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#0891b2);color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800;flex:none">' + initials + '</div>';
         var row2 = function (icon, v) { return v ? '<div style="display:flex;gap:9px;align-items:center;padding:5px 0;font-size:13px;color:var(--text2)"><i class="fas ' + icon + '" style="width:16px;color:var(--text3);font-size:12px"></i><span>' + v + '</span></div>' : ''; };
         var canView = cfg.role === 'Admin' || cfg.role === 'Super Admin' || String(cfg.role || '').indexOf('HR') >= 0;
-        var viewBtn = canView ? '<button class="btn btn-primary btn-sm" onclick="empPopView(&#39;' + String(e.id).replace(/[^A-Za-z0-9_-]/g, '') + '&#39;)"><i class="fas fa-user"></i> View full profile</button>' : '';
+        var safeC = String(e.id).replace(/[^A-Za-z0-9_-]/g, '');
+        var viewBtn = canView ? '<button class="btn btn-primary btn-sm" onclick="empPopView(&#39;' + safeC + '&#39;)"><i class="fas fa-user"></i> View full profile</button>' : '';
+        // rev172 — RBI compliance audit report PDF (admin/HR), on the company's own letterhead.
+        var auditBtn = canView ? '<a class="btn btn-outline btn-sm" href="/app/compliance/agent-audit/' + safeC + '/pdf" target="_blank" rel="noopener" title="RBI compliance audit report (PDF)"><i class="fas fa-shield-halved"></i> Audit Report</a> ' : '';
         commModal('<div class="card" style="max-width:400px;width:100%;padding:0">'
             + '<div style="display:flex;gap:16px;align-items:flex-start;padding:20px 22px;border-bottom:1px solid var(--border)">' + photo
             + '<div style="flex:1"><div style="font-weight:800;font-size:17px">' + e.name + '</div>'
@@ -1687,7 +1690,7 @@ CSS;
             + (e.reporting ? '<div style="display:flex;gap:9px;align-items:center;padding:5px 0;font-size:13px;color:var(--text2)"><i class="fas fa-user-tie" style="width:16px;color:var(--text3);font-size:12px"></i><span>Reports to ' + empNameLink(e.reporting) + '</span></div>' : '')
             + row2('fa-phone', e.mobile) + row2('fa-envelope', e.email)
             + '</div>'
-            + (viewBtn ? '<div style="display:flex;justify-content:flex-end;padding:0 22px 18px">' + viewBtn + '</div>' : '<div style="padding:0 0 10px"></div>') + '</div>');
+            + ((viewBtn || auditBtn) ? '<div style="display:flex;justify-content:flex-end;gap:8px;padding:0 22px 18px">' + auditBtn + viewBtn + '</div>' : '<div style="padding:0 0 10px"></div>') + '</div>');
     };
     window.empPopView = function (code) {
         commModalClose();
@@ -3979,6 +3982,7 @@ CSS;
             + '<div style="margin-bottom:12px"><label style="' + lab + '">Owner / admin email</label><input id="te_email" type="email" class="filter-select" style="width:100%" value="' + esc(t.ownerEmail) + '"></div>'
             + '<div style="display:flex;gap:10px;margin-bottom:12px"><div style="flex:1"><label style="' + lab + '">Plan</label><select id="te_plan" class="filter-select" style="width:100%">' + planOpts + '</select></div>'
             + '<div style="width:120px"><label style="' + lab + '">Seats</label><input id="te_seats" type="number" min="0" class="filter-select" style="width:100%" value="' + (t.seatsLicensed || '') + '"></div></div>'
+            + '<div style="margin-bottom:12px"><label style="' + lab + '">Document storage per employee (MB) <span style="color:var(--text3)">blank = default 100 MB per employee</span></label><input id="te_docmb" type="number" min="1" class="filter-select" style="width:100%" value="' + (t.docStorageEmpMb != null ? t.docStorageEmpMb : '') + '" placeholder="100"></div>'
             + '<div style="margin-bottom:12px"><label style="' + lab + '">Subdomain <span style="color:var(--text3)">(login portal path / vanity)</span></label><input id="te_sub" class="filter-select" style="width:100%" value="' + esc(t.subdomain) + '" placeholder="acme"></div>'
             + '<div style="margin-bottom:12px"><label style="' + lab + '">Custom domain <span style="color:var(--text3)">(e.g. hr.acme.com)</span></label><input id="te_domain" class="filter-select" style="width:100%" value="' + esc(t.customDomain) + '" placeholder="hr.acme.com"></div>'
             + '<div style="display:flex;gap:10px;margin-bottom:4px">'
@@ -3994,7 +3998,7 @@ CSS;
     };
     window.tenantUpdate = function (id) {
         var g = function (i) { var e = document.getElementById(i); return e ? e.value : ''; };
-        var payload = { name: g('te_name'), owner_email: g('te_email'), plan_id: g('te_plan') ? Number(g('te_plan')) : null, seats_licensed: g('te_seats') ? Number(g('te_seats')) : null, subdomain: g('te_sub'), custom_domain: g('te_domain'), state: g('te_state'), gstin: g('te_gstin').toUpperCase() };
+        var payload = { name: g('te_name'), owner_email: g('te_email'), plan_id: g('te_plan') ? Number(g('te_plan')) : null, seats_licensed: g('te_seats') ? Number(g('te_seats')) : null, doc_storage_emp_mb: g('te_docmb') !== '' ? Number(g('te_docmb')) : null, subdomain: g('te_sub'), custom_domain: g('te_domain'), state: g('te_state'), gstin: g('te_gstin').toUpperCase() };
         if (!payload.name.trim()) { if (typeof toast === 'function') { toast('Tenant name is required'); } return; }
         fetch(cfg.saasTenantsUrl + '/' + id, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
             .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
@@ -4224,7 +4228,7 @@ CSS;
         var notes = [];
         if (p.exists) { notes.push('<b style="color:#b45309">A ' + (p.existingStatus || 'draft') + ' run already exists for ' + p.monthLabel + '</b> — generating will replace the draft.'); }
         if (p.skipped) { notes.push(p.skipped + ' employee(s) skipped (no CTC set).'); }
-        if (p.lop) { notes.push('LOP on: ' + p.workingDays + ' working days of ' + p.daysInMonth + ' (excl. Sundays' + (p.holidays ? ' + ' + p.holidays + ' holiday(s)' : '') + '). Approved paid leave counts as present; employees with no punches are paid in full.'); }
+        if (p.lop) { notes.push('LOP on: ' + p.workingDays + ' working days of ' + p.daysInMonth + ' (excl. weekly offs' + (p.holidays ? ' + ' + p.holidays + ' holiday(s)' : '') + '). Approved paid leave counts as present; employees with no punches are paid in full. Non-working days: holidays are added/deleted in Leave &rarr; Holidays; weekly offs (Sunday / 2nd-4th Saturday&hellip;) in Statutory &amp; Compliance &rarr; PF &amp; ESIC &rarr; Edit Rates.'); }
         if (notes.length) { out += '<div class="card" style="padding:12px 16px;margin-bottom:14px;font-size:13px;color:var(--text2);background:#fffbeb;border:1px solid #fde68a">' + notes.join(' · ') + '</div>'; }
         var th = ['Code', 'Employee']; if (p.lop) { th.push('Present'); th.push('Leave'); }
         th = th.concat(['Basic', 'HRA', 'Gross', 'PF', 'ESI', 'PT', 'Deductions', 'Net']);
@@ -6805,7 +6809,16 @@ CSS;
         var emps = d.employees || [];
         var cats = d.categories || ['Educational Certificate', 'Personal Document / Certificate', 'Other'];
         var eo = emps.map(function (e) { return '<option value="' + e.id + '"' + (String(e.id) === String(empId) ? ' selected' : '') + '>' + (e.name + ' (' + (e.emp_code || e.id) + ')') + '</option>'; }).join('');
-        var body = '<div class="fld2" style="margin-bottom:12px"><label>Employee</label><select id="doc-emp"><option value="">Select employee&hellip;</option>' + eo + '</select></div>'
+        var ru = d.rules || {};
+        var fmts = ru.formats || 'PDF, JPG, JPEG, PNG, DOC, DOCX, XLS, XLSX';
+        var maxMb = ru.max_file_mb || 10;
+        var quota = '';
+        if (ru.emp_limit_mb != null) {
+            quota = ' Each employee can hold up to <b>' + ru.emp_limit_mb + ' MB</b> of documents in total.';
+        }
+        var guide = '<div class="note2" style="margin-bottom:12px"><i class="fas fa-circle-info"></i><div><b>Allowed formats:</b> ' + fmts + ' &middot; <b>Max size:</b> ' + maxMb + ' MB per file. Files outside these rules are skipped.' + quota + '</div></div>';
+        var body = guide
+            + '<div class="fld2" style="margin-bottom:12px"><label>Employee</label><select id="doc-emp"><option value="">Select employee&hellip;</option>' + eo + '</select></div>'
             + '<div style="font-size:12px;color:var(--text3);margin-bottom:8px">Add one or more documents for this employee, then Upload All.</div>'
             + '<div id="doc-rows">' + docRowTpl(cats) + '</div>'
             + '<button type="button" class="btn btn-outline btn-sm" onclick="docAddRow()"><i class="fas fa-plus"></i> Add another document</button>';
@@ -6830,7 +6843,7 @@ CSS;
         if (!any) { if (typeof toast === 'function') { toast('Choose at least one file'); } return; }
         fetch(cfg.docBase + '/upload', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
             .then(function (r) { return r.json(); })
-            .then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Uploaded ' + (j.count || 0) + ' document(s)' + (j.skipped ? ' (' + j.skipped + ' skipped)' : '')); } if (typeof closeModal === 'function') { closeModal(); } window.__DOCS = null; docLoad(''); } else { if (typeof toast === 'function') { toast((j && j.error) || 'Upload failed'); } } })
+            .then(function (j) { if (j && j.ok) { var msg = 'Uploaded ' + (j.count || 0) + ' document(s)'; if (j.skipped) { msg += '. Skipped ' + j.skipped + ': ' + ((j.skip_reasons || []).join('; ') || 'check format/size'); } if (typeof toast === 'function') { toast(msg); } if (typeof closeModal === 'function') { closeModal(); } window.__DOCS = null; docLoad(''); } else { if (typeof toast === 'function') { toast((j && j.error) || 'Upload failed'); } } })
             .catch(function () { if (typeof toast === 'function') { toast('Upload failed'); } });
     };
     function documentsScreen() {
@@ -6857,7 +6870,12 @@ CSS;
                 + '</td></tr>';
         }).join('');
         if (!rows) { rows = '<tr><td colspan="3" style="padding:30px;text-align:center;color:var(--text3)">No documents ' + (d.q ? 'match this search' : 'yet') + '. Click Add Document to upload.</td></tr>'; }
-        var head = pghead('Documents', 'Upload &amp; track employee documents &mdash; educational, personal, experience letters, payslips and more.', '<button class="btn btn-green" onclick="docOpenAdd()"><i class="fas fa-upload"></i> Add Document</button>');
+        var ru2 = d.rules || {};
+        var sub2 = 'Upload &amp; track employee documents &mdash; educational, personal, experience letters, payslips and more.'
+            + ' Allowed: ' + (ru2.formats || 'PDF, JPG, PNG, DOC, XLS') + ' &middot; max ' + (ru2.max_file_mb || 10) + ' MB/file'
+            + (ru2.emp_limit_mb != null ? ' &middot; up to ' + ru2.emp_limit_mb + ' MB per employee' : '')
+            + (ru2.used_mb ? ' &middot; total used: ' + ru2.used_mb + ' MB' : '');
+        var head = pghead('Documents', sub2, '<button class="btn btn-green" onclick="docOpenAdd()"><i class="fas fa-upload"></i> Add Document</button>');
         var search = '<div class="card" style="padding:14px 16px;margin-bottom:14px"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><i class="fas fa-search" style="color:var(--text3)"></i>'
             + '<input id="doc-search" placeholder="Search employee by name or ID&hellip;" value="' + esc(d.q || '') + '" style="flex:1;min-width:200px;padding:9px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:14px" onkeydown="docKey(event)">'
             + '<button class="btn btn-primary btn-sm" onclick="docSearch()">Search</button>'
@@ -7899,7 +7917,7 @@ CSS;
             { k: 'name', l: 'Branch Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'manager', l: 'Branch Manager', src: 'emp' }, { k: 'address', l: 'Address' }, { k: 'city', l: 'City' }, { k: 'pincode', l: 'Pincode' }, { k: 'phone', l: 'Phone' }, { k: 'email', l: 'Email' }] },
         'banks': { type: 'banks', title: 'Banks', sub: 'Bank accounts with account no, IFSC and purpose', fields: [
             { k: 'name', l: 'Bank Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'acc_name', l: 'Account Holder' }, { k: 'acc_no', l: 'Account Number' }, { k: 'ifsc', l: 'IFSC' }, { k: 'bank_branch', l: 'Bank Branch' }, { k: 'purpose', l: 'Purpose (Salary / Vendor / Disbursement)' }] },
-        'holidays': { type: 'holidays', title: 'Holidays', sub: 'Company holiday calendar — excluded from payroll LOP working days', fields: [
+        'holidays': { type: 'holidays', title: 'Holidays', sub: 'Non-working days for payroll. ADD a holiday with the button above (name + date) — payroll automatically pays it and removes it from LOP working days. DELETE with the trash icon on its row. Weekly offs (Sunday / 2nd-4th Saturday etc.) are NOT added here — set them once in Statutory & Compliance → PF & ESIC → Edit Rates → Weekly offs', fields: [
             { k: 'name', l: 'Holiday Name' }, { k: 'date', l: 'Date', type: 'date' }, { k: 'applies_to', l: 'Applies To (optional)' }] },
         'leave-types': { type: 'leave-types', title: 'Leave Types', sub: 'Leave categories with annual entitlement; paid leave counts as present in payroll', fields: [
             { k: 'name', l: 'Leave Type' }, { k: 'days_per_year', l: 'Days / Year', type: 'number' }, { k: 'paid', l: 'Paid?', type: 'select', opts: ['1', '0'], optLabels: ['Paid', 'Unpaid (LOP)'] }, { k: 'carry_forward', l: 'Carry Forward?', type: 'select', opts: ['1', '0'], optLabels: ['Yes', 'No'] }] },
@@ -7915,7 +7933,7 @@ CSS;
         'payout-recon': { type: 'payout-recon', title: 'Payout Reconciliation', sub: 'Bank payout vs expected, per portfolio/month', fields: [
             { k: 'company_name', l: 'Company', src: 'company' }, { k: 'bank', l: 'Bank' }, { k: 'portfolio', l: 'Portfolio' }, { k: 'month', l: 'Month (YYYY-MM)' }, { k: 'expected', l: 'Expected (₹)', type: 'number' }, { k: 'received', l: 'Received (₹)', type: 'number' }, { k: 'variance', l: 'Variance (₹)', type: 'number' }, { k: 'status', l: 'Status', type: 'select', opts: ['open', 'matched', 'closed'], optLabels: ['Open', 'Matched', 'Closed'] }] },
         'salary-schedules': { type: 'salary-schedules', title: 'Salary Schedules', sub: 'Pay cycles & disbursement schedules', fields: [
-            { k: 'name', l: 'Schedule Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'pay_cycle', l: 'Pay Cycle', type: 'select', opts: ['monthly', 'fortnightly', 'weekly'], optLabels: ['Monthly', 'Fortnightly', 'Weekly'] }, { k: 'applicable_to', l: 'Applicable To' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
+            { k: 'name', l: 'Schedule Name' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'pay_cycle', l: 'Pay Cycle', type: 'select', opts: ['monthly', 'fortnightly', 'weekly'], optLabels: ['Monthly', 'Fortnightly', 'Weekly'], onch: 'schedPayDayOpts' }, { k: 'pay_day', l: 'Pay Day', type: 'select', opts: ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th', '10th', '11th', '12th', '13th', '14th', '15th', '16th', '17th', '18th', '19th', '20th', '21st', '22nd', '23rd', '24th', '25th', '26th', '27th', '28th', 'Last day of month', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'], hint: 'Options follow the Pay Cycle chosen' }, { k: 'applicable_to', l: 'Applicable To', type: 'select', opts: ['All types', 'Office', 'Field / FOS', 'Commission-based'], hint: 'Descriptive label — payroll pays each employee per the schedule assigned on their profile' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
         'tds-returns': { type: 'tds-returns', title: 'TDS Returns', sub: 'Quarterly TDS return filing tracker', fields: [
             { k: 'company_name', l: 'Company', src: 'company' }, { k: 'quarter', l: 'Quarter', type: 'select', opts: ['Q1', 'Q2', 'Q3', 'Q4'], optLabels: ['Q1 (Apr–Jun)', 'Q2 (Jul–Sep)', 'Q3 (Oct–Dec)', 'Q4 (Jan–Mar)'] }, { k: 'deductees', l: 'Deductees', type: 'number' }, { k: 'tax_deducted', l: 'Tax Deducted (₹)', type: 'number' }, { k: 'deposited', l: 'Deposited (₹)', type: 'number' }, { k: 'due_date', l: 'Due Date', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'filed', 'revised'], optLabels: ['Pending', 'Filed', 'Revised'] }] },
         'teams': { type: 'teams', title: 'Teams', sub: 'Teams with their manager & leader', fields: [
@@ -8109,7 +8127,7 @@ CSS;
                 ctrl = '<textarea id="ms_' + fl.k + '" rows="9" style="' + inp + ';resize:vertical;line-height:1.5">' + String(val).replace(/</g, '&lt;') + '</textarea>';
             } else if (fl.type === 'select') {
                 var labels = fl.optLabels || fl.opts;
-                var oc = fl.fill ? ' onchange="masterFillSample(' + "'ms_" + (fl.fillTarget || '') + "','" + fl.fill + "',this.value)" + '"' : '';
+                var oc = fl.fill ? ' onchange="masterFillSample(' + "'ms_" + (fl.fillTarget || '') + "','" + fl.fill + "',this.value)" + '"' : (fl.onch ? ' onchange="' + fl.onch + '()"' : '');
                 ctrl = '<select id="ms_' + fl.k + '"' + oc + ' style="' + inp + '">' + fl.opts.map(function (o, i) { return '<option value="' + o + '"' + (String(o) === String(val) ? ' selected' : '') + '>' + labels[i] + '</option>'; }).join('') + '</select>';
             } else if (fl.casc) {
                 var cascOpts = fl.cascSrc === 'company' ? (['All'].concat(((typeof DB !== 'undefined' && DB.companies) || []).map(function (c) { return c.name; }))) : (val ? [val] : []);
@@ -8138,7 +8156,7 @@ CSS;
                 ctrl = '<input id="ms_' + fl.k + '" type="' + itype + '" value="' + String(v2).replace(/"/g, '&quot;') + '" style="' + inp + '">';
             }
             var wrapStyle = (fl.type === 'textarea') ? ' style="grid-column:1 / -1"' : '';
-            return '<div' + wrapStyle + '><label style="' + lbl + '">' + fl.l + '</label>' + ctrl + (fl.hint ? '<div style="font-size:11px;color:var(--text3);margin-top:3px">' + fl.hint + '</div>' : '') + '</div>';
+            return '<div' + wrapStyle + '><label id="ms_' + fl.k + '_lbl" style="' + lbl + '">' + fl.l + '</label>' + ctrl + (fl.hint ? '<div id="ms_' + fl.k + '_hint" style="font-size:11px;color:var(--text3);margin-top:3px">' + fl.hint + '</div>' : '') + '</div>';
         }).join('');
         var m = document.getElementById('master-modal') || (function () { var x = document.createElement('div'); x.id = 'master-modal'; document.body.appendChild(x); return x; })();
         m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
@@ -8153,8 +8171,36 @@ CSS;
         // Pre-load a sample body for any field that declares one (fills if empty).
         try { mc.fields.forEach(function (fl) { if (fl.fill && fl.fillTarget) { var sel = document.getElementById('ms_' + fl.k); if (sel) { masterFillSample('ms_' + fl.fillTarget, fl.fill, sel.value); } } }); } catch (e) {}
         try { if (mc.fields.some(function (fl) { return fl.casc; }) && typeof masterCascade === 'function') { masterCascade(); } } catch (e) {}
+        // Run any field's declared onchange handler once so dependent fields
+        // (e.g. Pay Day options following Pay Cycle) initialise correctly.
+        try { mc.fields.forEach(function (fl) { if (fl.onch && typeof window[fl.onch] === 'function') { window[fl.onch](); } }); } catch (e) {}
     };
     window.masterClose = function () { var m = document.getElementById('master-modal'); if (m) { m.style.display = 'none'; } };
+    // rev172 — Salary Schedules: the Pay Day options follow the chosen Pay Cycle.
+    // Monthly → date of month (1st–28th + Last day; 29–31 skipped because they
+    // don't exist in every month). Fortnightly → first pay day (1st–15th; the
+    // second is automatically 15 days later). Weekly → weekday.
+    window.schedPayDayOpts = function () {
+        var cyc = document.getElementById('ms_pay_cycle'); var pd = document.getElementById('ms_pay_day');
+        if (!cyc || !pd) { return; }
+        var ord = function (n) { var s = ['th', 'st', 'nd', 'rd']; var v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
+        var opts = []; var label; var hint; var i;
+        if (cyc.value === 'weekly') {
+            opts = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+            label = 'Pay Day (weekday)'; hint = 'Salary is paid every week on this day.';
+        } else if (cyc.value === 'fortnightly') {
+            for (i = 1; i <= 15; i++) { opts.push(ord(i)); }
+            label = 'First Pay Day (1st–15th)'; hint = 'Second pay day is automatic: 15 days later (pick 5th → pays on the 5th and the 20th).';
+        } else {
+            for (i = 1; i <= 28; i++) { opts.push(ord(i)); }
+            opts.push('Last day of month');
+            label = 'Salary Day (of month)'; hint = 'Use “Last day of month” instead of 29–31 — those dates do not exist in every month.';
+        }
+        var cur = pd.value;
+        pd.innerHTML = opts.map(function (o) { return '<option' + (o === cur ? ' selected' : '') + '>' + o + '</option>'; }).join('');
+        var lb = document.getElementById('ms_pay_day_lbl'); if (lb) { lb.textContent = label; }
+        var ht = document.getElementById('ms_pay_day_hint'); if (ht) { ht.textContent = hint; }
+    };
     // rev164 — Company → Department → Team → Employee cascading dropdowns for the
     // master form (used by Pay Cycle). Options at each level are derived from the
     // employees actually assigned, so each depends on the parent selection.
@@ -8253,9 +8299,55 @@ CSS;
     }
     // Month-wise payslip history (real DB payslips), with a month selector + per-row PDF.
     window.psSetMonth = function (m) { window.__psMonth = m; if (typeof render === 'function') { render(); } };
+    // rev172 — Payslip Download Policy (client ask: staff were downloading slips
+    // to job-hop). Controls EMPLOYEE self-download only; HR/Admin always can.
+    window.psPolicyOpen = function () {
+        var go = function (r) {
+            var m = document.getElementById('pspol-modal') || (function () { var x = document.createElement('div'); x.id = 'pspol-modal'; document.body.appendChild(x); return x; })();
+            m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:50px 16px;overflow:auto';
+            var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+            var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+            var mode = r.payslip_dl_mode || 'all';
+            var mopts = [['all', 'Everyone may download their own payslip'], ['none', 'Nobody — HR/Admin only'], ['dept', 'Block selected departments'], ['emp', 'Block selected employees']];
+            m.innerHTML = '<div class="card" style="max-width:560px;width:100%;padding:0">'
+                + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px">Payslip Download Policy</h3><button class="btn btn-outline btn-sm" onclick="document.getElementById(\'pspol-modal\').remove()"><i class="fas fa-xmark"></i></button></div>'
+                + '<div style="padding:20px 22px">'
+                + '<div style="font-size:12px;color:var(--text3);margin-bottom:14px">Controls whether employees can download their own payslip PDF from My Space. HR and Admin can ALWAYS download or email any payslip regardless of this policy.</div>'
+                + '<div style="margin-bottom:12px"><label style="' + lbl + '">Who may self-download</label><select id="pspol_mode" onchange="psPolicyMode()" style="' + inp + '">' + mopts.map(function (o) { return '<option value="' + o[0] + '"' + (mode === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>'
+                + '<div id="pspol_dept_w" style="margin-bottom:12px;display:none"><label style="' + lbl + '">Blocked departments (comma-separated)</label><textarea id="pspol_depts" rows="2" style="' + inp + ';resize:vertical" placeholder="Collections, Field Operations">' + ((r.payslip_dl_depts || []).join(', ')) + '</textarea></div>'
+                + '<div id="pspol_emp_w" style="margin-bottom:12px;display:none"><label style="' + lbl + '">Blocked employee codes (comma-separated)</label><textarea id="pspol_emps" rows="2" style="' + inp + ';resize:vertical" placeholder="EMP-1001, EMP-1042">' + ((r.payslip_dl_emps || []).join(', ')) + '</textarea></div>'
+                + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="document.getElementById(\'pspol-modal\').remove()">Cancel</button><button class="btn btn-primary" onclick="psPolicySave()"><i class="fas fa-check"></i> Save Policy</button></div>'
+                + '</div></div>';
+            m.style.display = 'flex';
+            m.onclick = function (e) { if (e.target === m) { m.remove(); } };
+            psPolicyMode();
+        };
+        if (window.__RATES) { go(window.__RATES); return; }
+        fetch(cfg.settingsUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) { window.__RATES = (d && d.rates) || {}; go(window.__RATES); })
+            .catch(function () { go({}); });
+    };
+    window.psPolicyMode = function () {
+        var mode = (document.getElementById('pspol_mode') || {}).value || 'all';
+        var dw = document.getElementById('pspol_dept_w'); var ew = document.getElementById('pspol_emp_w');
+        if (dw) { dw.style.display = mode === 'dept' ? 'block' : 'none'; }
+        if (ew) { ew.style.display = mode === 'emp' ? 'block' : 'none'; }
+    };
+    window.psPolicySave = function () {
+        var g = function (id) { var el = document.getElementById(id); return el ? el.value : ''; };
+        var split = function (id) { return g(id).split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s; }); };
+        var payload = { payslip_dl_mode: g('pspol_mode') || 'all', payslip_dl_depts: split('pspol_depts'), payslip_dl_emps: split('pspol_emps') };
+        fetch(cfg.settingsSaveUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (d && d.ok) { window.__RATES = d.rates; if (typeof toast === 'function') { toast('Payslip download policy saved'); } var m = document.getElementById('pspol-modal'); if (m) { m.remove(); } }
+                else if (typeof toast === 'function') { toast('Save failed — admin only'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Save failed'); } });
+    };
     function payslipHistoryScreen() {
         var ps = window.__PAYSLIPS || [];
-        var sampleBtn = '<button class="btn btn-ghost btn-sm" onclick="viewSamplePayslip()"><i class="fas fa-eye"></i> View Sample Payslip</button>';
+        var sampleBtn = '<button class="btn btn-outline btn-sm" onclick="psPolicyOpen()"><i class="fas fa-user-lock"></i> Download Policy</button> <button class="btn btn-ghost btn-sm" onclick="viewSamplePayslip()"><i class="fas fa-eye"></i> View Sample Payslip</button>';
         var title = (typeof SCREENS !== 'undefined' && SCREENS.payslip && SCREENS.payslip.title) || 'Payslips';
         if (!ps.length) {
             return pghead(title, 'Monthly payslip history', sampleBtn) + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No payslips yet — open Payroll → Generate Payroll.</div></div>';
@@ -9173,6 +9265,18 @@ CSS;
             + rateToggle('Conveyance allowance', 'conveyance_enabled', r.conveyance_enabled)
             + rateField('Conveyance rate (% of Basic, PF cap)', 'conveyance_rate', r.conveyance_rate)
             + '</div>';
+        var selStyle = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var selLbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var wodOpts = [['sunday', 'Sunday'], ['monday', 'Monday'], ['tuesday', 'Tuesday'], ['wednesday', 'Wednesday'], ['thursday', 'Thursday'], ['friday', 'Friday'], ['saturday', 'Saturday']];
+        var satOpts = [['none', 'All Saturdays working'], ['2_4', '2nd & 4th Saturday off'], ['1_3', '1st & 3rd Saturday off'], ['all', 'All Saturdays off']];
+        var mkSel = function (id, opts, cur) { return '<select id="rate_' + id + '" style="' + selStyle + '">' + opts.map(function (o) { return '<option value="' + o[0] + '"' + (String(cur || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>'; };
+        var weekOff = '<h3 style="margin:20px 0 6px;font-size:15px">Weekly offs (non-working days)</h3>'
+            + '<p style="font-size:12px;color:var(--text3);margin:0 0 8px">Payroll working days = days in month &minus; weekly offs below &minus; holidays from the <b>Leave &rarr; Holidays</b> calendar. Loss-of-pay is never charged for these days.</p>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">'
+            + '<div><label style="' + selLbl + '">Weekly off day</label>' + mkSel('weekly_off_day', wodOpts, r.weekly_off_day || 'sunday') + '</div>'
+            + '<div><label style="' + selLbl + '">Saturday policy</label>' + mkSel('sat_off_mode', satOpts, r.sat_off_mode || 'none') + '<div style="font-size:11px;color:var(--text3);margin-top:3px">e.g. banks/NBFCs: 2nd &amp; 4th Saturday off</div></div>'
+            + '</div>';
+        grid += weekOff;
         var slabTbl = '<h3 style="margin:20px 0 6px;font-size:15px">Income-tax slabs (new regime)</h3>'
             + '<p style="font-size:12px;color:var(--text3);margin:0 0 8px">Annual taxable income up to the amount is taxed at the rate beside it. Put 0 in the last row to mean "and above".</p>'
             + '<table style="border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px 8px 4px 0;font-size:11px;color:var(--text3)">Up to (₹)</th><th style="text-align:left;padding:4px 0;font-size:11px;color:var(--text3)">Rate</th></tr></thead><tbody>' + slabRows + '</tbody></table>';
@@ -9191,6 +9295,7 @@ CSS;
         var keys = ['pf_wage_cap', 'pf_rate', 'pt_amount', 'esi_threshold', 'esi_employee_rate', 'esi_employer_rate', 'std_deduction', 'rebate_87a_limit', 'cess_rate', 'comm_tds_rate', 'no_pan_tds_rate', 'conveyance_enabled', 'conveyance_rate'];
         var payload = {};
         keys.forEach(function (k) { var el = document.getElementById('rate_' + k); if (el && el.value !== '') { payload[k] = Number(el.value); } });
+        ['weekly_off_day', 'sat_off_mode'].forEach(function (k) { var el = document.getElementById('rate_' + k); if (el && el.value !== '') { payload[k] = el.value; } });
         var uptos = document.querySelectorAll('.slab_upto'); var rs = document.querySelectorAll('.slab_rate');
         var slabs = []; for (var i = 0; i < uptos.length; i++) { slabs.push({ upto: Number(uptos[i].value) || 0, rate: Number(rs[i].value) || 0 }); }
         payload.tds_slabs = slabs;

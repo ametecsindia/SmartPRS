@@ -27,6 +27,50 @@ class DocumentController extends Controller
         'Other',
     ];
 
+    // rev172 — upload rules are explicit and returned to the UI. Storage is
+    // limited PER EMPLOYEE (scales naturally with client size): each employee's
+    // documents may total up to the tenant's per-employee allowance
+    // (tenants.doc_storage_emp_mb, default 100 MB — Super Admin sets it per
+    // tenant in the SaaS tenant edit). On-prem installs (no tenant) are unlimited.
+    public const ALLOWED_EXTS = ['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx', 'xls', 'xlsx'];
+
+    public const MAX_FILE_MB = 10;
+
+    public const DEFAULT_EMP_QUOTA_MB = 100; // per employee
+
+    /** Per-employee document-storage allowance in MB (null = unlimited, e.g. on-prem). */
+    private static function empQuotaMb(?int $tid): ?int
+    {
+        if (! $tid) {
+            return null;
+        }
+        $v = null;
+        if (Schema::hasColumn('tenants', 'doc_storage_emp_mb')) {
+            $v = DB::table('tenants')->where('id', $tid)->value('doc_storage_emp_mb');
+        }
+
+        return $v !== null ? (int) $v : self::DEFAULT_EMP_QUOTA_MB;
+    }
+
+    /** Bytes used by a tenant's documents — all, or one employee's (lazily backfills file_size for old rows). */
+    private static function usedBytes(?int $tid, ?int $empId = null): int
+    {
+        $q = fn () => DB::table('documents')
+            ->when($tid, fn ($x) => $x->where('tenant_id', $tid))
+            ->when($empId, fn ($x) => $x->where('employee_id', $empId));
+        // Backfill sizes for rows uploaded before file_size existed.
+        foreach ($q()->whereNull('file_size')->whereNotNull('file_path')->limit(200)->get(['id', 'file_path']) as $d) {
+            try {
+                $full = Storage::disk('public')->path($d->file_path);
+                DB::table('documents')->where('id', $d->id)->update(['file_size' => is_file($full) ? filesize($full) : 0]);
+            } catch (\Throwable $e) {
+                DB::table('documents')->where('id', $d->id)->update(['file_size' => 0]);
+            }
+        }
+
+        return (int) $q()->sum('file_size');
+    }
+
     private static function ensure(): void
     {
         if (! Schema::hasTable('documents')) {
@@ -45,6 +89,12 @@ class DocumentController extends Controller
             if (! Schema::hasColumn('documents', $c)) {
                 Schema::table('documents', fn (Blueprint $t) => $t->string($c)->nullable());
             }
+        }
+        if (! Schema::hasColumn('documents', 'file_size')) {
+            Schema::table('documents', fn (Blueprint $t) => $t->unsignedBigInteger('file_size')->nullable());
+        }
+        if (Schema::hasTable('tenants') && ! Schema::hasColumn('tenants', 'doc_storage_emp_mb')) {
+            Schema::table('tenants', fn (Blueprint $t) => $t->unsignedInteger('doc_storage_emp_mb')->nullable());
         }
     }
 
@@ -93,12 +143,21 @@ class DocumentController extends Controller
             'uploaded' => $d->created_at ? substr((string) $d->created_at, 0, 10) : '',
         ]);
 
+        $empLimitMb = self::empQuotaMb($tid);
+        $usedMb = round(self::usedBytes($tid) / 1048576, 1);
+
         return response()->json([
             'ok' => true,
             'q' => $q,
             'categories' => self::CATEGORIES,
             'employees' => $emps,
             'documents' => $docs,
+            'rules' => [
+                'formats' => strtoupper(implode(', ', self::ALLOWED_EXTS)),
+                'max_file_mb' => self::MAX_FILE_MB,
+                'used_mb' => $usedMb,            // tenant total (info only)
+                'emp_limit_mb' => $empLimitMb,   // per-employee allowance; null = unlimited
+            ],
         ]);
     }
 
@@ -136,18 +195,38 @@ class DocumentController extends Controller
         $defName = trim((string) $request->input('doc_name', ''));
         $defExp = $request->input('expiry');
 
-        $allowed = ['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx', 'xls', 'xlsx'];
+        // Per-employee storage quota (Super Admin sets the rate per tenant; default 100 MB/employee).
+        $limitMb = self::empQuotaMb($tid);
+        $limitBytes = $limitMb !== null ? $limitMb * 1048576 : null;
+        $used = self::usedBytes($tid, (int) $emp->id);
+
         $count = 0;
         $skipped = 0;
+        $skipReasons = [];
+        $quotaHit = false;
         foreach ($files as $i => $file) {
             if (! $file || ! $file->isValid()) {
                 $skipped++;
+                $skipReasons[] = 'a file failed to upload';
 
                 continue;
             }
             $ext = strtolower((string) $file->getClientOriginalExtension());
-            if (! in_array($ext, $allowed, true) || $file->getSize() > 10 * 1024 * 1024) {
+            if (! in_array($ext, self::ALLOWED_EXTS, true)) {
                 $skipped++;
+                $skipReasons[] = $file->getClientOriginalName().' — format .'.$ext.' not allowed (allowed: '.strtoupper(implode(', ', self::ALLOWED_EXTS)).')';
+
+                continue;
+            }
+            if ($file->getSize() > self::MAX_FILE_MB * 1048576) {
+                $skipped++;
+                $skipReasons[] = $file->getClientOriginalName().' — larger than '.self::MAX_FILE_MB.' MB';
+
+                continue;
+            }
+            if ($limitBytes !== null && $used + $file->getSize() > $limitBytes) {
+                $skipped++;
+                $quotaHit = true;
 
                 continue;
             }
@@ -163,16 +242,21 @@ class DocumentController extends Controller
                 'expiry' => (($exps[$i] ?? $defExp) ?: null),
                 'file_path' => $path,
                 'file_name' => $file->getClientOriginalName(),
+                'file_size' => (int) $file->getSize(),
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
+            $used += (int) $file->getSize();
             $count++;
         }
+        if ($quotaHit) {
+            $skipReasons[] = 'storage limit for '.$emp->name.' reached ('.round($used / 1048576).' of '.$limitMb.' MB per employee used) — delete old documents of this employee or ask SmartPRS support to increase the limit';
+        }
         if (! $count) {
-            return response()->json(['ok' => false, 'error' => 'No valid files uploaded'.($skipped ? ' ('.$skipped.' skipped — check type/size)' : '')], 422);
+            return response()->json(['ok' => false, 'error' => 'No files uploaded. '.implode('; ', array_unique($skipReasons))], 422);
         }
 
-        return response()->json(['ok' => true, 'count' => $count, 'skipped' => $skipped]);
+        return response()->json(['ok' => true, 'count' => $count, 'skipped' => $skipped, 'skip_reasons' => array_values(array_unique($skipReasons))]);
     }
 
     /** GET /app/documents-mgr/{id}/download */

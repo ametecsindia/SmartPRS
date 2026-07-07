@@ -403,6 +403,8 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::get('/app/reports/export', [App\Http\Controllers\ReportController::class, 'export'])->name('app.reports.export');
     // Computed statutory reports (gratuity / professional tax).
     Route::get('/app/statutory-report/{type}', [App\Http\Controllers\StatutoryController::class, 'report'])->name('app.statutory.report');
+    // rev172 — per-agent RBI compliance audit report PDF (own-company branded).
+    Route::get('/app/compliance/agent-audit/{code}/pdf', [App\Http\Controllers\ComplianceController::class, 'agentAuditPdf'])->name('app.compliance.agentaudit.pdf');
     // HR letter PDF (merge a template with the employee's data) + email it.
     Route::get('/app/letters/{id}/pdf', [App\Http\Controllers\LetterController::class, 'pdf'])->name('app.letters.pdf');
     Route::post('/app/letters/{id}/email', [App\Http\Controllers\LetterController::class, 'email'])->name('app.letters.email');

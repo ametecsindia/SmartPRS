@@ -61,7 +61,7 @@ class LoanController extends Controller
 
     private function validateLoan(Request $request): array
     {
-        return $request->validate([
+        $data = $request->validate([
             'employee_id' => ['required', 'exists:employees,id'],
             'type' => ['required', Rule::in(['loan', 'advance'])],
             'principal' => ['required', 'numeric', 'min:0'],
@@ -72,5 +72,13 @@ class LoanController extends Controller
             'status' => ['required', Rule::in(['active', 'closed'])],
             'note' => ['nullable', 'string', 'max:255'],
         ]);
+
+        // rev172 (H1) — auto-close a loan once all installments are paid, so its
+        // EMI stops being deducted in payroll.
+        if ((int) ($data['installments_paid'] ?? 0) >= (int) $data['installments_total']) {
+            $data['status'] = 'closed';
+        }
+
+        return $data;
     }
 }

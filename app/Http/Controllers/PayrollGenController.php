@@ -62,6 +62,52 @@ class PayrollGenController extends Controller
         }
     }
 
+    /**
+     * rev172 — configurable weekly offs (Ejaz): is this date a weekly off per
+     * Statutory Settings? weekly_off_day (default sunday) + sat_off_mode
+     * (none | all | 2_4 | 1_3 — Nth Saturdays of the month off).
+     */
+    public static function isWeekOff(Carbon $d, array $r): bool
+    {
+        $map = ['sunday' => 0, 'monday' => 1, 'tuesday' => 2, 'wednesday' => 3, 'thursday' => 4, 'friday' => 5, 'saturday' => 6];
+        $off = $map[strtolower((string) ($r['weekly_off_day'] ?? 'sunday'))] ?? 0;
+        if ($d->dayOfWeek === $off) {
+            return true;
+        }
+        if ($d->dayOfWeek === Carbon::SATURDAY) {
+            $mode = (string) ($r['sat_off_mode'] ?? 'none');
+            if ($mode === 'all') {
+                return true;
+            }
+            if ($mode === '2_4' || $mode === '1_3') {
+                $nth = (int) ceil($d->day / 7); // 1st–5th Saturday of the month
+                return $mode === '2_4' ? ($nth === 2 || $nth === 4) : ($nth === 1 || $nth === 3);
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * rev172 (M1) — working days in [fromDay..toDay] of a month, excluding weekly
+     * offs and working-day holidays. Used to prorate a mid-month joiner: their
+     * denominator is the working days available FROM their date of joining, not
+     * the whole month, so an employee who joined on the 15th isn't underpaid.
+     */
+    private function workingDaysInRange(Carbon $start, int $fromDay, int $toDay, array $rates, array $holidays): int
+    {
+        $n = 0;
+        for ($d = max(1, $fromDay); $d <= $toDay; $d++) {
+            $cur = Carbon::create($start->year, $start->month, $d);
+            if (self::isWeekOff($cur, $rates) || isset($holidays[$cur->toDateString()])) {
+                continue;
+            }
+            $n++;
+        }
+
+        return $n;
+    }
+
     /** [startDate, daysInMonth, workingDays(excl. Sundays), endDateString] for a month. */
     private function monthMeta(string $month): array
     {
@@ -78,13 +124,17 @@ class PayrollGenController extends Controller
     }
 
     /** Distinct punch dates for an employee in the month (0 if none / no table). */
-    private function presentDays(string $empCode, string $month, string $endDate): int
+    private function presentDays(string $empCode, string $month, string $endDate, ?int $tid = null): int
     {
         if (! $empCode || ! Schema::hasTable('attendance_logs')) {
             return 0;
         }
         try {
+            // rev172 — tenant-scoped: emp codes (EMP-XXXX) repeat across tenants,
+            // so without this filter one tenant's payroll could count another
+            // tenant's punches.
             return (int) DB::table('attendance_logs')
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
                 ->where('emp_code', $empCode)
                 ->whereBetween('log_date', [$month.'-01', $endDate])
                 ->distinct()
@@ -174,7 +224,7 @@ class PayrollGenController extends Controller
     }
 
     /** Per-day stats for an employee: 'Y-m-d' => ['firstIn'=>Carbon|null,'worked'=>min,'break'=>min]. */
-    private function dayStats(string $empCode, string $month, string $endDate): array
+    private function dayStats(string $empCode, string $month, string $endDate, ?int $tid = null): array
     {
         $out = [];
         if (! $empCode || ! Schema::hasTable('attendance_logs')) {
@@ -182,6 +232,7 @@ class PayrollGenController extends Controller
         }
         try {
             $punches = DB::table('attendance_logs')
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid)) // rev172 — tenant-scoped (see presentDays)
                 ->where('emp_code', $empCode)
                 ->whereBetween('log_date', [$month.'-01', $endDate])
                 ->orderBy('punch_at')
@@ -409,6 +460,11 @@ class PayrollGenController extends Controller
                 ->when($tid && Schema::hasColumn('commissions', 'tenant_id'), fn ($q) => $q->where('tenant_id', $tid))
                 ->when(Schema::hasColumn('commissions', 'company_id'), fn ($q) => $q->where('company_id', $company->id))
                 ->where('status', 'approved')
+                // rev172 (M3) — a commission already LOCKED into a payslip must never
+                // fold into another month's run (e.g. if its payout_date is edited
+                // after locking). Regenerating the SAME month first clears the lock,
+                // so this still lets a re-generated month re-include correctly.
+                ->when(Schema::hasColumn('commissions', 'locked_at'), fn ($q) => $q->whereNull('locked_at'))
                 ->get($cols);
             foreach ($rows as $r) {
                 if (! $r->employee_id) {
@@ -504,8 +560,8 @@ class PayrollGenController extends Controller
         return $rows->filter(fn ($r) => in_array($scopeOf($r), ['company', ''], true))->values();
     }
 
-    /** Non-Sunday company holidays in the month: map of 'Y-m-d' => true. */
-    private function holidayDates(?int $tid, string $month, string $endDate): array
+    /** Working-day company holidays in the month: map of 'Y-m-d' => true. */
+    private function holidayDates(?int $tid, string $month, string $endDate, array $rates = []): array
     {
         if (! Schema::hasTable('holidays')) {
             return [];
@@ -518,9 +574,9 @@ class PayrollGenController extends Controller
             $out = [];
             foreach ($rows as $d) {
                 $ds = substr((string) $d, 0, 10);
-                // A holiday on a Sunday is already a non-working day; only count
-                // weekday holidays (they remove a day from the LOP denominator).
-                if (Carbon::parse($ds)->dayOfWeek !== Carbon::SUNDAY) {
+                // A holiday on a weekly off is already a non-working day; only count
+                // working-day holidays (they remove a day from the LOP denominator).
+                if (! self::isWeekOff(Carbon::parse($ds), $rates)) {
                     $out[$ds] = true;
                 }
             }
@@ -532,7 +588,7 @@ class PayrollGenController extends Controller
     }
 
     /** Approved PAID-leave working-days for an employee within the month. */
-    private function paidLeaveDays(int $empId, ?int $tid, string $month, string $endDate, array $holidays): float
+    private function paidLeaveDays(int $empId, ?int $tid, string $month, string $endDate, array $holidays, array $rates = []): float
     {
         if (! Schema::hasTable('leaves')) {
             return 0.0;
@@ -564,7 +620,7 @@ class PayrollGenController extends Controller
                 $from = Carbon::parse($fromS < $start ? $start : $fromS);
                 $to = Carbon::parse($toS > $endDate ? $endDate : $toS);
                 for ($c = $from->copy(); $c->lte($to); $c->addDay()) {
-                    if ($c->dayOfWeek === Carbon::SUNDAY || isset($holidays[$c->toDateString()])) {
+                    if (self::isWeekOff($c, $rates) || isset($holidays[$c->toDateString()])) {
                         continue;
                     }
                     $count += 1;
@@ -587,12 +643,12 @@ class PayrollGenController extends Controller
         $rates = SettingsController::rates($tid);
         [$start, $daysInMonth, , $endDate] = $this->monthMeta($month);
 
-        // Working days = calendar days minus Sundays minus weekday holidays.
-        $holidays = $lop ? $this->holidayDates($tid, $month, $endDate) : [];
+        // Working days = calendar days minus weekly offs (configurable) minus working-day holidays.
+        $holidays = $lop ? $this->holidayDates($tid, $month, $endDate, $rates) : [];
         $working = 0;
         for ($d = 1; $d <= $daysInMonth; $d++) {
             $cur = Carbon::create($start->year, $start->month, $d);
-            if ($cur->dayOfWeek === Carbon::SUNDAY || isset($holidays[$cur->toDateString()])) {
+            if (self::isWeekOff($cur, $rates) || isset($holidays[$cur->toDateString()])) {
                 continue;
             }
             $working++;
@@ -602,6 +658,9 @@ class PayrollGenController extends Controller
         $empSel = ['id', 'emp_code', 'name', 'ctc'];
         if (Schema::hasColumn('employees', 'team')) {
             $empSel[] = 'team';
+        }
+        if (Schema::hasColumn('employees', 'doj')) {
+            $empSel[] = 'doj'; // rev172 (M1) — needed to prorate mid-month joiners
         }
         $emps = DB::table('employees')
             ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
@@ -635,8 +694,22 @@ class PayrollGenController extends Controller
 
                 continue;   // no CTC set → cannot compute a salary; flagged to the user
             }
-            $present = $lop ? $this->presentDays($e->emp_code, $month, $endDate) : 0;
-            $leave = ($lop && $present > 0) ? $this->paidLeaveDays((int) $e->id, $tid, $month, $endDate, $holidays) : 0.0;
+            $present = $lop ? $this->presentDays($e->emp_code, $month, $endDate, $tid) : 0;
+            $leave = ($lop && $present > 0) ? $this->paidLeaveDays((int) $e->id, $tid, $month, $endDate, $holidays, $rates) : 0.0;
+            // rev172 (M1) — mid-month joiner: prorate against the working days
+            // available FROM the date of joining, not the whole month.
+            $empWorking = $working;
+            $dojField = property_exists($e, 'doj') ? $e->doj : null;
+            if ($dojField) {
+                try {
+                    $doj = Carbon::parse(substr((string) $dojField, 0, 10));
+                    if ($doj->format('Y-m') === $month && $doj->day > 1) {
+                        $empWorking = max(1, $this->workingDaysInRange($start, $doj->day, $daysInMonth, $rates, $holidays));
+                    }
+                } catch (\Throwable $e2) {
+                    // unparseable DOJ → fall back to full-month working days
+                }
+            }
             $lateCut = 0.0;
             $breakCut = 0.0;
             $lateDays = 0;
@@ -648,7 +721,7 @@ class PayrollGenController extends Controller
                 $team = property_exists($e, 'team') ? $e->team : null;
                 $pol = $polRows->isEmpty() ? null : $this->resolvePolicy($polRows, $e->emp_code, $team);
                 if ($pol) {
-                    $stats = $this->dayStats($e->emp_code, $month, $endDate);
+                    $stats = $this->dayStats($e->emp_code, $month, $endDate, $tid);
                     $res = $this->attendanceCut($stats, $pol);
                     $lateCut = $res['lateCut'];
                     $breakCut = $res['breakCut'];
@@ -656,8 +729,8 @@ class PayrollGenController extends Controller
                 }
                 // Paid leave counts as present; an employee with zero punches is
                 // paid in full (safeguard for companies not using biometric).
-                $paidDays = max(0.0, min($working, $present + $leave) - $lateCut - $breakCut);
-                $factor = $paidDays / $working;
+                $paidDays = max(0.0, min($empWorking, $present + $leave) - $lateCut - $breakCut);
+                $factor = min(1.0, $paidDays / $empWorking); // rev172 (M1) — DOJ-aware denominator; factor never exceeds full month
             }
             $teamC = property_exists($e, 'team') ? $e->team : null;
             $salComps = $this->resolveComponents($compRows, $e->emp_code, $teamC);
@@ -805,12 +878,12 @@ class PayrollGenController extends Controller
             $dayOfMonth = (int) now()->day;
 
             // Working days: full month + elapsed-till-today (Sundays/holidays excluded).
-            $holidays = $this->holidayDates($tid, $month, $start->copy()->endOfMonth()->toDateString());
+            $holidays = $this->holidayDates($tid, $month, $start->copy()->endOfMonth()->toDateString(), $rates);
             $working = 0;
             $workingSoFar = 0;
             for ($d = 1; $d <= $daysInMonth; $d++) {
                 $cur = Carbon::create($start->year, $start->month, $d);
-                if ($cur->dayOfWeek === Carbon::SUNDAY || isset($holidays[$cur->toDateString()])) {
+                if (self::isWeekOff($cur, $rates) || isset($holidays[$cur->toDateString()])) {
                     continue;
                 }
                 $working++;
@@ -821,8 +894,8 @@ class PayrollGenController extends Controller
             $working = max(1, $working);
 
             // Attendance till TODAY (same helpers as payroll, endDate = today).
-            $present = $this->presentDays($target->emp_code, $month, $today);
-            $leave = $present > 0 ? $this->paidLeaveDays((int) $target->id, $tid, $month, $today, $holidays) : 0.0;
+            $present = $this->presentDays($target->emp_code, $month, $today, $tid);
+            $leave = $present > 0 ? $this->paidLeaveDays((int) $target->id, $tid, $month, $today, $holidays, $rates) : 0.0;
             $lateCut = 0.0;
             $breakCut = 0.0;
             $lateDays = 0;
@@ -830,7 +903,7 @@ class PayrollGenController extends Controller
             $polRows = $this->latePolicyRows($company, $tid);
             $pol = $polRows->isEmpty() ? null : $this->resolvePolicy($polRows, $target->emp_code, $team);
             if ($pol && $present > 0) {
-                $stats = $this->dayStats($target->emp_code, $month, $today);
+                $stats = $this->dayStats($target->emp_code, $month, $today, $tid);
                 $res = $this->attendanceCut($stats, $pol);
                 $lateCut = $res['lateCut'];
                 $breakCut = $res['breakCut'];
@@ -888,7 +961,21 @@ class PayrollGenController extends Controller
             $emi = 0.0;
             try {
                 if (Schema::hasTable('loans')) {
-                    $emi = (float) DB::table('loans')->where('employee_id', $target->id)->where('status', 'approved')->sum('emi');
+                    // rev172 (H1) — only ACTIVE loans that still have installments
+                    // remaining contribute EMI. Prevents deducting after a loan is
+                    // fully repaid. Adapts to whichever repayment columns exist
+                    // (installments_paid/total, or outstanding).
+                    $emi = (float) DB::table('loans')->where('employee_id', $target->id)
+                        ->whereIn('status', ['approved', 'active'])
+                        ->when(
+                            Schema::hasColumn('loans', 'installments_paid') && Schema::hasColumn('loans', 'installments_total'),
+                            fn ($q) => $q->whereColumn('installments_paid', '<', 'installments_total')
+                        )
+                        ->when(
+                            Schema::hasColumn('loans', 'outstanding'),
+                            fn ($q) => $q->where('outstanding', '>', 0)
+                        )
+                        ->sum('emi');
                 }
             } catch (\Throwable $e) {
             }
@@ -1229,6 +1316,25 @@ class PayrollGenController extends Controller
                 if (! $regenerate) {
                     return response()->json(['ok' => false, 'needsConfirm' => true, 'error' => 'A draft run already exists for '.$month.'. Regenerate to replace it.'], 409);
                 }
+                // rev172 (M2) — record every draft regeneration so a silently
+                // changed payslip always has a trail (who/when/which run replaced).
+                try {
+                    if (Schema::hasTable('activity_logs')) {
+                        $by = trim((string) ($request->user()->name ?? '')) ?: (string) $request->user()->email;
+                        DB::table('activity_logs')->insert(ApprovalService::safeRow('activity_logs', [
+                            'tenant_id' => $tid,
+                            'user_id' => optional($request->user())->id,
+                            'action' => 'payroll.regenerate',
+                            'entity' => 'payroll_runs',
+                            'entity_id' => $existing->id,
+                            'detail' => json_encode(['by' => $by, 'company' => $company->name, 'month' => $month, 'replaced_run' => $existing->id]),
+                            'ip' => $request->ip(),
+                            'created_at' => now(),
+                        ]));
+                    }
+                } catch (\Throwable $e) {
+                    // audit is best-effort; never block the regenerate on it
+                }
                 // Replace the existing draft: drop its payslips then the run.
                 DB::table('payslips')->where('run_id', $existing->id)->delete();
                 DB::table('payroll_runs')->where('id', $existing->id)->delete();
@@ -1282,9 +1388,9 @@ class PayrollGenController extends Controller
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
-            $runId = DB::table('payroll_runs')->insertGetId($runRow);
-
-            // Persist the calculation note alongside each payslip (self-heals the column).
+            // rev172 (H2) — ensure the calc_note column BEFORE opening the
+            // transaction: Schema::table (DDL) implicitly commits in MySQL, so it
+            // must not sit inside the atomic block below.
             if (! Schema::hasColumn('payslips', 'calc_note')) {
                 try {
                     Schema::table('payslips', function (Blueprint $t) {
@@ -1295,7 +1401,13 @@ class PayrollGenController extends Controller
                 }
             }
 
-            foreach ($c['rows'] as $r) {
+            // rev172 (H2) — write the run header + every payslip ATOMICALLY, so a
+            // failure mid-way can never leave a run with a partial set of payslips.
+            DB::beginTransaction();
+            try {
+                $runId = DB::table('payroll_runs')->insertGetId($runRow);
+
+                foreach ($c['rows'] as $r) {
                 $earnings = ! empty($r['earnings'])
                     ? $r['earnings']
                     : ['Basic' => $r['basic'], 'HRA' => $r['hra'], 'Special Allowance' => $r['special']];
@@ -1334,6 +1446,11 @@ class PayrollGenController extends Controller
                     'updated_at' => now(),
                 ]);
                 DB::table('payslips')->insert($slip);
+                }
+                DB::commit();
+            } catch (\Throwable $eTx) {
+                DB::rollBack();
+                throw $eTx; // surfaced by the method-level catch as a clean JSON error
             }
 
             // rev 84 (Ejaz): the LOCK — every commission included in this run
@@ -1364,35 +1481,4 @@ class PayrollGenController extends Controller
                                 DB::table('commission_payments')->insert([
                                     'tenant_id' => $lr->tenant_id,
                                     'commission_id' => (int) $lr->id,
-                                    'employee_id' => $lr->employee_id,
-                                    'paid_on' => now()->toDateString(),
-                                    'amount' => round((float) $lr->amount, 2),
-                                    'mode' => 'payslip',
-                                    'reference' => 'run #'.$runId.' · '.$c['meta']['monthLabel'],
-                                    'note' => null,
-                                    'by' => $by,
-                                    'created_at' => now(),
-                                ]);
-                            }
-                        } catch (\Throwable $e) {
-                            \Illuminate\Support\Facades\Log::warning('Commission payslip ledger debit failed (#'.$lr->id.'): '.$e->getMessage());
-                        }
-                    }
-                }
-            } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning('Commission lock on payroll generate failed: '.$e->getMessage());
-            }
-
-            return response()->json([
-                'ok' => true,
-                'runId' => $runId,
-                'count' => $c['totals']['count'],
-                'net' => $c['totals']['net'],
-                'skipped' => $c['skipped'],
-                'message' => 'Draft payroll for '.$c['meta']['monthLabel'].' created — '.$c['totals']['count'].' employee(s), net ₹'.number_format($c['totals']['net'], 2).'. Now in Salary Approval.',
-            ]);
-        } catch (\Throwable $e) {
-            return response()->json(['ok' => false, 'error' => $e->getMessage()], 200);
-        }
-    }
-}
+                                    'employee_id' => $lr->employee_id

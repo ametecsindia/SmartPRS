@@ -65,6 +65,16 @@ class StaffController extends Controller
             'role' => ['required', Rule::in(array_keys(self::ROLES))],
         ]);
 
+        // Safeguard: never allow the platform to lose its last Super Admin,
+        // and never let a Super Admin demote their own account.
+        $demoting = $user->hasRole('super_admin') && $data['role'] !== 'super_admin';
+        if ($demoting && $user->id === $request->user()->id) {
+            return redirect()->route('admin.staff')->with('success', 'You cannot change your own role away from Super Admin.');
+        }
+        if ($demoting && $this->superAdminCount() <= 1) {
+            return redirect()->route('admin.staff')->with('success', 'Cannot demote the last Super Admin — add another Super Admin first.');
+        }
+
         $user->name = $data['name'];
         $user->email = $data['email'];
         if (! empty($data['password'])) {
@@ -79,13 +89,22 @@ class StaffController extends Controller
     public function destroy(Request $request, User $user)
     {
         $this->guard($request);
+        abort_unless($user->tenant_id === null, 404); // platform staff only — never client-company users
 
         if ($user->id === $request->user()->id) {
             return back()->with('success', 'You cannot remove your own account.');
         }
+        if ($user->hasRole('super_admin') && $this->superAdminCount() <= 1) {
+            return back()->with('success', 'Cannot remove the last Super Admin — add another Super Admin first.');
+        }
         $user->delete();
 
         return back()->with('success', 'Staff member removed.');
+    }
+
+    private function superAdminCount(): int
+    {
+        return User::whereNull('tenant_id')->role('super_admin')->count();
     }
 
     private function guard(Request $request): void

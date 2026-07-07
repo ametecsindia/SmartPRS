@@ -184,8 +184,15 @@ class DeviceController extends Controller
             return;
         }
         $this->ensureLogsTable();
+        // rev172 — tenant_id in the MATCH keys (when present): emp codes repeat
+        // across tenants, so without it one tenant's device punch could overwrite
+        // another tenant's row for the same code/date.
+        $match = ['emp_code' => $employee->emp_code, 'log_date' => $date, 'direction' => $direction, 'source' => 'device'];
+        if (! empty($employee->tenant_id)) {
+            $match['tenant_id'] = $employee->tenant_id;
+        }
         DB::table('attendance_logs')->updateOrInsert(
-            ['emp_code' => $employee->emp_code, 'log_date' => $date, 'direction' => $direction, 'source' => 'device'],
+            $match,
             [
                 'emp_name' => $employee->name,
                 'punch_at' => $date.' '.$time,

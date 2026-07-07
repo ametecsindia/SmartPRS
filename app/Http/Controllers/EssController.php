@@ -106,6 +106,9 @@ class EssController extends Controller
             return [];
         }
         $code = $e->emp_code ?? '';
+        // rev172 — company payslip-download policy: when the employee is blocked,
+        // no PDF link is offered (HR can still download/email their slip).
+        $canDl = SettingsController::payslipSelfAllowed($e);
 
         return DB::table('payslips')->where('employee_id', $e->id)
             ->orderByDesc('month')->orderByDesc('id')->limit(6)
@@ -115,7 +118,7 @@ class EssController extends Controller
                 'label' => $p->month ? Carbon::parse($p->month.'-01')->format('M Y') : '',
                 'gross' => (float) $p->gross,
                 'net' => (float) $p->net,
-                'pdf' => $code ? url('/app/payslip/'.$code.'/pdf?month='.$p->month) : null,
+                'pdf' => ($code && $canDl) ? url('/app/payslip/'.$code.'/pdf?month='.$p->month) : null,
             ])->all();
     }
 
@@ -128,9 +131,9 @@ class EssController extends Controller
         $month = now()->format('Y-m');
         $end = now()->endOfMonth()->toDateString();
         $code = $e->emp_code ?? '';
-        $out['present'] = (int) DB::table('attendance_logs')->where('emp_code', $code)
-            ->whereBetween('log_date', [$month.'-01', $end])->distinct()->count('log_date');
-        $last = DB::table('attendance_logs')->where('emp_code', $code)->orderByDesc('punch_at')->value('punch_at');
+        $out['present'] = (int) DB::table('attendance_logs')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->where('emp_code', $code)
+            ->whereBetween('log_date', [$month.'-01', $end])->distinct()->count('log_date'); // rev172 — tenant-scoped (emp codes repeat across tenants)
+        $last = DB::table('attendance_logs')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->where('emp_code', $code)->orderByDesc('punch_at')->value('punch_at');
         $out['last_punch'] = $last ? Carbon::parse($last)->format('d M, H:i') : null;
 
         return $out;

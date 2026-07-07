@@ -325,10 +325,12 @@ class AttendanceBulkController extends Controller
                 $written = count($logs);
             }
 
-            DB::table('attendance_pending')->where('batch', $batch)->where('status', 'pending')->update([
-                'status' => $v['action'] === 'approve' ? 'approved' : 'rejected',
-                'decided_by' => $request->user()->name, 'decided_at' => now(), 'updated_at' => now(),
-            ]);
+            DB::table('attendance_pending')->where('batch', $batch)->where('status', 'pending')
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid)) // rev172 (M4) — defence-in-depth: never touch another tenant's batch
+                ->update([
+                    'status' => $v['action'] === 'approve' ? 'approved' : 'rejected',
+                    'decided_by' => $request->user()->name, 'decided_at' => now(), 'updated_at' => now(),
+                ]);
 
             return response()->json(['ok' => true,
                 'message' => $v['action'] === 'approve'

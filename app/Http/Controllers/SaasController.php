@@ -79,6 +79,7 @@ class SaasController extends Controller
                 'customDomain' => $hasDomain ? ($t->custom_domain ?? '') : '',
                 'gstin' => $t->gstin ?? '',
                 'state' => $t->state ?? '',
+                'docStorageEmpMb' => isset($t->doc_storage_emp_mb) && $t->doc_storage_emp_mb !== null ? (int) $t->doc_storage_emp_mb : null,
                 'created' => $t->created_at ? \Illuminate\Support\Carbon::parse($t->created_at)->format('d M Y') : '',
             ])->values();
 
@@ -259,6 +260,15 @@ class SaasController extends Controller
         } catch (\Throwable $e) {
             // non-fatal
         }
+        try {
+            // rev172 — PER-EMPLOYEE document-storage allowance (MB). Null =
+            // platform default (DocumentController::DEFAULT_EMP_QUOTA_MB, 100 MB).
+            if (Schema::hasTable('tenants') && ! Schema::hasColumn('tenants', 'doc_storage_emp_mb')) {
+                Schema::table('tenants', fn (\Illuminate\Database\Schema\Blueprint $t) => $t->unsignedInteger('doc_storage_emp_mb')->nullable());
+            }
+        } catch (\Throwable $e) {
+            // non-fatal
+        }
         self::ensureGstCols();
     }
 
@@ -296,6 +306,7 @@ class SaasController extends Controller
                 'owner_email' => ['nullable', 'email', 'max:191'],
                 'plan_id' => ['nullable', 'integer'],
                 'seats_licensed' => ['nullable', 'integer', 'min:0'],
+                'doc_storage_emp_mb' => ['nullable', 'integer', 'min:1', 'max:10240'],
                 'subdomain' => ['nullable', 'string', 'max:30'],
                 'custom_domain' => ['nullable', 'string', 'max:191'],
                 'gstin' => ['nullable', 'string', 'max:20'],
@@ -337,6 +348,10 @@ class SaasController extends Controller
             }
             if ($sub !== null) {
                 $upd['subdomain'] = $sub;
+            }
+            // rev172 — per-EMPLOYEE document-storage allowance (MB); null/blank = platform default (100 MB).
+            if (array_key_exists('doc_storage_emp_mb', $v)) {
+                $upd['doc_storage_emp_mb'] = $v['doc_storage_emp_mb'] !== null && $v['doc_storage_emp_mb'] !== '' ? (int) $v['doc_storage_emp_mb'] : null;
             }
             $upd['custom_domain'] = $domain;   // null clears it
             // rev 90: buyer GST profile (drives CGST+SGST vs IGST on invoices).

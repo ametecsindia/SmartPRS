@@ -42,6 +42,11 @@ class SettingsController extends Controller
             'lwf_employee' => 0,          // LWF employee amount deducted per payroll month (₹) when enabled
             'conveyance_enabled' => 0,    // Conveyance allowance toggle (0 = off). When enabled + amount > 0, a Conveyance line is carved from Special Allowance (gross/net unchanged).
             'conveyance_rate' => 0,       // Conveyance deduction rate (% of Basic+DA, capped like PF) — same formula as PF; used when enabled.
+            'payslip_dl_mode' => 'all',   // rev172 — employee SELF-download of payslips: all | none | dept (block listed departments) | emp (block listed emp codes). HR/Admin can always download.
+            'payslip_dl_depts' => [],     // department names blocked when mode = dept
+            'payslip_dl_emps' => [],      // emp codes blocked when mode = emp
+            'weekly_off_day' => 'sunday', // rev172 — weekly off day; payroll working-days exclude it (plus the Saturday policy below and the Holidays calendar)
+            'sat_off_mode' => 'none',     // rev172 — Saturday policy: none (all working) | all | 2_4 (2nd & 4th off) | 1_3 (1st & 3rd off)
             'incentive_min_compliance' => 60, // F1 — min compliance score (0–100) to pay an incentive without an override note
             'data_retention_months' => 84,    // G5 — record / recording retention period (months); 84 = 7 years
             'contact_window_start' => '08:00', // H1 — lawful borrower-contact window start (RBI 08:00–19:00)
@@ -86,6 +91,28 @@ class SettingsController extends Controller
         return $rates;
     }
 
+    /**
+     * rev172 — may this EMPLOYEE self-download payslips under the tenant policy?
+     * (HR/Admin are never blocked — callers must check roles first.)
+     */
+    public static function payslipSelfAllowed(object $e, ?array $rates = null): bool
+    {
+        $r = $rates ?: self::rates(isset($e->tenant_id) ? (int) $e->tenant_id : null);
+        $mode = (string) ($r['payslip_dl_mode'] ?? 'all');
+        if ($mode === 'none') {
+            return false;
+        }
+        $lc = fn ($x) => strtolower(trim((string) $x));
+        if ($mode === 'dept') {
+            return ! in_array($lc($e->department ?? ''), array_map($lc, (array) ($r['payslip_dl_depts'] ?? [])), true);
+        }
+        if ($mode === 'emp') {
+            return ! in_array($lc($e->emp_code ?? ''), array_map($lc, (array) ($r['payslip_dl_emps'] ?? [])), true);
+        }
+
+        return true;
+    }
+
     public function index(Request $request)
     {
         return response()->json([
@@ -107,19 +134,38 @@ class SettingsController extends Controller
             'pt_amount' => $num, 'std_deduction' => $num, 'rebate_87a_limit' => $num,
             'cess_rate' => $num, 'comm_tds_rate' => $num, 'no_pan_tds_rate' => $num,
             'conveyance_enabled' => $num, 'conveyance_rate' => $num,
+            'weekly_off_day' => ['nullable', 'in:sunday,monday,tuesday,wednesday,thursday,friday,saturday'],
+            'sat_off_mode' => ['nullable', 'in:none,all,2_4,1_3'],
+            'payslip_dl_mode' => ['nullable', 'in:all,none,dept,emp'],
+            'payslip_dl_depts' => ['nullable', 'array'], 'payslip_dl_depts.*' => ['string', 'max:120'],
+            'payslip_dl_emps' => ['nullable', 'array'], 'payslip_dl_emps.*' => ['string', 'max:60'],
             'tds_slabs' => ['nullable', 'array'],
             'tds_slabs.*.upto' => ['nullable', 'numeric', 'min:0'],
             'tds_slabs.*.rate' => ['nullable', 'numeric', 'min:0'],
         ]);
 
-        // Start from defaults so any field left out stays valid.
-        $merged = self::defaults();
+        // rev172 — start from the tenant's CURRENT effective rates (defaults +
+        // saved overrides) so a partial save (e.g. only the payslip policy)
+        // never silently resets other saved settings back to defaults.
+        $merged = self::rates($request->user()->tenant_id ?? 0);
+        $strKeys = ['weekly_off_day', 'sat_off_mode', 'payslip_dl_mode']; // rev172 — string settings, no numeric cast
+        $arrKeys = ['payslip_dl_depts', 'payslip_dl_emps'];               // rev172 — list settings
         foreach (self::defaults() as $k => $default) {
-            if ($k === 'tds_slabs') {
+            if ($k === 'tds_slabs' || in_array($k, $strKeys, true) || in_array($k, $arrKeys, true)) {
                 continue;
             }
             if (array_key_exists($k, $v) && $v[$k] !== null && $v[$k] !== '') {
                 $merged[$k] = $v[$k] + 0; // numeric
+            }
+        }
+        foreach ($strKeys as $k) {
+            if (! empty($v[$k])) {
+                $merged[$k] = (string) $v[$k];
+            }
+        }
+        foreach ($arrKeys as $k) {
+            if (array_key_exists($k, $v)) {
+                $merged[$k] = array_values(array_filter(array_map(fn ($s) => trim((string) $s), (array) ($v[$k] ?? [])), fn ($s) => $s !== ''));
             }
         }
         if (! empty($v['tds_slabs'])) {

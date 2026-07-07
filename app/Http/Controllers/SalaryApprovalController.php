@@ -577,6 +577,15 @@ class SalaryApprovalController extends Controller
         if (! in_array($st, $m['from'], true)) {
             return ['ok' => false, 'error' => 'Cannot '.$action.' a line that is "'.$this->lineLabel($st).'" — #'.$slip->id];
         }
+        // rev172 (H4) — a payslip line may be DISBURSED only after its parent run
+        // has cleared HR approval. Prevents Finance side-stepping the four-eyes
+        // control by disbursing individual lines on a still-draft run.
+        if ($action === 'disburse' && ! empty($slip->run_id)) {
+            $run = DB::table('payroll_runs')->where('id', $slip->run_id)->first();
+            if ($run && ! in_array($run->status, ['hr_approved', 'approved', 'locked', 'paid'], true)) {
+                return ['ok' => false, 'error' => 'This run must be HR-approved before any line can be disbursed — #'.$slip->id];
+            }
+        }
         $row = ['line_status' => $m['to'], 'updated_at' => $now];
         if ($m['by']) {
             $row[$m['by']] = $name;

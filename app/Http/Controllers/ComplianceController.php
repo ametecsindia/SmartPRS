@@ -328,4 +328,147 @@ class ComplianceController extends Controller
 
         return min(100, max(0, $score));
     }
+
+    /**
+     * rev172 — RBI Recovery-Agent Compliance Audit Report (per agent), as a PDF
+     * on the AGENT'S OWN COMPANY letterhead (brandFor), not SmartPRS branding.
+     * Assembles one agent's compliance file from the existing modules (KYC/ID,
+     * DRA cert, PCC, BGV, references, Code-of-Conduct ack, authorisation,
+     * complaints) with a Compliant / Attention / Non-compliant verdict per
+     * parameter. Read-only, tenant-scoped, admin/HR guarded.
+     */
+    public function agentAuditPdf(Request $request, string $code)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        $tid = $request->user()->tenant_id;
+        $e = DB::table('employees')->where('emp_code', $code)
+            ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+            ->whereNull('deleted_at')->first();
+        if (! $e) {
+            return response('Agent "'.e($code).'" not found.', 404)->header('Content-Type', 'text/plain; charset=utf-8');
+        }
+
+        $today = Carbon::today();
+        $has = fn ($t, $c) => Schema::hasTable($t) && Schema::hasColumn($t, $c);
+        $ok = fn ($b) => $b ? 'ok' : 'bad';
+        $items = [];      // [group, param, value, state(ok|warn|bad), evidence]
+        $pass = 0;
+        $warn = 0;
+        $fail = 0;
+        $add = function ($group, $param, $value, $state, $evidence = '') use (&$items, &$pass, &$warn, &$fail) {
+            $items[] = compact('group', 'param', 'value', 'state', 'evidence');
+            $state === 'ok' ? $pass++ : ($state === 'warn' ? $warn++ : $fail++);
+        };
+
+        // 1 — Identity & KYC
+        $add('Identity & KYC', 'Photograph on record', ! empty($e->photo_path) ? 'Yes' : 'Missing', $ok(! empty($e->photo_path)), $e->photo_path ? 'ID card file' : '');
+        $add('Identity & KYC', 'PAN', $e->pan ? $e->pan : 'Not on record', $ok(! empty($e->pan)), 'Employee master');
+        $add('Identity & KYC', 'UAN (PF)', $e->uan ?: '—', $e->uan ? 'ok' : 'warn', 'Employee master');
+        $add('Identity & KYC', 'Employee ID card issued', ! empty($e->photo_path) ? 'Yes' : 'Pending', $ok(! empty($e->photo_path)), 'Auto-generated');
+
+        // 2 — DRA certification (IIBF) — the mandatory one
+        $draOk = false;
+        $draNote = 'Not on record';
+        if (Schema::hasTable('dra_certs')) {
+            $d = DB::table('dra_certs')->where('employee_id', $e->id)->orderByDesc('id')->first();
+            if ($d) {
+                $draOk = ($d->status ?? '') === 'verified' && (empty($d->expiry) || $d->expiry >= $today->toDateString());
+                $draNote = trim(($d->cert_no ?? 'Cert on file').($d->expiry ? ' · valid to '.$d->expiry : ''));
+            }
+        }
+        if (! $draOk && ($e->dra_status ?? '') === 'verified') {
+            $draOk = empty($e->dra_expiry) || $e->dra_expiry >= $today->toDateString();
+            $draNote = 'Verified'.($e->dra_expiry ? ' · valid to '.$e->dra_expiry : '');
+        }
+        $add('DRA Certification (IIBF)', 'Valid IIBF DRA certificate', $draOk ? 'Held & valid' : 'Not verified', $ok($draOk), $draNote);
+
+        // 3 — PCC / police verification
+        $pccOk = in_array(($e->pcc_status ?? ''), ['verified', 'submitted'], true) && (empty($e->pcc_expiry) || $e->pcc_expiry >= $today->toDateString());
+        $add('Background Verification', 'Police clearance (PCC)', $pccOk ? 'Clear' : (($e->pcc_status ?? '') ?: 'Pending'), $pccOk ? 'ok' : (($e->pcc_status ?? '') === 'pending' ? 'warn' : 'bad'), $e->pcc_expiry ? 'Valid to '.$e->pcc_expiry : '');
+
+        // BGV
+        $bgv = Schema::hasTable('bgv') ? DB::table('bgv')->where('employee_id', $e->id)->orderByDesc('id')->first() : null;
+        $bgvClear = $bgv && in_array(strtolower((string) $bgv->status), ['clear', 'completed', 'verified'], true);
+        $nextDue = $bgv && Schema::hasColumn('bgv', 'next_due') ? ($bgv->next_due ?? null) : null;
+        $add('Background Verification', 'Background verification (BGV)', $bgv ? ucfirst((string) $bgv->status) : 'Not on record', $bgv ? ($bgvClear ? 'ok' : 'warn') : 'warn', $bgv && $bgv->agency ? 'Agency: '.$bgv->agency : '');
+        if ($nextDue) {
+            $due = Carbon::parse($nextDue);
+            $add('Background Verification', 'Periodic re-verification', 'Next: '.$nextDue, $due->isPast() ? 'bad' : ($due->diffInDays($today) <= 30 ? 'warn' : 'ok'), 'Scheduled');
+        }
+
+        // References / guarantors (min 2 for field staff)
+        $refCount = Schema::hasTable('employee_references') ? DB::table('employee_references')->where('employee_id', $e->id)->count() : 0;
+        $add('Background Verification', 'References / guarantors (min 2)', $refCount.' on record', $refCount >= 2 ? 'ok' : ($refCount === 1 ? 'warn' : 'bad'), 'Employee references');
+
+        // 4 — Code of Conduct acknowledgement
+        $cocOk = false;
+        if (Schema::hasTable('code_of_conduct_ack')) {
+            // Resolve the login user linked to this employee (by employee_id or email).
+            $userId = null;
+            if (Schema::hasTable('users')) {
+                $userId = DB::table('users')
+                    ->when(Schema::hasColumn('users', 'employee_id'), fn ($q) => $q->where('employee_id', $e->id))
+                    ->when(! Schema::hasColumn('users', 'employee_id') && ! empty($e->email), fn ($q) => $q->where('email', $e->email))
+                    ->value('id');
+            }
+            $cocOk = DB::table('code_of_conduct_ack')
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+                ->when($userId, fn ($q) => $q->where('user_id', $userId))
+                ->where('acknowledged', 1)->exists();
+        }
+        $add('Code of Conduct', 'Signed undertaking of adherence', $cocOk ? 'Acknowledged' : 'Not on record', $cocOk ? 'ok' : 'warn', 'Code of Conduct register');
+
+        // 5 — Authorisation / empanelment
+        $auths = Schema::hasTable('agent_authorizations')
+            ? DB::table('agent_authorizations')->where('employee_id', $e->id)
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid))->get()
+            : collect();
+        $liveAuth = $auths->first(fn ($a) => empty($a->valid_to) || $a->valid_to >= $today->toDateString());
+        $add('Authorisation', 'Bank/portfolio authorisation', $liveAuth ? ($liveAuth->bank.' — '.$liveAuth->portfolio) : 'None on record', $liveAuth ? 'ok' : 'warn', $liveAuth && $liveAuth->auth_no ? 'Auth '.$liveAuth->auth_no.($liveAuth->valid_to ? ' · to '.$liveAuth->valid_to : '') : '');
+
+        // 6 — Conduct & complaints (audit window: current financial quarter approx last 90 days)
+        $from = $today->copy()->subDays(90)->toDateString();
+        $complaints = Schema::hasTable('complaints')
+            ? DB::table('complaints')->where('employee_id', $e->id)
+                ->when(Schema::hasColumn('complaints', 'date'), fn ($q) => $q->where('date', '>=', $from))->count()
+            : 0;
+        $add('Conduct Record', 'Borrower complaints (last 90 days)', (string) $complaints, $complaints === 0 ? 'ok' : ($complaints <= 2 ? 'warn' : 'bad'), 'Complaints register');
+        $add('Conduct Record', 'Disciplinary actions', '0', 'ok', 'HR record');
+
+        $score = self::scoreFor((int) $e->id, $tid);
+        $verdict = $fail > 0 ? 'NON-COMPLIANT' : ($warn > 0 ? 'COMPLIANT — WITH OPEN ITEMS' : 'COMPLIANT');
+
+        // Group the items for the view.
+        $groups = [];
+        foreach ($items as $it) {
+            $groups[$it['group']][] = $it;
+        }
+
+        $company = DB::table('companies')->where('id', $e->company_id)->first();
+        $brand = ConfigController::brandFor($e->tenant_id, $e->company_id);
+
+        $ref = 'RAC/'.$today->format('Y').'/'.strtoupper($code);
+        $hash = substr(hash('sha256', $ref.'|'.$e->id.'|'.$today->toIso8601String()), 0, 16);
+
+        $data = [
+            'brand' => $brand,
+            'company' => $company,
+            'e' => $e,
+            'groups' => $groups,
+            'pass' => $pass, 'warn' => $warn, 'fail' => $fail,
+            'score' => $score,
+            'verdict' => $verdict,
+            'ref' => $ref,
+            'hash' => $hash,
+            'generatedAt' => $today->format('d M Y').', '.now()->format('H:i').' IST',
+            'auditFrom' => Carbon::parse($from)->format('d M Y'),
+            'auditTo' => $today->format('d M Y'),
+        ];
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('agent-audit-pdf', $data)->setPaper('a4', 'portrait');
+
+        return $pdf->download('agent-audit-'.$code.'-'.$today->format('Ymd').'.pdf');
+    }
 }

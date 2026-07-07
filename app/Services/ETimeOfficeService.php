@@ -285,13 +285,19 @@ class ETimeOfficeService
                 continue;
             }
             $matched++;
+            // rev172 — tenant_id in the MATCH keys (when present): emp codes repeat
+            // across tenants; prevents cross-tenant overwrite of an identical punch.
+            $match = [
+                'emp_code' => $emp->emp_code,
+                'punch_at' => $p['punch_at']->format('Y-m-d H:i:s'),
+                'direction' => $p['direction'],
+                'source' => 'etimeoffice',
+            ];
+            if (! empty($emp->tenant_id)) {
+                $match['tenant_id'] = $emp->tenant_id;
+            }
             DB::table('attendance_logs')->updateOrInsert(
-                [
-                    'emp_code' => $emp->emp_code,
-                    'punch_at' => $p['punch_at']->format('Y-m-d H:i:s'),
-                    'direction' => $p['direction'],
-                    'source' => 'etimeoffice',
-                ],
+                $match,
                 [
                     'emp_name' => $emp->name ?? $p['name'],
                     'log_date' => $p['punch_at']->toDateString(),
