@@ -405,6 +405,10 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::get('/app/statutory-report/{type}', [App\Http\Controllers\StatutoryController::class, 'report'])->name('app.statutory.report');
     // rev172 — per-agent RBI compliance audit report PDF (own-company branded).
     Route::get('/app/compliance/agent-audit/{code}/pdf', [App\Http\Controllers\ComplianceController::class, 'agentAuditPdf'])->name('app.compliance.agentaudit.pdf');
+    // rev173b — BULK audit reports (?codes=EMP-1,EMP-2,…) from Statutory & Compliance → Audit Reports.
+    Route::get('/app/compliance/agent-audit-bulk/pdf', [App\Http\Controllers\ComplianceController::class, 'agentAuditBulkPdf'])->name('app.compliance.agentaudit.bulk');
+    // rev173c — client-branded SAMPLE audit report (illustrative data, ?company=<name>).
+    Route::get('/app/compliance/agent-audit-sample/pdf', [App\Http\Controllers\ComplianceController::class, 'agentAuditSamplePdf'])->name('app.compliance.agentaudit.sample');
     // HR letter PDF (merge a template with the employee's data) + email it.
     Route::get('/app/letters/{id}/pdf', [App\Http\Controllers\LetterController::class, 'pdf'])->name('app.letters.pdf');
     Route::post('/app/letters/{id}/email', [App\Http\Controllers\LetterController::class, 'email'])->name('app.letters.email');

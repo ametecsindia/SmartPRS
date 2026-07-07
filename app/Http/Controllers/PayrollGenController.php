@@ -144,6 +144,26 @@ class PayrollGenController extends Controller
         }
     }
 
+    /** rev173 — the distinct punch DATES themselves (for night-allowance counting). */
+    private function presentDates(string $empCode, string $month, string $endDate, ?int $tid = null): array
+    {
+        if (! $empCode || ! Schema::hasTable('attendance_logs')) {
+            return [];
+        }
+        try {
+            return DB::table('attendance_logs')
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+                ->where('emp_code', $empCode)
+                ->whereBetween('log_date', [$month.'-01', $endDate])
+                ->distinct()
+                ->pluck('log_date')
+                ->map(fn ($d) => substr((string) $d, 0, 10))
+                ->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
     /** Load every late-policy row that could apply to this company (resolved per-employee later). */
     private function latePolicyRows($company, $tid)
     {
@@ -281,7 +301,7 @@ class PayrollGenController extends Controller
     }
 
     /** Apply a resolved policy to a month of day-stats → ['cut','lateCut','breakCut','late']. */
-    private function attendanceCut(array $days, array $pol): array
+    private function attendanceCut(array $days, array $pol, array $dayShifts = []): array
     {
         ksort($days);
         $mode = $pol['mode'];
@@ -294,16 +314,29 @@ class PayrollGenController extends Controller
             if (! $st['firstIn']) {
                 continue;
             }
-            $cutoff = Carbon::parse($d.' '.$pol['shift_start'])->addMinutes($pol['grace']);
+            // rev173 — per-day Working Shift override (roster > employee default).
+            // The shift supplies TIMINGS (+ optional grace/hours/break overrides);
+            // the Late Policy keeps supplying the RULES. A roster week-off skips
+            // late/break evaluation for that day entirely.
+            $sh = $dayShifts[$d] ?? null;
+            if ($sh && ! empty($sh['off'])) {
+                continue;
+            }
+            $dayStart = ($sh && ! empty($sh['start'])) ? $sh['start'] : $pol['shift_start'];
+            $dayGrace = ($sh && $sh['grace'] !== null) ? $sh['grace'] : $pol['grace'];
+            $dayFullMin = ($sh && $sh['full_hours']) ? $sh['full_hours'] * 60 : $pol['full_min'];
+            $dayHalfMin = ($sh && $sh['half_hours']) ? $sh['half_hours'] * 60 : $pol['half_min'];
+            $dayBreakBudget = ($sh && $sh['break_budget'] !== null) ? $sh['break_budget'] : $pol['break_budget'];
+            $cutoff = Carbon::parse($d.' '.$dayStart)->addMinutes($dayGrace);
             $isLate = $st['firstIn']->gt($cutoff);
             $lateMin = $isLate ? $cutoff->diffInMinutes($st['firstIn']) : 0;
 
             if ($mode === 'net_hours') {
                 // Made-up time: full pay if total worked meets the full-day target, even if late.
                 $w = $st['worked'];
-                if ($w < $pol['half_min']) {
+                if ($w < $dayHalfMin) {
                     $lateCut += 1.0;
-                } elseif ($w < $pol['full_min']) {
+                } elseif ($w < $dayFullMin) {
                     $lateCut += 0.5;
                 }
             } elseif ($mode === 'tiered') {
@@ -321,11 +354,11 @@ class PayrollGenController extends Controller
             }
 
             // Break-budget deduction (any mode).
-            if ($pol['break_cut'] !== 'none' && $pol['break_budget'] > 0 && $st['break'] > $pol['break_budget']) {
+            if ($pol['break_cut'] !== 'none' && $dayBreakBudget > 0 && $st['break'] > $dayBreakBudget) {
                 if ($pol['break_cut'] === 'half_day') {
                     $breakCut += 0.5;
                 } elseif ($pol['break_cut'] === 'per_30min') {
-                    $excess = $st['break'] - $pol['break_budget'];
+                    $excess = $st['break'] - $dayBreakBudget;
                     $breakCut += ceil($excess / 30) * 0.25;
                 }
             }
@@ -659,6 +692,9 @@ class PayrollGenController extends Controller
         if (Schema::hasColumn('employees', 'team')) {
             $empSel[] = 'team';
         }
+        if (Schema::hasColumn('employees', 'shift')) {
+            $empSel[] = 'shift'; // rev173 — default Working Shift (name)
+        }
         if (Schema::hasColumn('employees', 'doj')) {
             $empSel[] = 'doj'; // rev172 (M1) — needed to prorate mid-month joiners
         }
@@ -672,6 +708,21 @@ class PayrollGenController extends Controller
 
         // All candidate late policies for this company (resolved per-employee in the loop).
         $polRows = $lop ? $this->latePolicyRows($company, $tid) : collect();
+
+        // rev173 — Working Shifts: named timings + roster overrides. Resolved
+        // per employee per day; a resolved shift's timings replace the Late
+        // Policy's shift_start/end (the policy keeps owning the RULES).
+        // Night shifts (end <= start) additionally pay night_allowance per
+        // night actually worked.
+        $shiftDefs = \App\Services\ShiftResolver::shifts($tid);
+        $rosterMap = $shiftDefs ? \App\Services\ShiftResolver::rosterMap($tid, $month.'-01', $endDate) : [];
+        $anyNight = false;
+        foreach ($shiftDefs as $sd) {
+            if ($sd['night'] && $sd['allowance'] > 0) {
+                $anyNight = true;
+                break;
+            }
+        }
 
         // Approved commissions DUE in this month (payout date first, earned
         // month fallback) → added to each employee's pay. rev 84.
@@ -722,7 +773,15 @@ class PayrollGenController extends Controller
                 $pol = $polRows->isEmpty() ? null : $this->resolvePolicy($polRows, $e->emp_code, $team);
                 if ($pol) {
                     $stats = $this->dayStats($e->emp_code, $month, $endDate, $tid);
-                    $res = $this->attendanceCut($stats, $pol);
+                    // rev173 — per-day shift resolution (roster > employee default).
+                    $dayShifts = [];
+                    if ($shiftDefs) {
+                        $empShift = property_exists($e, 'shift') ? $e->shift : null;
+                        foreach (array_keys($stats) as $sd) {
+                            $dayShifts[$sd] = \App\Services\ShiftResolver::resolve($shiftDefs, $rosterMap, (string) $e->name, $empShift, $sd);
+                        }
+                    }
+                    $res = $this->attendanceCut($stats, $pol, $dayShifts);
                     $lateCut = $res['lateCut'];
                     $breakCut = $res['breakCut'];
                     $lateDays = $res['late'];
@@ -746,9 +805,30 @@ class PayrollGenController extends Controller
                 $pu = trim((string) ($cr['purpose'] ?? 'Commission')) ?: 'Commission';
                 $commMap[$pu] = round(($commMap[$pu] ?? 0) + (float) ($cr['amount'] ?? 0), 2);
             }
-            $gross = round($s['gross'] + $commission, 2);
-            $net = round($s['net'] + $commission, 2);
+            // rev173 — Night Shift Allowance: Rs per night ACTUALLY worked. A night
+            // = a distinct punch date whose resolved shift (roster > employee
+            // default) is a night shift with an allowance set, and the roster
+            // doesn't mark it a week-off. Independent of the Late Policy.
+            $nightAmt = 0.0;
+            $nightDays = 0;
+            if ($anyNight) {
+                $empShiftN = property_exists($e, 'shift') ? $e->shift : null;
+                foreach ($this->presentDates($e->emp_code, $month, $endDate, $tid) as $nd) {
+                    $shN = \App\Services\ShiftResolver::resolve($shiftDefs, $rosterMap, (string) $e->name, $empShiftN, $nd);
+                    if ($shN && empty($shN['off']) && $shN['night'] && $shN['allowance'] > 0) {
+                        $nightAmt += $shN['allowance'];
+                        $nightDays++;
+                    }
+                }
+                $nightAmt = round($nightAmt, 2);
+            }
+
+            $gross = round($s['gross'] + $commission + $nightAmt, 2);
+            $net = round($s['net'] + $commission + $nightAmt, 2);
             $note = $this->calcNote($ctc, $s, (bool) $lop, $present, $leave, $working, $factor, $lateDays, $lateCut, $breakCut, $pol, $commission, array_column($commRows, 'label'));
+            if ($nightAmt > 0) {
+                $note .= ' Night shift allowance: '.$nightDays.' night(s) worked -> Rs '.number_format($nightAmt, 0).' added.';
+            }
             $tg += $gross;
             $td += $s['total_ded'];
             $tn += $net;
@@ -764,6 +844,8 @@ class PayrollGenController extends Controller
                 'commission' => round($commission, 2),
                 'commissionMap' => $commMap,
                 'commissionIds' => array_column($commRows, 'id'),
+                'nightAllowance' => $nightAmt,   // rev173
+                'nightDays' => $nightDays,       // rev173
                 'note' => $note,
                 'factor' => round($factor, 4),
                 'earnings' => $s['earnings'] ?? null,
@@ -902,9 +984,19 @@ class PayrollGenController extends Controller
             $team = property_exists($target, 'team') ? $target->team : null;
             $polRows = $this->latePolicyRows($company, $tid);
             $pol = $polRows->isEmpty() ? null : $this->resolvePolicy($polRows, $target->emp_code, $team);
+            // rev173 — same shift resolution as payroll (roster > employee default).
+            $shiftDefs = \App\Services\ShiftResolver::shifts($tid);
+            $rosterMap = $shiftDefs ? \App\Services\ShiftResolver::rosterMap($tid, $month.'-01', $today) : [];
+            $empShiftLv = property_exists($target, 'shift') ? $target->shift : null;
             if ($pol && $present > 0) {
                 $stats = $this->dayStats($target->emp_code, $month, $today, $tid);
-                $res = $this->attendanceCut($stats, $pol);
+                $dayShifts = [];
+                if ($shiftDefs) {
+                    foreach (array_keys($stats) as $sd) {
+                        $dayShifts[$sd] = \App\Services\ShiftResolver::resolve($shiftDefs, $rosterMap, (string) $target->name, $empShiftLv, $sd);
+                    }
+                }
+                $res = $this->attendanceCut($stats, $pol, $dayShifts);
                 $lateCut = $res['lateCut'];
                 $breakCut = $res['breakCut'];
                 $lateDays = $res['late'];
@@ -945,6 +1037,20 @@ class PayrollGenController extends Controller
             $commission = (float) ($commData['sum'][$target->id] ?? 0.0);
             if ($commission > 0) {
                 $earnings[] = ['label' => 'Commission / incentive (approved, due this month)', 'amount' => round($commission, 2)];
+            }
+            // rev173 — night shift allowance earned so far this month.
+            $nightAmtLv = 0.0;
+            if ($shiftDefs) {
+                foreach ($this->presentDates($target->emp_code, $month, $today, $tid) as $nd) {
+                    $shN = \App\Services\ShiftResolver::resolve($shiftDefs, $rosterMap, (string) $target->name, $empShiftLv, $nd);
+                    if ($shN && empty($shN['off']) && $shN['night'] && $shN['allowance'] > 0) {
+                        $nightAmtLv += $shN['allowance'];
+                    }
+                }
+                $nightAmtLv = round($nightAmtLv, 2);
+                if ($nightAmtLv > 0) {
+                    $earnings[] = ['label' => 'Night shift allowance (nights worked)', 'amount' => $nightAmtLv];
+                }
             }
             $monthStart = $month.'-01 00:00:00';
             $reimb = 0.0;
@@ -1423,6 +1529,10 @@ class PayrollGenController extends Controller
                 } elseif (! empty($r['commission'])) {
                     $earnings['Commission'] = $r['commission'];
                 }
+                if (! empty($r['nightAllowance'])) {
+                    // rev173 — night shift allowance as its own earning line.
+                    $earnings['Night Shift Allowance'] = round(($earnings['Night Shift Allowance'] ?? 0) + (float) $r['nightAllowance'], 2);
+                }
                 $deductions = ! empty($r['deductionsMap'])
                     ? $r['deductionsMap']
                     : ['PF' => $r['pf'], 'ESI' => $r['esi'], 'Professional Tax' => $r['pt'], 'TDS' => $r['tds']];
@@ -1481,4 +1591,35 @@ class PayrollGenController extends Controller
                                 DB::table('commission_payments')->insert([
                                     'tenant_id' => $lr->tenant_id,
                                     'commission_id' => (int) $lr->id,
-                                    'employee_id' => $lr->employee_id
+                                    'employee_id' => $lr->employee_id,
+                                    'paid_on' => now()->toDateString(),
+                                    'amount' => round((float) $lr->amount, 2),
+                                    'mode' => 'payslip',
+                                    'reference' => 'run #'.$runId.' · '.$c['meta']['monthLabel'],
+                                    'note' => null,
+                                    'by' => $by,
+                                    'created_at' => now(),
+                                ]);
+                            }
+                        } catch (\Throwable $e) {
+                            \Illuminate\Support\Facades\Log::warning('Commission payslip ledger debit failed (#'.$lr->id.'): '.$e->getMessage());
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Commission lock on payroll generate failed: '.$e->getMessage());
+            }
+
+            return response()->json([
+                'ok' => true,
+                'runId' => $runId,
+                'count' => $c['totals']['count'],
+                'net' => $c['totals']['net'],
+                'skipped' => $c['skipped'],
+                'message' => 'Draft payroll for '.$c['meta']['monthLabel'].' created — '.$c['totals']['count'].' employee(s), net ₹'.number_format($c['totals']['net'], 2).'. Now in Salary Approval.',
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'error' => $e->getMessage()], 200);
+        }
+    }
+}

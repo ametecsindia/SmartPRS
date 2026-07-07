@@ -126,14 +126,23 @@ class AttendanceReportController extends Controller
             $meta = [];   // hierarchy is a nice-to-have; never break the report over it
         }
         $policies = $this->loadLatePolicies($tenantId);
+        // rev173 — Working Shifts: named timings + roster overrides. Each row is
+        // judged against ITS OWN resolved shift (roster > employee default),
+        // falling back to the Late Policy timings, then the legacy 09:30-18:30.
+        $shiftDefs = \App\Services\ShiftResolver::shifts($tenantId);
+        $rosterMap = $shiftDefs ? \App\Services\ShiftResolver::rosterMap($tenantId, $from, $to) : [];
         $rows = [];
         foreach ($groups as $key => $punches) {
             [$code, $date] = explode('|', $key);
-            $summary = $this->summarise($punches);
-            $rt = $ratings->get($key);
             $m = $meta[$code] ?? [];
+            $empName = ($m['name'] ?? '') ?: ($punches[0]->emp_name ?: $code);
+            $sh = $shiftDefs
+                ? \App\Services\ShiftResolver::resolve($shiftDefs, $rosterMap, $empName, $m['shift'] ?? null, $date)
+                : null;
+            $summary = $this->summarise($punches, $sh);
+            $rt = $ratings->get($key);
             // Late / break flags from this employee's effective policy (visibility only).
-            $flags = $this->attendanceFlags($policies, $m['company'] ?? '', $m['team'] ?? '', $code, $summary);
+            $flags = $this->attendanceFlags($policies, $m['company'] ?? '', $m['team'] ?? '', $code, $summary, $sh);
             $rows[] = array_merge([
                 'emp_code' => $code,
                 'emp_name' => $punches[0]->emp_name ?: $code,
@@ -143,6 +152,8 @@ class AttendanceReportController extends Controller
                 'team' => $m['team'] ?? '',
                 'reporting' => $m['reporting'] ?? '',
                 'leader' => $m['leader'] ?? '',
+                'shift_name' => $sh['name'] ?? '',                          // rev173
+                'weekoff' => (bool) ($sh['off'] ?? false),                  // rev173 — roster week-off
                 'rating' => $rt->rating ?? null,
                 'remarks' => $rt->remarks ?? '',
             ], $summary, $flags);
@@ -172,7 +183,7 @@ class AttendanceReportController extends Controller
         // Only select columns that actually exist in this deployment's schema —
         // the live employees table may predate the hierarchy columns.
         $want = ['emp_code', 'company_id', 'name', 'branch_id', 'team_id', 'reporting_manager_id',
-            'branch', 'team', 'reporting_manager', 'team_leader'];
+            'branch', 'team', 'reporting_manager', 'team_leader', 'shift'];
         $cols = array_values(array_filter($want, fn ($c) => Schema::hasColumn('employees', $c)));
         if (! in_array('emp_code', $cols, true)) {
             return [];
@@ -218,6 +229,8 @@ class AttendanceReportController extends Controller
                 'team' => $team,
                 'reporting' => $reporting,
                 'leader' => $leader,
+                'name' => $e->name ?? '',                                     // rev173 — roster rows match by name
+                'shift' => $has('shift') ? ($e->shift ?? '') : '',            // rev173 — default Working Shift
             ];
         }
 
@@ -537,12 +550,19 @@ class AttendanceReportController extends Controller
         } catch (\Throwable $e) {
             $meta = [];
         }
+        // rev173 — resolve each row's Working Shift so the PDF matches the screen.
+        $shiftDefs = \App\Services\ShiftResolver::shifts($tenantId);
+        $rosterMap = $shiftDefs ? \App\Services\ShiftResolver::rosterMap($tenantId, $from, $to) : [];
         $rows = [];
         foreach ($groups as $key => $punches) {
             [$code, $date] = explode('|', $key);
-            $summary = $this->summarise($punches);
-            $rt = $ratings->get($key);
             $m = $meta[$code] ?? [];
+            $empName = ($m['name'] ?? '') ?: ($punches[0]->emp_name ?: $code);
+            $sh = $shiftDefs
+                ? \App\Services\ShiftResolver::resolve($shiftDefs, $rosterMap, $empName, $m['shift'] ?? null, $date)
+                : null;
+            $summary = $this->summarise($punches, $sh);
+            $rt = $ratings->get($key);
             $rows[] = array_merge([
                 'emp_code' => $code,
                 'emp_name' => $punches[0]->emp_name ?: $code,
@@ -552,6 +572,7 @@ class AttendanceReportController extends Controller
                 'team' => $m['team'] ?? '',
                 'reporting' => $m['reporting'] ?? '',
                 'leader' => $m['leader'] ?? '',
+                'shift_name' => $sh['name'] ?? '',
                 'rating' => $rt->rating ?? null,
                 'remarks' => $rt->remarks ?? '',
             ], $summary);
@@ -653,8 +674,13 @@ class AttendanceReportController extends Controller
         ];
     }
 
-    /** Build the daily summary metrics from an ordered list of punches. */
-    private function summarise(array $punches): array
+    /**
+     * Build the daily summary metrics from an ordered list of punches.
+     * rev173 — optional resolved Working Shift ($shift from ShiftResolver):
+     * its end time replaces the default 18:30 for the early-exit / overtime
+     * variance; a NIGHT shift's end lands on the NEXT calendar day.
+     */
+    private function summarise(array $punches, ?array $shift = null): array
     {
         $pp = $this->pairPunches($punches);
         $firstIn = $pp['first_in'];
@@ -663,10 +689,15 @@ class AttendanceReportController extends Controller
         $totalWork = $pp['total_work'];
         $totalBreak = $pp['total_break'];
 
-        $shiftEnd = $firstIn ? Carbon::parse($firstIn->toDateString().' '.self::SHIFT_END) : null;
+        $endHm = ($shift && ! empty($shift['end'])) ? $shift['end'] : self::SHIFT_END;
+        $shiftEnd = $firstIn ? Carbon::parse($firstIn->toDateString().' '.$endHm) : null;
+        if ($shiftEnd && $shift && ! empty($shift['night'])) {
+            $shiftEnd = $shiftEnd->addDay();   // night shift ends next morning
+        }
         $earlyMin = ($lastOut && $shiftEnd && $lastOut < $shiftEnd) ? $this->mins($lastOut, $shiftEnd) : 0;
         $overtimeMin = ($lastOut && $shiftEnd && $lastOut > $shiftEnd) ? $this->mins($shiftEnd, $lastOut) : 0;
-        $drawbackMin = max(0, self::STANDARD_WORK_MIN - $totalWork);
+        $fullMin = ($shift && ! empty($shift['full_hours'])) ? (int) round($shift['full_hours'] * 60) : self::STANDARD_WORK_MIN;
+        $drawbackMin = max(0, $fullMin - $totalWork);
 
         return [
             'first_in' => $firstIn ? $firstIn->format('H:i') : '—',
@@ -706,11 +737,27 @@ class AttendanceReportController extends Controller
         }
     }
 
-    /** Late-tier + break-over flags for one row, from the employee's effective policy. */
-    private function attendanceFlags($policies, string $companyName, string $teamName, string $empCode, array $summary): array
+    /**
+     * Late-tier + break-over flags for one row, from the employee's effective policy.
+     * rev173 — a resolved Working Shift overrides the policy's start time (and
+     * grace / break budget when set on the shift); a roster week-off day is
+     * never flagged late.
+     */
+    private function attendanceFlags($policies, string $companyName, string $teamName, string $empCode, array $summary, ?array $shift = null): array
     {
         $out = ['late_min' => 0, 'late_level' => '', 'break_over' => false, 'break_budget' => 0];
+        if ($shift && ! empty($shift['off'])) {
+            return $out;   // roster says week-off — no late/break flags
+        }
         if (! $policies || $policies->isEmpty()) {
+            // No Late Policy — a resolved shift can still flag plain lateness.
+            if ($shift && ! empty($shift['start']) && $summary['first_in_min'] !== null) {
+                $sm = \App\Services\ShiftResolver::toMin($shift['start']) + (int) ($shift['grace'] ?? 0);
+                $lateMin = max(0, ((int) $summary['first_in_min']) - $sm);
+                $out['late_min'] = $lateMin;
+                $out['late_level'] = $lateMin > 0 ? 'Late' : '';
+            }
+
             return $out;
         }
         $pick = null;
@@ -739,11 +786,13 @@ class AttendanceReportController extends Controller
         if (! $pick) {
             return $out;
         }
-        $shiftStart = $pick['shift_start'] ?: self::SHIFT_START;
+        // rev173 — resolved Working Shift timings beat the policy's; the shift's
+        // own grace / break budget apply only when explicitly set on the shift.
+        $shiftStart = ($shift && ! empty($shift['start'])) ? $shift['start'] : ($pick['shift_start'] ?: self::SHIFT_START);
         $parts = array_pad(explode(':', $shiftStart), 2, '0');
         $shiftMin = ((int) $parts[0]) * 60 + (int) $parts[1];
-        $grace = (int) ($pick['grace_min'] ?? 0);
-        $out['break_budget'] = (int) ($pick['break_budget'] ?? 0);
+        $grace = ($shift && $shift['grace'] !== null) ? (int) $shift['grace'] : (int) ($pick['grace_min'] ?? 0);
+        $out['break_budget'] = ($shift && $shift['break_budget'] !== null) ? (int) $shift['break_budget'] : (int) ($pick['break_budget'] ?? 0);
 
         if ($summary['first_in_min'] !== null) {
             $lateMin = max(0, ((int) $summary['first_in_min']) - ($shiftMin + $grace));

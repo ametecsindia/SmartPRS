@@ -102,6 +102,10 @@ class ScreenHelpController extends Controller
             'geofence' => [
                 ['Setting the radius too small (under 50 m)', 'GPS drift blocks honest punches — agents standing at the office get refused', 'Use 100–300 m radius; widen if genuine punches keep failing'],
             ],
+            'shifts' => [
+                ['Typing shift times in 12-hour format (9:30 PM)', 'The system reads 24-hour HH:MM — a "9:30" night shift becomes a morning shift and everyone shows hours late', 'Always use 24-hour time: 21:30 for 9:30 PM; check the night-shift hint before saving'],
+                ['Creating a shift but never assigning anyone to it', 'Employees stay on the default timings — the night team keeps getting flagged late every day', 'After saving a shift, set it as the Default Shift on each employee\'s profile (or roster them day-wise)'],
+            ],
             'late-policy' => [
                 ['Changing the policy mid-month without announcing', 'Deductions surprise people — the policy becomes "management\'s trick" instead of a rule', 'Change from the 1st, announce on the Notice Board first, and let the wizard\'s example be your announcement'],
             ],
@@ -397,6 +401,11 @@ class ScreenHelpController extends Controller
                 'why' => 'Field attendance fraud is the oldest game in collections — punch from home, claim the field. GPS + selfie inside a fence makes every punch a verified fact, not a claim.',
                 'uc' => 'Picture this: an agent\'s punch shows the bank\'s collection center at 9:58 AM with his face. The client asks "was your man there?" — you answer with evidence, not assurance.',
                 'adv' => ['Field attendance becomes provable', 'Proxy punching ends', 'Clients trust your deployment reports'],
+            ],
+            'shifts' => [
+                'why' => 'Not everyone works 9:30 to 6:30 — collections teams run morning tele-calling shifts and night settlement desks. Named shifts mean each person is judged against THEIR timings, so the night team stops being "late" every single day.',
+                'uc' => 'Picture this: the night desk works 22:00–06:00. You create a "Night" shift, set it on those six employees, and attendance instantly reads them correctly — plus the Rs 150/night allowance lands in payroll automatically for nights actually worked.',
+                'adv' => ['Night and morning teams measured fairly', 'Roster overrides for week-wise rotation', 'Night allowance paid automatically per night worked'],
             ],
             'late-policy' => [
                 'why' => 'Late-coming rules announced verbally are enforced emotionally — and emotionally means inconsistently, which means resentment. A wizard-built policy applies the same maths to everyone, every month.',
@@ -1365,6 +1374,15 @@ class ScreenHelpController extends Controller
                 'tip' => 'GPS+selfie punch needs HTTPS — it works on your live domain; plain http will not ask for location.',
                 'r' => ['Admin & HR'],
                 'rel' => '',
+            ],
+            'shifts' => [
+                'm' => 'Time & Attendance', 't' => 'Working Shifts', 'g' => 'Named shift timings per employee',
+                'w' => 'Define named shifts (General, Morning, Night) with start/end times. Attendance and payroll then judge each employee against THEIR shift — a roster entry for the day wins, else the employee\'s default shift, else the Late Policy timings. An end time earlier than the start marks a night shift, and its night allowance is paid per night actually worked.',
+                'f' => [['fa-clock', 'Named shifts with timings'], ['fa-moon', 'Night shifts across midnight'], ['fa-indian-rupee-sign', 'Automatic night allowance in payroll'], ['fa-route', 'Roster overrides per day']],
+                's' => ['Add a shift: name + start and end time in 24-hour HH:MM (22:00–06:00 = night).', 'Set it as the Default Shift on each employee\'s profile; use the Roster for day-wise overrides.', 'Attendance flags and payroll cuts now use those timings; night allowance appears on the payslip by itself.'],
+                'tip' => 'Grace, day-hours and break budget on the shift are OPTIONAL overrides — leave them blank and the Late Policy values apply, so you configure rules once.',
+                'r' => ['Admin & HR'],
+                'rel' => 'Also see: Roster, Late Policy, Attendance Report',
             ],
             'late-policy' => [
                 'm' => 'Time & Attendance', 't' => 'Late Policy', 'g' => 'Late marks → salary, automatically',

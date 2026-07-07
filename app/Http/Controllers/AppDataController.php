@@ -36,7 +36,7 @@ class AppDataController extends Controller
         if (! Schema::hasTable('employees')) {
             return;
         }
-        $cols = ['department', 'designation', 'branch', 'team', 'reporting_manager', 'team_leader', 'father', 'spouse', 'blood_group', 'id_marks', 'gender', 'address', 'pt_state'];
+        $cols = ['department', 'designation', 'branch', 'team', 'reporting_manager', 'team_leader', 'father', 'spouse', 'blood_group', 'id_marks', 'gender', 'address', 'pt_state', 'shift'];
         $missing = array_values(array_filter($cols, fn ($c) => ! Schema::hasColumn('employees', $c)));
         if (! $missing) {
             return;
@@ -171,6 +171,7 @@ class AppDataController extends Controller
                 'status' => ucfirst((string) $col('status')),
                 'salaryType' => self::SALARY_TYPE[$col('salary_type')] ?? 'Salary',
                 'commPct' => (float) ($col('comm_pct') ?? 0),
+                'shift' => $col('shift') ?? '',   // rev173 — default Working Shift (name)
             ];
         })->values();
 
@@ -228,6 +229,30 @@ class AppDataController extends Controller
             }
         };
 
+        // rev173 — Working Shifts for the form dropdowns (employee default shift +
+        // roster shift). Same tolerant pattern as $optList; includes timings so
+        // the UI can hint "09:30–18:30" and flag night shifts.
+        $shiftList = collect();
+        try {
+            if (Schema::hasTable('shifts')) {
+                $shiftList = DB::table('shifts')
+                    ->when($tenantId && Schema::hasColumn('shifts', 'tenant_id'), fn ($q) => $q->where('tenant_id', $tenantId))
+                    ->orderBy('name')->get()
+                    ->filter(fn ($r) => (($r->status ?? '') !== 'inactive') && ($r->name ?? ''))
+                    ->map(fn ($r) => [
+                        'id' => (string) $r->id,
+                        'name' => $r->name,
+                        'start' => (string) ($r->start_time ?? ''),
+                        'end' => (string) ($r->end_time ?? ''),
+                        'night' => \App\Services\ShiftResolver::hm($r->end_time ?? '') !== null
+                            && \App\Services\ShiftResolver::hm($r->start_time ?? '') !== null
+                            && \App\Services\ShiftResolver::toMin(\App\Services\ShiftResolver::hm($r->end_time)) <= \App\Services\ShiftResolver::toMin(\App\Services\ShiftResolver::hm($r->start_time)),
+                    ])->values();
+            }
+        } catch (\Throwable $e) {
+            $shiftList = collect();
+        }
+
         return response()->json([
             'employees' => $employees,
             'companies' => $companies,
@@ -235,6 +260,7 @@ class AppDataController extends Controller
             'departments' => $optList('departments'),
             'designations' => $optList('designations'),
             'teams' => $optList('teams'),
+            'shifts' => $shiftList,
             'tenants' => $tenants,
             'payrollRuns' => $payroll['runs'],
             'payslips' => $payroll['payslips'],
@@ -1508,6 +1534,7 @@ class AppDataController extends Controller
             'designation' => $e['designation'] ?? null,
             'branch' => $e['branch'] ?? null,
             'team' => $e['team'] ?? null,
+            'shift' => $e['shift'] ?? null,   // rev173 — default Working Shift (name)
             'reporting_manager' => $e['teamManager'] ?? ($e['reporting'] ?? null),
             'team_leader' => $e['teamLeader'] ?? ($e['leader'] ?? null),
             // rev160: Personal Details — Father / Spouse / Blood group / ID marks (+ gender, address, dob).

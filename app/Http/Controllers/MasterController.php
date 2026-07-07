@@ -207,6 +207,19 @@ class MasterController extends Controller
                 'label' => 'Geofence Rule', 'order' => 'id', 'required' => ['employee'],
                 'emp_map' => ['employee' => 'employee_id'],
             ],
+            // rev173 — Working Shifts master: named shift timings (General / Morning /
+            // Night…). Timings feed Attendance Report + Payroll via ShiftResolver
+            // (roster entry > employee default > Late Policy > 09:30-18:30).
+            // end_time earlier than start_time = night shift (crosses midnight);
+            // night_allowance = Rs paid per night actually worked (payroll earning).
+            // grace_min / full/half-day hours / break_budget OVERRIDE the Late
+            // Policy values only when set — leave blank to keep policy values.
+            'shifts' => [
+                'table' => 'shifts',
+                'cols' => ['name' => 'string', 'code' => 'string', 'company_name' => 'string', 'start_time' => 'string', 'end_time' => 'string', 'grace_min' => 'int', 'full_day_hours' => 'decimal', 'half_day_hours' => 'decimal', 'break_budget' => 'int', 'night_allowance' => 'decimal', 'status' => 'string'],
+                'fields' => ['name', 'code', 'company_name', 'start_time', 'end_time', 'grace_min', 'full_day_hours', 'half_day_hours', 'break_budget', 'night_allowance', 'status'],
+                'label' => 'Shift', 'order' => 'name', 'required' => ['name', 'start_time', 'end_time'],
+            ],
             'late-policy' => [
                 'table' => 'late_policy',
                 'cols' => ['company_name' => 'string', 'scope' => 'string', 'scope_target' => 'string', 'mode' => 'string', 'shift_start' => 'string', 'shift_end' => 'string', 'grace_min' => 'int', 'full_day_hours' => 'decimal', 'half_day_hours' => 'decimal', 'lates_before_cut' => 'int', 'cut_mode' => 'string', 'cut_n' => 'int', 'l1_min' => 'int', 'l1_cut' => 'decimal', 'l2_min' => 'int', 'l2_cut' => 'decimal', 'l3_min' => 'int', 'l3_cut' => 'decimal', 'break_budget' => 'int', 'break_cut' => 'string', 'addl_late' => 'string', 'weekoff_action' => 'string', 'no_cut_on_weekoff' => 'bool'],

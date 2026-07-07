@@ -462,6 +462,7 @@ CSS;
                 if (Array.isArray(live.departments)) { DB.departments = live.departments; }
                 if (Array.isArray(live.designations)) { DB.designations = live.designations; }
                 if (Array.isArray(live.teams)) { DB.teams = live.teams; }
+                if (Array.isArray(live.shifts)) { DB.shifts = live.shifts; }   // rev173 - Working Shifts
                 if (Array.isArray(live.tenants) && live.tenants.length) { DB.tenants = live.tenants; }
                 if (Array.isArray(live.payrollRuns) && live.payrollRuns.length) { DB.payrollRuns = live.payrollRuns; }
                 if (Array.isArray(live.payslips)) { window.__PAYSLIPS = live.payslips; }
@@ -476,7 +477,7 @@ CSS;
         // the live feed was unavailable. Empty is fine; the data overlay + master
         // save sync fill them. This prevents the "form blows up" class of errors.
         try {
-            ['companies', 'branchesC', 'departments', 'designations', 'teams'].forEach(function (k) {
+            ['companies', 'branchesC', 'departments', 'designations', 'teams', 'shifts'].forEach(function (k) {
                 if (!Array.isArray(DB[k])) { DB[k] = []; }
             });
         } catch (e) {}
@@ -602,13 +603,13 @@ CSS;
     var PERM_NAV = {
         dashboard: ['dashboard', 'platform-dashboard', 'how-it-works', 'notifications'],
         employees: ['emp-list', 'emp-add', 'idcard', 'teams', 'onboarding-board', 'recruitment', 'bgv', 'documents', 'roster', 'offroll-agents', 'transfers'],
-        attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'biometric-setup', 'geofence', 'geofence-list', 'late-policy', 'overtime'],
+        attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'biometric-setup', 'geofence', 'geofence-list', 'shifts', 'late-policy', 'overtime'],
         leave: ['leave-apply', 'leave-types', 'holidays'],
         payroll: ['pay-cycle', 'salary-schedules', 'salary-setup', 'salary-gen', 'salary-approval', 'payslip', 'deductions', 'payout-recon', 'live-salary', 'pay-ledger'],
         commissions: ['commissions', 'incentive-schemes', 'clawbacks', 'bonus-enc'],
         expenses: ['expenses', 'advance'],
         loans: ['loans'],
-        statutory: ['pf-esic', 'tds', 'pt', 'gratuity', 'tds-returns', 'min-wages'],
+        statutory: ['pf-esic', 'tds', 'pt', 'gratuity', 'tds-returns', 'min-wages', 'audit-reports'],
         performance: ['performance', 'increments', 'exits', 'awards', 'points-scores', 'points-ledger', 'points-rules', 'tests', 'test-results', 'test-reports', 'attrition'],
         field: ['escalations', 'agent-auth', 'dra-certs', 'complaints', 'compliance-alerts'],
         kb: ['kb', 'faqs', 'training-programs', 'training-records', 'training-content', 'code-of-conduct', 'policies', 'helpdesk', 'letters-offer', 'letters-increment', 'letters-warning', 'letters-relieving', 'letters-nda', 'letters-templates', 'notice', 'messages', 'send-message'],
@@ -1092,12 +1093,12 @@ CSS;
         'recruitment': 'fa-user-tie', 'bgv': 'fa-user-shield',
         'att-daily': 'fa-calendar-check', 'att-report': 'fa-table-list', 'att-manual': 'fa-pen-to-square',
         'att-zkteco': 'fa-fingerprint', 'biometric-devices': 'fa-fingerprint', 'biometric-setup': 'fa-sliders', 'geofence': 'fa-map-location-dot',
-        'geofence-list': 'fa-draw-polygon', 'late-policy': 'fa-business-time',
+        'geofence-list': 'fa-draw-polygon', 'shifts': 'fa-clock', 'late-policy': 'fa-business-time',
         'leave-apply': 'fa-calendar-day', 'leave-types': 'fa-list-ul', 'holidays': 'fa-umbrella-beach',
         'salary-setup': 'fa-sitemap', 'salary-schedules': 'fa-calendar-days', 'salary-gen': 'fa-gears',
         'salary-approval': 'fa-check-double', 'payslip': 'fa-file-invoice-dollar', 'pay-ledger': 'fa-book',
         'deductions': 'fa-money-bill-transfer', 'payout-recon': 'fa-scale-balanced', 'pay-cycle': 'fa-arrows-spin',
-        'pf-esic': 'fa-shield-halved', 'pt': 'fa-landmark', 'tds': 'fa-file-invoice', 'tds-returns': 'fa-file-arrow-up', 'gratuity': 'fa-gift',
+        'pf-esic': 'fa-shield-halved', 'pt': 'fa-landmark', 'tds': 'fa-file-invoice', 'tds-returns': 'fa-file-arrow-up', 'gratuity': 'fa-gift', 'audit-reports': 'fa-user-shield',
         'expenses': 'fa-receipt', 'advance': 'fa-hand-holding-dollar', 'loans': 'fa-building-columns', 'bonus-enc': 'fa-coins',
         'increments': 'fa-arrow-trend-up', 'commissions': 'fa-percent', 'commission-calc': 'fa-calculator',
         'clawbacks': 'fa-rotate-left', 'incentive-schemes': 'fa-bullseye',
@@ -1308,6 +1309,24 @@ CSS;
         });
         var h = document.querySelector('.content .page-header h2, #host h2');
         if (h) { h.textContent = 'Edit Employee — ' + (emp.name || ''); }
+        // rev173b — "Audit Report" (RBI compliance PDF) also from the Directory
+        // edit screen (admin/HR), same link as the profile popup.
+        try {
+            var oldAud = document.getElementById('sp-audit-link'); if (oldAud) { oldAud.remove(); }
+            var canAud = cfg.role === 'Admin' || cfg.role === 'Super Admin' || String(cfg.role || '').indexOf('HR') >= 0;
+            var safeAud = String(emp.id || '').replace(/[^A-Za-z0-9_-]/g, '');
+            if (h && canAud && safeAud) {
+                var aud = document.createElement('a');
+                aud.id = 'sp-audit-link';
+                aud.className = 'btn btn-outline btn-sm';
+                aud.href = '/app/compliance/agent-audit/' + safeAud + '/pdf';
+                aud.target = '_blank'; aud.rel = 'noopener';
+                aud.title = 'RBI compliance audit report (PDF)';
+                aud.style.marginLeft = '12px'; aud.style.verticalAlign = 'middle';
+                aud.innerHTML = '<i class="fas fa-shield-halved"></i> Audit Report';
+                h.appendChild(aud);
+            }
+        } catch (eAud) {}
     }
     // Intercept the prototype's save -> persist to the real employees table (add or edit).
     function wireEmployeeSave(cfg) {
@@ -1332,7 +1351,7 @@ CSS;
                 var emp = Object.assign({}, DB.employees[0], { refs: refs });
                 // The prototype's native saveEmp() doesn't copy team/manager/leader
                 // into the record — read them straight off the form so they persist.
-                ['team', 'teamManager', 'teamLeader', 'designation', 'branch', 'dept'].forEach(function (k) {
+                ['team', 'teamManager', 'teamLeader', 'designation', 'branch', 'dept', 'shift'].forEach(function (k) {
                     var el = document.getElementById('f_' + k); if (el && el.value) { emp[k] = el.value; }
                 });
                 postEmp(emp).then(function (d) { if (d && d.ok && typeof toast === 'function') { toast('Saved to database (' + d.emp_code + ')'); } }).catch(function () {});
@@ -1487,7 +1506,7 @@ CSS;
             var MM = { 'departments': 'Departments', 'branches': 'Branches', 'banks': 'Banks', 'designations': 'Designations', 'holidays': 'Holidays', 'leave-types': 'Leave Types', 'biometric-devices': 'Biometric Devices', 'assets': 'Assets', 'complaints': 'Complaints', 'helpdesk': 'HR Helpdesk', 'deductions': 'Deductions Ledger', 'payout-recon': 'Payout Reconciliation', 'salary-schedules': 'Salary Schedules', 'tds-returns': 'TDS Returns',
                 'teams': 'Teams', 'bgv': 'Background Verification', 'documents': 'Documents', 'offroll-agents': 'Off-roll Agents', 'geofence': 'Geofence Rules', 'geofence-list': 'Geofence Rules', 'late-policy': 'Late Policy', 'salary-setup': 'Salary Setup', 'incentive-schemes': 'Incentive Schemes', 'points-ledger': 'Points Ledger', 'points-rules': 'Points Rules', 'tests': 'Tests', 'training-programs': 'Training Programs', 'training-records': 'Training Records', 'code-of-conduct': 'Code of Conduct', 'faqs': 'FAQs', 'escalations': 'Escalations', 'agent-auth': 'Agent Authorization', 'dra-certs': 'DRA Certifications', 'min-wages': 'Minimum Wages', 'overtime': 'Overtime Register', 'policies': 'Policy Repository', 'messages': 'Messages', 'companies': 'Companies', 'letters-offer': 'Offer Letters', 'letters-increment': 'Increment Letters', 'letters-warning': 'Warning Letters', 'letters-relieving': 'Relieving Letters', 'letters-nda': 'NDA / Confidentiality', 'letters-templates': 'Letter Templates',
                 'roster': 'Roster', 'onboarding-board': 'Onboarding', 'awards': 'Awards & Rewards', 'performance': 'Performance', 'notice-board': 'Notice Board', 'notice': 'Notice Board', 'feature-flags': 'Feature Flags', 'training-content': 'Training Content', 'test-results': 'Test Results', 'pay-cycle': 'Pay Cycle', 'wa-settings': 'WhatsApp Settings', 'sms-settings': 'SMS Settings', 'sms-templates': 'SMS Templates', 'att-manual': 'Manual Attendance', 'att-zkteco': 'ZKTeco Devices' };
-            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } SCREENS['biometric-setup'] = { title: 'Biometric Device Setup', type: 'custom' }; }
+            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } SCREENS['biometric-setup'] = { title: 'Biometric Device Setup', type: 'custom' }; SCREENS['shifts'] = { title: 'Working Shifts', type: 'custom' }; SCREENS['audit-reports'] = { title: 'Audit Reports', type: 'custom' }; }
         } catch (e) {}
         if (typeof renderCustom !== 'function' || renderCustom.__wrapped) { return; }
         var _rc = renderCustom;
@@ -1500,6 +1519,7 @@ CSS;
             if (id === 'performance') { return performanceScreen(); }
             if (id === 'code-of-conduct') { return codeOfConductScreen(); }
             if (id === 'biometric-setup') { return biometricSetupScreen(); }
+            if (id === 'audit-reports') { return auditReportsScreen(); }
             if (id === 'late-policy') { return latePolicyScreen(); }
             if (id === 'incentive-schemes') { return schemesScreen(); }
             if (id === 'mobile-devices') { return mobileDevicesScreen(); }
@@ -1697,6 +1717,90 @@ CSS;
         try { go('directory'); } catch (e) {}
         setTimeout(function () { try { editEmployee(code); } catch (e2) {} }, 80);
     };
+    // ---- rev173b: Statutory & Compliance → AUDIT REPORTS (single + bulk) -------
+    // Filter employees by company / department / team, tick one or many, and
+    // generate RBI agent-audit PDFs: per-row single report, or one bulk PDF
+    // (summary page + a full report per agent). Backend: /app/compliance/
+    // agent-audit(-bulk)/pdf, admin+HR only (guarded server-side too).
+    window.__AUDR = { company: '', dept: '', team: '', q: '', sel: {} };
+    function audrCompName(e) {
+        var c = ((typeof DB !== 'undefined' && DB.companies) || []).find(function (x) { return String(x.id) === String(e.companyId); });
+        return (c && c.name) || '';
+    }
+    function audrRows() {
+        var f = window.__AUDR;
+        return ((typeof DB !== 'undefined' && DB.employees) || []).filter(function (e) {
+            if (f.company && audrCompName(e) !== f.company) { return false; }
+            if (f.dept && String(e.dept || '') !== f.dept) { return false; }
+            if (f.team && String(e.team || '') !== f.team) { return false; }
+            if (f.q && String((e.name || '') + ' ' + (e.id || '')).toLowerCase().indexOf(f.q.toLowerCase()) < 0) { return false; }
+            return true;
+        });
+    }
+    window.audrSet = function (k, v) { window.__AUDR[k] = v; if (typeof render === 'function') { render(); } };
+    window.audrPick = function (code, on) { if (on) { window.__AUDR.sel[code] = 1; } else { delete window.__AUDR.sel[code]; } if (typeof render === 'function') { render(); } };
+    window.audrAll = function (on) {
+        var s = window.__AUDR.sel;
+        audrRows().forEach(function (e) { if (on) { s[e.id] = 1; } else { delete s[e.id]; } });
+        if (typeof render === 'function') { render(); }
+    };
+    window.audrGo = function (mode) {
+        var codes = mode === 'all'
+            ? audrRows().map(function (e) { return e.id; })
+            : Object.keys(window.__AUDR.sel);
+        if (!codes.length) { if (typeof toast === 'function') { toast('Select at least one employee (or use Generate all)'); } return; }
+        if (codes.length > 150) { if (typeof toast === 'function') { toast('Maximum 150 agents per bulk report - narrow the filter'); } return; }
+        window.open('/app/compliance/agent-audit-bulk/pdf?codes=' + encodeURIComponent(codes.join(',')), '_blank');
+    };
+    function auditReportsScreen() {
+        var canView = cfg.role === 'Admin' || cfg.role === 'Super Admin' || String(cfg.role || '').indexOf('HR') >= 0;
+        if (!canView) {
+            return pghead('Audit Reports', 'RBI recovery-agent compliance audit PDFs', '')
+                + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Audit reports are available to Admin and HR roles only.</div></div>';
+        }
+        var f = window.__AUDR;
+        var rows = audrRows();
+        var selN = Object.keys(f.sel).length;
+        var opt = function (list, cur) { return '<option value=""' + (cur ? '' : ' selected') + '>All</option>' + list.map(function (o) { return '<option' + (o === cur ? ' selected' : '') + '>' + o + '</option>'; }).join(''); };
+        var comps = ((typeof DB !== 'undefined' && DB.companies) || []).map(function (c) { return c.name; });
+        var depts = ((typeof DB !== 'undefined' && DB.departments) || []).map(function (d) { return d.name; });
+        var teams = ((typeof DB !== 'undefined' && DB.teams) || []).map(function (t) { return t.name; });
+        var selSt = 'height:36px;border:1.5px solid var(--border);border-radius:9px;padding:0 10px;font-size:13px;background:#fff;font-family:var(--font2)';
+        var lbl = 'font-size:10.5px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:3px';
+        var controls = '<div class="card" style="padding:14px 16px;margin-bottom:14px"><div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">'
+            + '<div><label style="' + lbl + '">Company</label><select style="' + selSt + '" onchange="audrSet(&#39;company&#39;,this.value)">' + opt(comps, f.company) + '</select></div>'
+            + '<div><label style="' + lbl + '">Department</label><select style="' + selSt + '" onchange="audrSet(&#39;dept&#39;,this.value)">' + opt(depts, f.dept) + '</select></div>'
+            + '<div><label style="' + lbl + '">Team</label><select style="' + selSt + '" onchange="audrSet(&#39;team&#39;,this.value)">' + opt(teams, f.team) + '</select></div>'
+            + '<div style="flex:1;min-width:180px"><label style="' + lbl + '">Search</label><input style="' + selSt + ';width:100%" value="' + String(f.q).replace(/"/g, '&quot;') + '" placeholder="Name or code..." onchange="audrSet(&#39;q&#39;,this.value)"></div>'
+            + '<button class="btn btn-primary" onclick="audrGo(&#39;sel&#39;)"><i class="fas fa-file-shield"></i> Generate selected (' + selN + ')</button>'
+            + '<button class="btn btn-outline" onclick="audrGo(&#39;all&#39;)"><i class="fas fa-layer-group"></i> Generate all filtered (' + rows.length + ')</button>'
+            + '<a class="btn btn-outline" href="/app/compliance/agent-audit-sample/pdf?company=' + encodeURIComponent(f.company || '') + '" target="_blank" rel="noopener" title="Preview the report on your letterhead with illustrative data (follows the Company filter)"><i class="fas fa-eye"></i> View Sample Report</a>'
+            + '</div></div>';
+        var th = function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; };
+        var dash = '<span style="color:var(--text3)">&mdash;</span>';
+        var body = rows.map(function (e) {
+            var code = String(e.id || '').replace(/[^A-Za-z0-9_-]/g, '');
+            var c = 'padding:9px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
+            return '<tr>'
+                + '<td style="' + c + ';width:34px"><input type="checkbox"' + (f.sel[e.id] ? ' checked' : '') + ' onchange="audrPick(&#39;' + code + '&#39;,this.checked)"></td>'
+                + '<td style="' + c + ';font-weight:600">' + (e.name || '') + '</td>'
+                + '<td style="' + c + ';color:var(--text3)">' + (e.id || '') + '</td>'
+                + '<td style="' + c + '">' + (audrCompName(e) || dash) + '</td>'
+                + '<td style="' + c + '">' + (e.dept || dash) + '</td>'
+                + '<td style="' + c + '">' + (e.team || dash) + '</td>'
+                + '<td style="' + c + '">' + (e.designation || dash) + '</td>'
+                + '<td style="' + c + '"><a class="btn btn-outline btn-sm" href="/app/compliance/agent-audit/' + code + '/pdf" target="_blank" rel="noopener" title="Single audit report PDF"><i class="fas fa-shield-halved"></i> Report</a></td>'
+                + '</tr>';
+        }).join('');
+        var table = rows.length
+            ? '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>'
+                + '<th style="padding:10px 12px;width:34px"><input type="checkbox" title="Select all filtered" onchange="audrAll(this.checked)"></th>'
+                + th('Employee') + th('Code') + th('Company') + th('Department') + th('Team') + th('Designation') + th('Audit')
+                + '</tr></thead><tbody>' + body + '</tbody></table></div>'
+            : '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No employees match this filter.</div></div>';
+        var sub = 'RBI recovery-agent compliance audit PDFs on your letterhead - single (per row) or one bulk PDF with a summary page. ' + rows.length + ' employee(s) in view, ' + selN + ' selected';
+        return pghead('Audit Reports', sub, '') + controls + table;
+    }
     function leaveScreen() {
         var d = window.__LEAVE;
         if (!d) { setTimeout(function () { if (!window.__LEAVE) { leaveLoad(); } }, 10); }
@@ -8004,8 +8108,17 @@ CSS;
             { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'template', l: 'Template', src: 'template' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'issued_on', l: 'Issued On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['draft', 'issued', 'signed'], optLabels: ['Draft', 'Issued', 'Signed'] }] },
         'letters-templates': { type: 'letters-templates', title: 'Letter Templates', sub: 'Reusable letter bodies. Pick a type to load a professional sample, then edit. Placeholders like {{employee_name}}, {{designation}}, {{ctc}}, {{date}} are filled when a letter is generated', fields: [
             { k: 'title', l: 'Template Title' }, { k: 'letter_type', l: 'For Letter Type', type: 'select', opts: ['offer', 'increment', 'warning', 'relieving', 'experience', 'nda', 'custom'], optLabels: ['Offer', 'Increment', 'Warning / PIP', 'Relieving', 'Experience', 'Confidentiality / NDA', 'Custom'], fill: 'LETTER_SAMPLES', fillTarget: 'body' }, { k: 'body', l: 'Body', type: 'textarea', hint: 'Placeholders: {{employee_name}} {{emp_code}} {{designation}} {{department}} {{company}} {{date}} {{ctc}} {{doj}} {{pan}} {{uan}} {{bank_acc}} {{ifsc}}' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] }] },
-        'roster': { type: 'roster', title: 'Roster', sub: 'Shift roster', fields: [
-            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'team', l: 'Team' }, { k: 'date', l: 'Date', type: 'date' }, { k: 'shift', l: 'Shift' }, { k: 'status', l: 'Status', type: 'select', opts: ['scheduled', 'present', 'absent', 'off'], optLabels: ['Scheduled', 'Present', 'Absent', 'Week-off'] }] },
+        'shifts': { type: 'shifts', title: 'Working Shifts', sub: 'Named shift timings (General / Morning / Night). Attendance and payroll judge each employee against THEIR shift: roster entry first, else the employee&#39;s default shift, else the Late Policy timings. An end time earlier than the start time = night shift (crosses midnight).', fields: [
+            { k: 'name', l: 'Shift Name', hint: 'e.g. General Shift, Morning, Night' }, { k: 'code', l: 'Code', hint: 'Short code, e.g. GEN / MOR / NGT' },
+            { k: 'company_name', l: 'Company', src: 'company' }, { k: 'status', l: 'Status', type: 'select', opts: ['active', 'inactive'], optLabels: ['Active', 'Inactive'] },
+            { k: 'start_time', l: 'Start Time', hint: '24-hour HH:MM, e.g. 09:30 or 22:00' }, { k: 'end_time', l: 'End Time', hint: 'HH:MM. Earlier than start = night shift ending next morning' },
+            { k: 'grace_min', l: 'Grace (minutes)', type: 'number', hint: 'Optional - overrides the Late Policy grace for this shift. Blank = use policy' },
+            { k: 'night_allowance', l: 'Night Allowance (Rs / night)', type: 'number', hint: 'Paid per night actually worked - only for night shifts. Blank or 0 = none' },
+            { k: 'full_day_hours', l: 'Full Day (hours)', type: 'number', hint: 'Optional override, e.g. 9. Blank = use Late Policy' },
+            { k: 'half_day_hours', l: 'Half Day (hours)', type: 'number', hint: 'Optional override, e.g. 4.5. Blank = use Late Policy' },
+            { k: 'break_budget', l: 'Break Budget (minutes)', type: 'number', hint: 'Optional override. Blank = use Late Policy' }] },
+        'roster': { type: 'roster', title: 'Roster', sub: 'Day-wise shift plan. A roster entry overrides the employee&#39;s default shift for that date; status Week-off skips late/absence checks that day', fields: [
+            { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'team', l: 'Team' }, { k: 'date', l: 'Date', type: 'date' }, { k: 'shift', l: 'Shift', src: 'shift' }, { k: 'status', l: 'Status', type: 'select', opts: ['scheduled', 'present', 'absent', 'off'], optLabels: ['Scheduled', 'Present', 'Absent', 'Week-off'] }] },
         'onboarding-board': { type: 'onboarding-board', title: 'Onboarding', sub: 'New-joiner onboarding', fields: [
             { k: 'employee', l: 'New hire', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'stage', l: 'Stage', type: 'select', opts: ['docs', 'verification', 'training', 'active'], optLabels: ['Documents', 'Verification', 'Training', 'Active'] }, { k: 'joined_on', l: 'Joined On', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['in_progress', 'completed'], optLabels: ['In progress', 'Completed'] }] },
         'awards': { type: 'awards', title: 'Awards & Rewards', sub: 'Recognition', fields: [
@@ -8070,6 +8183,7 @@ CSS;
         if (src === 'branch') { return ((typeof DB !== 'undefined' && DB.branchesC) || []).map(function (b) { return b.name; }); }
         if (src === 'dept') { return ((typeof DB !== 'undefined' && DB.departments) || []).map(function (d) { return d.name; }); }
         if (src === 'emp') { return ((typeof DB !== 'undefined' && DB.employees) || []).map(function (e) { return e.name; }); }
+        if (src === 'shift') { return ((typeof DB !== 'undefined' && DB.shifts) || []).map(function (s) { return s.name; }); }   // rev173
         return null;
     }
     function masterScreen(type) {
@@ -8652,10 +8766,10 @@ CSS;
     };
     window.attDownload = function () {
         var rep = window.__ATTREPORT; if (!rep || !rep.rows) { return; }
-        var head = ['Employee', 'Code', 'Branch', 'Team', 'Manager', 'Leader', 'Date', 'First In', 'Last Out', 'Last In', 'Total Time', 'Break Time', 'Early Min', 'Overtime Min', 'IN Count', 'OUT Count', 'Rating', 'Remarks'];
+        var head = ['Employee', 'Code', 'Branch', 'Team', 'Manager', 'Leader', 'Date', 'Shift', 'First In', 'Last Out', 'Last In', 'Total Time', 'Break Time', 'Early Min', 'Overtime Min', 'IN Count', 'OUT Count', 'Rating', 'Remarks'];
         var lines = [head.join(',')];
         attApplyFilters(rep.rows).forEach(function (r) {
-            var row = [r.emp_name, r.emp_code, (r.branch || ''), (r.team || ''), (r.reporting || ''), (r.leader || ''), r.date, r.first_in, r.last_out, r.last_in, r.total_time, r.break_time, r.early_min, r.overtime_min, r.in_count, r.out_count, (r.rating || ''), (r.remarks || '').replace(/[,\\r\\n]/g, ' ')];
+            var row = [r.emp_name, r.emp_code, (r.branch || ''), (r.team || ''), (r.reporting || ''), (r.leader || ''), r.date, (r.weekoff ? 'Week-off' : (r.shift_name || '')), r.first_in, r.last_out, r.last_in, r.total_time, r.break_time, r.early_min, r.overtime_min, r.in_count, r.out_count, (r.rating || ''), (r.remarks || '').replace(/[,\\r\\n]/g, ' ')];
             lines.push(row.map(function (x) { return '"' + String(x) + '"'; }).join(','));
         });
         var blob = new Blob([lines.join(String.fromCharCode(10))], { type: 'text/csv' });
@@ -8717,7 +8831,7 @@ CSS;
         if (rep.error) { return pghead('Attendance Report', 'Daily punch summary', '') + controls + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not build the report.</b><br><span style="font-size:12px;color:var(--text2)">' + String(rep.error) + '</span></div></div>'; }
         var rows = attApplyFilters(allRows);
         if (!rows.length) { return pghead('Attendance Report', 'Daily punch summary', '') + controls + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No punch logs match this period/filter.</div></div>'; }
-        var head = ['Employee', 'Branch', 'Team', 'Manager', 'Leader', 'Date', 'First In', 'Last Out', 'Total Time', 'Break Time', 'IN', 'OUT', 'Rating', 'Logs'];
+        var head = ['Employee', 'Branch', 'Team', 'Manager', 'Leader', 'Date', 'Shift', 'First In', 'Last Out', 'Total Time', 'Break Time', 'IN', 'OUT', 'Rating', 'Logs'];
         var th = head.map(function (h) { return '<th style="padding:10px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
         var dash = '<span style="color:var(--text3)">—</span>';
         var body = rows.map(function (r) {
@@ -8734,6 +8848,7 @@ CSS;
                 + '<td style="' + c + '">' + (r.reporting || dash) + '</td>'
                 + '<td style="' + c + '">' + (r.leader || dash) + '</td>'
                 + '<td style="' + c + '">' + r.date + '</td>'
+                + '<td style="' + c + ';font-size:12px">' + (r.weekoff ? '<span style="background:#64748b;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:700">WEEK-OFF</span>' : (r.shift_name || dash)) + '</td>'
                 + '<td style="' + c + ';color:' + lateCol + ';font-weight:600">' + r.first_in + lateBadge + '</td>'
                 + '<td style="' + c + ';color:var(--red);font-weight:600">' + r.last_out + '</td>'
                 + '<td style="' + c + ';font-weight:600">' + r.total_time + '</td>'

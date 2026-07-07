@@ -350,6 +350,132 @@ class ComplianceController extends Controller
             return response('Agent "'.e($code).'" not found.', 404)->header('Content-Type', 'text/plain; charset=utf-8');
         }
 
+        $data = $this->agentAuditData($e, $tid);
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('agent-audit-pdf', $data)->setPaper('a4', 'portrait');
+
+        return $pdf->download('agent-audit-'.$code.'-'.Carbon::today()->format('Ymd').'.pdf');
+    }
+
+    /**
+     * rev173b — BULK audit report: one PDF with a summary page + a full
+     * per-agent report per section. ?codes=EMP-1,EMP-2,… (from the new
+     * Statutory & Compliance → Audit Reports screen). Capped at 150 agents.
+     */
+    public function agentAuditBulkPdf(Request $request)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        $tid = $request->user()->tenant_id;
+        $codes = array_values(array_filter(array_map('trim', explode(',', (string) $request->query('codes', '')))));
+        if (! $codes) {
+            return response('No agents selected — pick at least one employee on the Audit Reports screen.', 422)
+                ->header('Content-Type', 'text/plain; charset=utf-8');
+        }
+        $codes = array_slice($codes, 0, 150);
+        $emps = DB::table('employees')->whereIn('emp_code', $codes)
+            ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+            ->whereNull('deleted_at')->orderBy('name')->get();
+        if ($emps->isEmpty()) {
+            return response('None of the selected agents were found.', 404)->header('Content-Type', 'text/plain; charset=utf-8');
+        }
+
+        $agents = [];
+        foreach ($emps as $e) {
+            $agents[] = $this->agentAuditData($e, $tid);
+        }
+        $first = $agents[0];
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('agent-audit-bulk-pdf', [
+            'agents' => $agents,
+            'brand' => $first['brand'],
+            'company' => $first['company'],
+            'generatedAt' => $first['generatedAt'],
+            'count' => count($agents),
+        ])->setPaper('a4', 'portrait');
+
+        return $pdf->download('agent-audit-bulk-'.now()->format('Ymd-Hi').'.pdf');
+    }
+
+    /**
+     * rev173c — SAMPLE audit report (illustrative data, client-branded). Lets an
+     * admin preview exactly what the audit PDF looks like on THEIR letterhead
+     * before running it on real agents (also useful in sales demos).
+     * ?company=<name> picks whose branding to use; defaults to the first company.
+     */
+    public function agentAuditSamplePdf(Request $request)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        $tid = $request->user()->tenant_id;
+        $coName = trim((string) $request->query('company', ''));
+        $company = DB::table('companies')
+            ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+            ->when($coName !== '', fn ($q) => $q->where('name', $coName))
+            ->whereNull('deleted_at')->first()
+            ?: DB::table('companies')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->whereNull('deleted_at')->first();
+        $brand = ConfigController::brandFor($tid, $company->id ?? null);
+
+        $today = Carbon::today();
+        $e = (object) [
+            'name' => 'A. Kumar (Sample Agent)',
+            'emp_code' => 'SAMPLE-001',
+            'designation' => 'Recovery Agent',
+            'status' => 'active',
+            'doj' => $today->copy()->subYears(2)->toDateString(),
+            'mobile' => '+91 90000 00000',
+            'department' => 'Collections',
+        ];
+        $mk = fn ($group, $param, $value, $state, $evidence = '') => compact('group', 'param', 'value', 'state', 'evidence');
+        $items = [
+            $mk('Identity & KYC', 'Photograph on record', 'Yes', 'ok', 'ID card file'),
+            $mk('Identity & KYC', 'PAN', 'ABCPK1234F', 'ok', 'Employee master'),
+            $mk('Identity & KYC', 'UAN (PF)', 'Pending allotment', 'warn', 'Employee master'),
+            $mk('Identity & KYC', 'Employee ID card issued', 'Yes', 'ok', 'Auto-generated'),
+            $mk('DRA Certification (IIBF)', 'Valid IIBF DRA certificate', 'Held & valid', 'ok', 'Cert DRA-2025-11223 · valid to '.$today->copy()->addMonths(14)->toDateString()),
+            $mk('Background Verification', 'Police clearance (PCC)', 'Clear', 'ok', 'Valid to '.$today->copy()->addMonths(8)->toDateString()),
+            $mk('Background Verification', 'Background verification (BGV)', 'Clear', 'ok', 'Agency: SecureCheck India'),
+            $mk('Background Verification', 'References / guarantors (min 2)', '2 on record', 'ok', 'Employee references'),
+            $mk('Code of Conduct', 'Signed undertaking of adherence', 'Acknowledged', 'ok', 'Code of Conduct register'),
+            $mk('Authorisation', 'Bank/portfolio authorisation', 'Sample Bank — Retail NPA Pool', 'ok', 'Auth SB/2026/0417 · to '.$today->copy()->addMonths(6)->toDateString()),
+            $mk('Conduct Record', 'Borrower complaints (last 90 days)', '0', 'ok', 'Complaints register'),
+            $mk('Conduct Record', 'Disciplinary actions', '0', 'ok', 'HR record'),
+        ];
+        $pass = 0;
+        $warn = 0;
+        $fail = 0;
+        $groups = [];
+        foreach ($items as $it) {
+            $groups[$it['group']][] = $it;
+            $it['state'] === 'ok' ? $pass++ : ($it['state'] === 'warn' ? $warn++ : $fail++);
+        }
+
+        $data = [
+            'brand' => $brand,
+            'company' => $company,
+            'e' => $e,
+            'groups' => $groups,
+            'pass' => $pass, 'warn' => $warn, 'fail' => $fail,
+            'score' => 92,
+            'verdict' => 'COMPLIANT — WITH OPEN ITEMS',
+            'ref' => 'RAC/'.$today->format('Y').'/SAMPLE',
+            'hash' => 'SAMPLE-ILLUSTRATION',
+            'generatedAt' => $today->format('d M Y').', '.now()->format('H:i').' IST',
+            'auditFrom' => $today->copy()->subDays(90)->format('d M Y'),
+            'auditTo' => $today->format('d M Y'),
+            'isSample' => true,
+        ];
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('agent-audit-pdf', $data)->setPaper('a4', 'portrait');
+
+        return $pdf->download('agent-audit-SAMPLE.pdf');
+    }
+
+    /** Build the full audit-report data array for ONE employee (shared by single + bulk PDFs). */
+    private function agentAuditData(object $e, $tid): array
+    {
+        $code = (string) $e->emp_code;
         $today = Carbon::today();
         $has = fn ($t, $c) => Schema::hasTable($t) && Schema::hasColumn($t, $c);
         $ok = fn ($b) => $b ? 'ok' : 'bad';
@@ -452,7 +578,7 @@ class ComplianceController extends Controller
         $ref = 'RAC/'.$today->format('Y').'/'.strtoupper($code);
         $hash = substr(hash('sha256', $ref.'|'.$e->id.'|'.$today->toIso8601String()), 0, 16);
 
-        $data = [
+        return [
             'brand' => $brand,
             'company' => $company,
             'e' => $e,
@@ -466,9 +592,5 @@ class ComplianceController extends Controller
             'auditFrom' => Carbon::parse($from)->format('d M Y'),
             'auditTo' => $today->format('d M Y'),
         ];
-
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('agent-audit-pdf', $data)->setPaper('a4', 'portrait');
-
-        return $pdf->download('agent-audit-'.$code.'-'.$today->format('Ymd').'.pdf');
     }
 }
