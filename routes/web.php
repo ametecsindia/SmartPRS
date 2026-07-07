@@ -76,6 +76,11 @@ Route::post('/api/mobile/push-token', [App\Http\Controllers\MobileDeviceControll
     ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])
     ->middleware('throttle:30,1')->name('api.mobile.push');
 
+// rev173d — PUBLIC sample RBI audit report (marketing site: landing RBI section + FAQ).
+// Illustrative data only, generic SmartPRS branding, rate-limited.
+Route::get('/sample-audit-report.pdf', [App\Http\Controllers\ComplianceController::class, 'publicSampleAuditPdf'])
+    ->middleware('throttle:20,1')->name('public.sample.audit');
+
 // Public off-roll agent email verification (no login — secured by the token).
 Route::get('/agent/verify/{token}', [App\Http\Controllers\OffrollAgentController::class, 'verifyEmail'])->name('agent.verify');
 
@@ -216,6 +221,7 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     // Super-admin admin panel (landing CMS + platform staff).
     Route::get('/admin/landing', [LandingController::class, 'editor'])->name('landing.editor');
     Route::post('/admin/landing', [LandingController::class, 'save'])->name('landing.save');
+    Route::post('/admin/landing/reset', [LandingController::class, 'reset'])->name('landing.reset');   // rev173d
     // rev 92: WhatsApp template registry (platform + tenant scoped inside the controller).
     Route::get('/app/wa-templates', [App\Http\Controllers\WaTemplateController::class, 'index']);
     Route::get('/app/wa-templates/export', [App\Http\Controllers\WaTemplateController::class, 'export']);
@@ -409,6 +415,8 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::get('/app/compliance/agent-audit-bulk/pdf', [App\Http\Controllers\ComplianceController::class, 'agentAuditBulkPdf'])->name('app.compliance.agentaudit.bulk');
     // rev173c — client-branded SAMPLE audit report (illustrative data, ?company=<name>).
     Route::get('/app/compliance/agent-audit-sample/pdf', [App\Http\Controllers\ComplianceController::class, 'agentAuditSamplePdf'])->name('app.compliance.agentaudit.sample');
+    // rev173d — PUBLIC sample audit report for the marketing site (registered here,
+    // but reachable without login — see the standalone route below this group).
     // HR letter PDF (merge a template with the employee's data) + email it.
     Route::get('/app/letters/{id}/pdf', [App\Http\Controllers\LetterController::class, 'pdf'])->name('app.letters.pdf');
     Route::post('/app/letters/{id}/email', [App\Http\Controllers\LetterController::class, 'email'])->name('app.letters.email');

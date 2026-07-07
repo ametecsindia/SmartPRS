@@ -417,6 +417,32 @@ class ComplianceController extends Controller
             ?: DB::table('companies')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->whereNull('deleted_at')->first();
         $brand = ConfigController::brandFor($tid, $company->id ?? null);
 
+        return $this->sampleAuditPdf($brand, $company);
+    }
+
+    /**
+     * rev173d — PUBLIC sample audit report for the marketing site (no login).
+     * Generic SmartPRS branding; linked from the landing page RBI section + FAQ.
+     */
+    public function publicSampleAuditPdf()
+    {
+        $brand = [
+            'display_name' => 'SmartPRS — Your Agency Name Here',
+            'color' => '#ea580c',
+        ];
+        $company = (object) [
+            'name' => 'Your Collections Agency Pvt Ltd',
+            'address' => 'On the real report, this letterhead carries YOUR logo, name, address and brand colour (set once in Company Branding).',
+            'gstin' => null,
+            'id' => null,
+        ];
+
+        return $this->sampleAuditPdf($brand, $company);
+    }
+
+    /** Shared builder for the illustrative sample audit PDF (in-app + public). */
+    private function sampleAuditPdf(array $brand, ?object $company)
+    {
         $today = Carbon::today();
         $e = (object) [
             'name' => 'A. Kumar (Sample Agent)',

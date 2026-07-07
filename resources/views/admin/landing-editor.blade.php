@@ -96,4 +96,13 @@
             <button class="btn btn-primary"><i class="fas fa-check"></i> Save landing page</button>
         </div>
     </form>
+    {{-- rev173d — Saving stores a FULL snapshot, so content shipped in newer
+         releases (hero, stats, module cards, FAQs) stays hidden until you reset. --}}
+    <form method="POST" action="{{ route('landing.reset') }}" style="margin-top:14px;text-align:right;"
+          onsubmit="return confirm('Reset the landing page to this release\'s latest default content? Your saved customisations will be removed (you can edit and Save again after).');">
+        @csrf
+        <button class="btn btn-outline" style="color:#b91c1c;border-color:#fca5a5;">
+            <i class="fas fa-rotate-left"></i> Reset to latest defaults (use after every product update)
+        </button>
+    </form>
 @endsection

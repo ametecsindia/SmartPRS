@@ -300,10 +300,18 @@
             <div style="flex:1 1 520px;">
                 <span style="display:inline-block;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-weight:700;font-size:12.5px;letter-spacing:.6px;padding:6px 15px;border-radius:30px;margin-bottom:13px;"><i class="fas fa-bullhorn" style="margin-right:7px;"></i>Effective 1 October 2026</span>
                 <h2 style="font-size:clamp(22px,3vw,31px);font-weight:800;letter-spacing:-.6px;line-height:1.12;margin:4px 0 10px;color:#fff;">Recovery Compliance 2026 — is your agency audit-ready?</h2>
-                <p style="color:rgba(255,255,255,.74);font-size:16px;line-height:1.5;margin:0;max-width:680px;">New RBI recovery-conduct rules for collection &amp; recovery agencies. See all 45 payroll &amp; HRMS topics every agency must follow — and how SmartPRS already delivers them.</p>
+                <p style="color:rgba(255,255,255,.74);font-size:16px;line-height:1.5;margin:0 0 14px;max-width:680px;">New RBI recovery-conduct rules for collection &amp; recovery agencies. See all 45 payroll &amp; HRMS topics every agency must follow — and how SmartPRS already delivers them.</p>
+                {{-- rev173d — audit-report proof points + sample CTA --}}
+                <div style="display:flex;flex-wrap:wrap;gap:9px;max-width:720px;">
+                    <span style="background:rgba(255,255,255,.12);color:#fff;font-size:12.5px;font-weight:600;padding:6px 13px;border-radius:20px;"><i class="fas fa-id-badge" style="margin-right:6px;opacity:.8;"></i>DRA · PCC · references tracked per agent</span>
+                    <span style="background:rgba(255,255,255,.12);color:#fff;font-size:12.5px;font-weight:600;padding:6px 13px;border-radius:20px;"><i class="fas fa-shield-halved" style="margin-right:6px;opacity:.8;"></i>Verdict per agent — Compliant / Attention / Non-compliant</span>
+                    <span style="background:rgba(255,255,255,.12);color:#fff;font-size:12.5px;font-weight:600;padding:6px 13px;border-radius:20px;"><i class="fas fa-layer-group" style="margin-right:6px;opacity:.8;"></i>One bulk audit file for the whole agency</span>
+                    <span style="background:rgba(255,255,255,.12);color:#fff;font-size:12.5px;font-weight:600;padding:6px 13px;border-radius:20px;"><i class="fas fa-fingerprint" style="margin-right:6px;opacity:.8;"></i>Tamper-evident report references</span>
+                </div>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;">
                 <a href="/recovery-compliance-2026.html" class="btn btn-accent"><i class="fas fa-book-open"></i> Read the Manual</a>
+                <a href="{{ url('/sample-audit-report.pdf') }}" target="_blank" rel="noopener" class="btn btn-ghost"><i class="fas fa-file-shield"></i> See a Sample Audit Report</a>
                 <a href="/SmartPRS-Recovery-Compliance-2026-Manual.pdf" download class="btn btn-ghost"><i class="fas fa-download"></i> Download PDF</a>
             </div>
         </div>
@@ -453,10 +461,17 @@
                 </div>
                 <div class="faq-cat">
                     <h3><span class="dot"></span> Attendance &amp; field force</h3>
-                    <details><summary>Does it support biometric devices? <i class="fas fa-plus"></i></summary><p>Yes — ZKTeco device sync plus geo-fenced in-app punch for field agents, all flowing into one payroll.</p></details>
+                    <details><summary>Does it support biometric devices? <i class="fas fa-plus"></i></summary><p>Yes — ZKTeco LAN sync, cloud services like eTimeOffice, or a universal CSV punch upload, plus geo-fenced in-app punch for field agents. Everything lands in one register that payroll reads.</p></details>
+                    <details><summary>Can teams work different shifts — including night? <i class="fas fa-plus"></i></summary><p>Yes. Define named working shifts (General / Morning / Night), set a default per employee or roster day-wise. Night shifts cross midnight correctly and can pay an automatic per-night allowance in payroll.</p></details>
                     <details><summary>How does it stop attendance fraud? <i class="fas fa-plus"></i></summary><p>Geo-fenced selfie / GPS punch ties every attendance mark to a real location and time.</p></details>
                     <details><summary>Can it manage off-roll / commission agents? <i class="fas fa-plus"></i></summary><p>Yes — engage vendor / off-roll agents with full KYC (photo, ID, PAN, DRA, PCC, bank), kept separate from payroll employees.</p></details>
-                    <details><summary>What is the escalation desk? <i class="fas fa-plus"></i></summary><p>A tracker for bank escalations with penalties and resolution SLAs, managed end to end.</p></details>
+                </div>
+                <div class="faq-cat">
+                    <h3><span class="dot"></span> RBI 2026 &amp; audit reports</h3>
+                    <details><summary>What changes on 1 October 2026? <i class="fas fa-plus"></i></summary><p>RBI's recovery-conduct directions require agencies to prove agent-level compliance — DRA certification, police verification, references, code-of-conduct undertakings and complaint records. Banks will ask for evidence, not assurances.</p></details>
+                    <details><summary>What is the one-click audit report? <i class="fas fa-plus"></i></summary><p>For any agent, SmartPRS generates a compliance audit PDF on YOUR letterhead: every parameter checked against live records, each marked Compliant / Attention / Non-compliant, with an overall verdict, compliance score and a tamper-evident reference.</p></details>
+                    <details><summary>Can I audit the whole agency at once? <i class="fas fa-plus"></i></summary><p>Yes — filter by company, department or team and generate one bulk PDF: a summary page with a verdict per agent, followed by a full report for each. Ready to hand to a bank or auditor.</p></details>
+                    <details><summary>Can I see what the report looks like? <i class="fas fa-plus"></i></summary><p>Yes — <a href="{{ url('/sample-audit-report.pdf') }}" target="_blank" rel="noopener">view a sample audit report</a> with illustrative data. Inside the product, admins can preview it on their own company letterhead.</p></details>
                 </div>
                 <div class="faq-cat">
                     <h3><span class="dot"></span> Deployment, security &amp; pricing</h3>

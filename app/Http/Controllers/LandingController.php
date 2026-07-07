@@ -46,6 +46,24 @@ class LandingController extends Controller
         return redirect()->route('landing.editor')->with('success', 'Landing page updated. View it at the site root.');
     }
 
+    /**
+     * rev173d — RESET the landing page to the latest code defaults. The CMS saves
+     * a FULL snapshot, so once saved, newer defaults shipped in releases never
+     * show; this deletes the snapshot so the site follows defaults() again.
+     */
+    public function reset(Request $request)
+    {
+        $this->guard($request);
+        try {
+            self::ensureTable();
+            DB::table('settings')->where('tenant_id', 0)->where('key', 'landing')->delete();
+        } catch (\Throwable $e) {
+            // nothing saved yet — already on defaults
+        }
+
+        return redirect()->route('landing.editor')->with('success', 'Landing page reset to the latest defaults (this release). Customise and Save again if needed.');
+    }
+
     private function guard(Request $request): void
     {
         abort_unless($request->user()?->hasRole('super_admin'), 403, 'Super Admin only.');
@@ -94,35 +112,35 @@ class LandingController extends Controller
             'brand' => 'SmartPRS',
             'tagline' => 'by Ametecs',
             'hero' => [
-                'badge' => 'HRM · Payroll · Workforce Compliance',
-                'title' => 'The complete workforce platform for India\'s collections & recovery industry',
-                'subtitle' => 'Biometric attendance, automated India-compliant payroll, field-force compliance and SaaS multi-company management — in one platform.',
+                'badge' => 'HRM · Payroll · RBI Audit-Readiness',
+                'title' => 'HR, payroll & RBI audit-readiness for India\'s collections & recovery industry',
+                'subtitle' => 'Biometric attendance with working shifts, automated India-compliant payroll, DRA/PCC agent compliance and one-click RBI audit reports on your own letterhead — be audit-ready before the 1 October 2026 directions.',
                 'cta' => 'Request a Demo',
                 'cta2' => 'Sign in',
                 'image' => 'images/hero.png',
             ],
             'stats' => [
-                ['n' => '4+', 'l' => 'Paying clients'],
                 ['n' => '500+', 'l' => 'Employees managed'],
-                ['n' => '16', 'l' => 'HR modules'],
-                ['n' => '99.9%', 'l' => 'Uptime'],
+                ['n' => '16', 'l' => 'HR modules · 119 screens'],
+                ['n' => '1-click', 'l' => 'RBI agent audit file'],
+                ['n' => 'SaaS + On-Prem', 'l' => 'Cloud or L1/L2/L3 licence'],
             ],
             'features' => [
                 ['icon' => 'gauge-high', 'title' => 'Dashboard', 'desc' => 'Your live command centre — headcount, attendance, payroll and escalation KPIs at a glance.'],
-                ['icon' => 'user-plus', 'title' => 'Hiring & Onboarding', 'desc' => 'Manpower requisitions, applicant pipeline, interviews, offers and guided new-hire onboarding.'],
+                ['icon' => 'user-plus', 'title' => 'Hiring & Onboarding', 'desc' => 'Requisitions with approval, job-portal imports into a talent pool, hiring drives, WhatsApp invites, interviews and one-click hire.'],
                 ['icon' => 'users', 'title' => 'People', 'desc' => 'One source of truth for every employee — profiles, teams, documents and org structure.'],
-                ['icon' => 'fingerprint', 'title' => 'Time & Attendance', 'desc' => 'Biometric and geo-fenced field attendance, shifts, rosters and a smart late policy.'],
+                ['icon' => 'fingerprint', 'title' => 'Time & Attendance', 'desc' => 'Biometric (ZKTeco, cloud, CSV) and geo-fenced selfie punch, named working shifts with night allowance, rosters and a wizard-built late policy.'],
                 ['icon' => 'umbrella-beach', 'title' => 'Leave', 'desc' => 'Leave types, balances, holiday calendars and self-service approval workflows.'],
-                ['icon' => 'money-check-dollar', 'title' => 'Payroll', 'desc' => 'Automated, India-compliant payroll with multi-cycle runs, payslips and arrears.'],
+                ['icon' => 'money-check-dollar', 'title' => 'Payroll', 'desc' => 'Automated, India-compliant payroll — shift-aware late cuts, night allowance, A4 payslips with a plain-English calculation note on every slip.'],
                 ['icon' => 'hand-holding-dollar', 'title' => 'Compensation & Claims', 'desc' => 'Salary structures, reimbursements, expenses, advances and loans — all with approvals.'],
-                ['icon' => 'scale-balanced', 'title' => 'Statutory & Compliance', 'desc' => 'PF, ESI, PT and TDS returns, challans and registers kept audit-ready.'],
+                ['icon' => 'scale-balanced', 'title' => 'Statutory & Compliance', 'desc' => 'PF, ESI, PT and TDS returns — plus one-click RBI agent audit reports (single or bulk) on your own letterhead, with a verdict per agent.'],
                 ['icon' => 'trophy', 'title' => 'Performance & Rewards', 'desc' => 'Goals, reviews, incentives, points and leaderboards that keep field teams driven.'],
                 ['icon' => 'graduation-cap', 'title' => 'Learning & Knowledge', 'desc' => 'Training programs, courses, assessments, FAQs and a searchable knowledge base.'],
                 ['icon' => 'file-signature', 'title' => 'HR Letters', 'desc' => 'Offer, appointment, increment, warning and relieving letters from smart templates.'],
                 ['icon' => 'route', 'title' => 'Field Force', 'desc' => 'Off-roll agents, DRA/PCC compliance, geo-tracking and the bank escalation desk.'],
                 ['icon' => 'bullhorn', 'title' => 'Communication', 'desc' => 'Notice board, announcements and targeted email, SMS and WhatsApp messaging.'],
                 ['icon' => 'chart-line', 'title' => 'Reports & Analytics', 'desc' => 'Attendance, payroll, compliance and workforce insights — exportable on demand.'],
-                ['icon' => 'sliders', 'title' => 'Administration', 'desc' => 'Companies, roles, permissions, masters and policies — full control of your setup.'],
+                ['icon' => 'sliders', 'title' => 'Administration', 'desc' => 'Companies, roles, masters, policy repository, exit clearance and a tamper-evident (hash-chained) audit trail of every change.'],
                 ['icon' => 'building-user', 'title' => 'SaaS Platform', 'desc' => 'Run multiple companies from one tenant, with plans, billing and GST invoicing.'],
             ],
             'plans' => [
