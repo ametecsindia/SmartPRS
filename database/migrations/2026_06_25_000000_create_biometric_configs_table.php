@@ -17,6 +17,16 @@ return new class extends Migration
     public function up(): void
     {
         if (Schema::hasTable('biometric_configs')) {
+            // rev173e — In/Out Machine ID columns for installs that already have
+            // the table (separate entry/exit devices → punch direction by machine).
+            foreach (['in_machine_id', 'out_machine_id'] as $c) {
+                if (! Schema::hasColumn('biometric_configs', $c)) {
+                    Schema::table('biometric_configs', function (Blueprint $t) use ($c) {
+                        $t->string($c, 40)->nullable();
+                    });
+                }
+            }
+
             return;
         }
         Schema::create('biometric_configs', function (Blueprint $t) {
@@ -31,6 +41,8 @@ return new class extends Migration
             $t->text('password')->nullable();          // encrypted at app layer
             $t->string('empcode')->default('ALL');
             $t->string('emp_prefix', 20)->nullable();   // prepended to device code
+            $t->string('in_machine_id', 40)->nullable();   // rev173e — entry device machine no. → IN
+            $t->string('out_machine_id', 40)->nullable();  // rev173e — exit device machine no. → OUT
             $t->timestamp('last_sync_at')->nullable();
             $t->string('last_status')->nullable();
             $t->integer('last_count')->default(0);

@@ -63,6 +63,8 @@ class ETimeOfficeService
             'password' => $pwd,
             'empcode' => $r->empcode ?: 'ALL',
             'emp_prefix' => $r->emp_prefix ?? '',
+            'in_machine_id' => $r->in_machine_id ?? '',    // rev173e
+            'out_machine_id' => $r->out_machine_id ?? '',  // rev173e
             'tenant_id' => $r->tenant_id ?? null,
         ];
     }
@@ -211,9 +213,16 @@ class ETimeOfficeService
     /**
      * Normalise a raw response into punch rows (emp_code is the RAW device code,
      * prefix is applied later in import()).
-     * @return list<array{emp_code:string,name:?string,punch_at:Carbon,direction:string}>
+     *
+     * rev173e — In/Out Machine IDs: many sites use SEPARATE devices for entry and
+     * exit while the feed's INOUT flag is blank/wrong. When the config sets
+     * in_machine_id / out_machine_id, a punch whose machine number matches one of
+     * them gets that direction — overriding the feed's flag. Punches from any
+     * other machine (or when neither ID is configured) keep the old behaviour.
+     *
+     * @return list<array{emp_code:string,name:?string,punch_at:Carbon,direction:string,machine:string}>
      */
-    public static function parse(?array $json): array
+    public static function parse(?array $json, array $cfg = []): array
     {
         $out = [];
         if (! is_array($json)) {
@@ -223,6 +232,8 @@ class ETimeOfficeService
         if (! is_array($data)) {
             return $out;
         }
+        $inMc = trim((string) ($cfg['in_machine_id'] ?? ''));
+        $outMc = trim((string) ($cfg['out_machine_id'] ?? ''));
         foreach ($data as $item) {
             if (! is_array($item)) {
                 continue;
@@ -232,11 +243,13 @@ class ETimeOfficeService
                 $name = $item[1] ?? null;
                 $dt = $item[2] ?? null;
                 $dir = $item[3] ?? null;
+                $mc = $item[4] ?? null;
             } else {
                 $emp = self::pick($item, ['Empcode', 'EmpCode', 'EmployeeCode', 'empcode', 'EMPCODE', 'Code']);
                 $name = self::pick($item, ['Name', 'EmpName', 'EmployeeName', 'empname']);
                 $dt = self::pick($item, ['DateTime', 'PunchDate', 'Punchdate', 'PunchDateTime', 'DownloadDate', 'punchdatetime', 'Datetime']);
                 $dir = self::pick($item, ['INOUT', 'InOut', 'INOUTStatus', 'Status', 'Direction', 'inout']);
+                $mc = self::pick($item, ['MachineNo', 'MachineNumber', 'Machine', 'MCID', 'McId', 'mcid', 'machineno', 'MCNo', 'MC_No', 'DeviceId', 'DeviceID', 'deviceid']);
             }
             if (! $emp || ! $dt) {
                 continue;
@@ -245,11 +258,21 @@ class ETimeOfficeService
             if (! $when) {
                 continue;
             }
+            $mcs = trim((string) ($mc ?? ''));
+            // Machine-based direction beats the feed's INOUT flag when configured.
+            if ($mcs !== '' && $inMc !== '' && strcasecmp($mcs, $inMc) === 0) {
+                $direction = 'in';
+            } elseif ($mcs !== '' && $outMc !== '' && strcasecmp($mcs, $outMc) === 0) {
+                $direction = 'out';
+            } else {
+                $direction = self::normDir($dir !== null ? (string) $dir : null);
+            }
             $out[] = [
                 'emp_code' => trim((string) $emp),
                 'name' => $name !== null ? trim((string) $name) : null,
                 'punch_at' => $when,
-                'direction' => self::normDir($dir !== null ? (string) $dir : null),
+                'direction' => $direction,
+                'machine' => $mcs,
             ];
         }
 

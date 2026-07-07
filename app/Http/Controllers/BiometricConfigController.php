@@ -24,26 +24,39 @@ class BiometricConfigController extends Controller
 
     private static function ensureTable(): void
     {
-        if (Schema::hasTable('biometric_configs')) {
-            return;
+        if (! Schema::hasTable('biometric_configs')) {
+            Schema::create('biometric_configs', function ($t) {
+                $t->id();
+                $t->unsignedBigInteger('tenant_id')->nullable()->index();
+                $t->string('provider', 40)->default('etimeoffice');
+                $t->boolean('enabled')->default(false);
+                $t->string('base_url')->nullable();
+                $t->string('endpoint')->nullable();
+                $t->string('corp_id')->nullable();
+                $t->string('username')->nullable();
+                $t->text('password')->nullable();
+                $t->string('empcode')->default('ALL');
+                $t->string('emp_prefix', 20)->nullable();
+                $t->timestamp('last_sync_at')->nullable();
+                $t->string('last_status')->nullable();
+                $t->integer('last_count')->default(0);
+                $t->timestamps();
+            });
         }
-        Schema::create('biometric_configs', function ($t) {
-            $t->id();
-            $t->unsignedBigInteger('tenant_id')->nullable()->index();
-            $t->string('provider', 40)->default('etimeoffice');
-            $t->boolean('enabled')->default(false);
-            $t->string('base_url')->nullable();
-            $t->string('endpoint')->nullable();
-            $t->string('corp_id')->nullable();
-            $t->string('username')->nullable();
-            $t->text('password')->nullable();
-            $t->string('empcode')->default('ALL');
-            $t->string('emp_prefix', 20)->nullable();
-            $t->timestamp('last_sync_at')->nullable();
-            $t->string('last_status')->nullable();
-            $t->integer('last_count')->default(0);
-            $t->timestamps();
-        });
+        // rev173e — In/Out Machine IDs: sites with a separate entry device and
+        // exit device. A punch from the In machine = IN, from the Out machine =
+        // OUT — overriding the feed's (often blank/wrong) INOUT flag.
+        foreach (['in_machine_id', 'out_machine_id'] as $c) {
+            if (! Schema::hasColumn('biometric_configs', $c)) {
+                try {
+                    Schema::table('biometric_configs', function ($t) use ($c) {
+                        $t->string($c, 40)->nullable();
+                    });
+                } catch (\Throwable $e) {
+                    // best-effort; save() will surface a real failure
+                }
+            }
+        }
     }
 
     private function row(Request $request)
@@ -75,6 +88,8 @@ class BiometricConfigController extends Controller
             'username' => $r?->username ?? '',
             'empcode' => $r?->empcode ?? '',
             'emp_prefix' => $r?->emp_prefix ?? '',
+            'in_machine_id' => $r?->in_machine_id ?? '',    // rev173e
+            'out_machine_id' => $r?->out_machine_id ?? '',  // rev173e
         ];
 
         return response()->json([
@@ -106,6 +121,8 @@ class BiometricConfigController extends Controller
             'username' => trim((string) $request->input('username', '')) ?: null,
             'empcode' => trim((string) $request->input('empcode', '')) ?: 'ALL',
             'emp_prefix' => trim((string) $request->input('emp_prefix', '')) ?: null,
+            'in_machine_id' => trim((string) $request->input('in_machine_id', '')) ?: null,    // rev173e
+            'out_machine_id' => trim((string) $request->input('out_machine_id', '')) ?: null,  // rev173e
             'updated_at' => now(),
         ];
         $pwd = (string) $request->input('password', '');
@@ -147,6 +164,8 @@ class BiometricConfigController extends Controller
             'password' => $posted !== '' ? $posted : $savedPwd,
             'empcode' => trim((string) $request->input('empcode', $r->empcode ?? 'ALL')) ?: 'ALL',
             'emp_prefix' => trim((string) $request->input('emp_prefix', $r->emp_prefix ?? '')),
+            'in_machine_id' => trim((string) $request->input('in_machine_id', $r->in_machine_id ?? '')),    // rev173e
+            'out_machine_id' => trim((string) $request->input('out_machine_id', $r->out_machine_id ?? '')),  // rev173e
             'tenant_id' => self::tid($request),
         ];
     }
@@ -167,10 +186,12 @@ class BiometricConfigController extends Controller
         if (! $res['ok']) {
             return response()->json(['ok' => false, 'error' => 'Connection failed: '.($res['error'] ?? 'unknown')], 422);
         }
-        $parsed = ETimeOfficeService::parse($res['json']);
+        $parsed = ETimeOfficeService::parse($res['json'], $cfg);
         $lines = [];
         foreach (array_slice($parsed, 0, 8) as $p) {
-            $lines[] = $p['emp_code'].'  '.$p['punch_at']->format('Y-m-d H:i').'  '.$p['direction'].'  '.($p['name'] ?? '');
+            $lines[] = $p['emp_code'].'  '.$p['punch_at']->format('Y-m-d H:i').'  '.$p['direction']
+                .(($p['machine'] ?? '') !== '' ? '  MC:'.$p['machine'] : '')
+                .'  '.($p['name'] ?? '');
         }
         $preview = $parsed ? implode("\n", $lines) : substr($res['body'], 0, 1500);
 
@@ -194,7 +215,7 @@ class BiometricConfigController extends Controller
         if (! $res['ok']) {
             return response()->json(['ok' => false, 'error' => 'Connection failed: '.($res['error'] ?? 'unknown')], 422);
         }
-        $punches = ETimeOfficeService::parse($res['json']);
+        $punches = ETimeOfficeService::parse($res['json'], $cfg);
         $r = ETimeOfficeService::import($punches, $cfg);
 
         $status = 'Imported '.$r['imported'].' punch(es) for '.$r['matched'].' row(s)';

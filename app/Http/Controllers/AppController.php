@@ -7049,6 +7049,7 @@ CSS;
             provider: g('bio-provider'), base_url: g('bio-base'), endpoint: g('bio-endpoint'),
             corp_id: g('bio-corp'), username: g('bio-user'), password: g('bio-pass'),
             empcode: g('bio-empcode'), emp_prefix: g('bio-prefix'),
+            in_machine_id: g('bio-inmc'), out_machine_id: g('bio-outmc'),
             enabled: (ck && ck.checked) ? 1 : 0
         };
     }
@@ -7104,6 +7105,11 @@ CSS;
             + fld('Password', 'bio-pass', '', 'password', pwPh, '')
             + fld('Employee code filter', 'bio-empcode', c.empcode || '', 'text', 'ALL', 'Usually ALL.')
             + fld('Employee ID prefix', 'bio-prefix', c.emp_prefix || '', 'text', 'e.g. A', 'If the device returns 12345 and your employees are A12345, enter A. Leave blank when codes match exactly.')
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px">'
+            + fld('In Machine ID', 'bio-inmc', c.in_machine_id || '', 'text', 'e.g. 1', 'Machine number of the ENTRY device - its punches are marked IN.')
+            + fld('Out Machine ID', 'bio-outmc', c.out_machine_id || '', 'text', 'e.g. 2', 'Machine number of the EXIT device - its punches are marked OUT.')
+            + '</div>'
+            + '<div style="font-size:12px;color:var(--text3);margin:-6px 0 14px">Use these when separate devices handle entry and exit: the machine number decides the punch direction, overriding the feed&#39;s IN/OUT flag. Leave BOTH blank if one device reports direction itself. Run Test connection to see each punch&#39;s MC number.</div>'
             + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">'
             + '<button class="btn btn-primary" onclick="bioSave()"><i class="fas fa-floppy-disk"></i> Save</button>'
             + '<button class="btn btn-outline" onclick="bioTest()"><i class="fas fa-plug"></i> Test connection</button>'

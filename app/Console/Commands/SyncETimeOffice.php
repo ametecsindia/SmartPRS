@@ -55,16 +55,16 @@ class SyncETimeOffice extends Command
             if ($this->option('raw')) {
                 $this->line('  ----- RAW (first 4000 chars) -----');
                 $this->line(substr($res['body'], 0, 4000));
-                $parsed = ETimeOfficeService::parse($res['json']);
+                $parsed = ETimeOfficeService::parse($res['json'], $cfg);
                 $this->line('  ----- PARSED '.count($parsed).' punch row(s); first 5: -----');
                 foreach (array_slice($parsed, 0, 5) as $p) {
-                    $this->line('  '.$p['emp_code'].'  '.$p['punch_at']->format('Y-m-d H:i:s').'  '.$p['direction']);
+                    $this->line('  '.$p['emp_code'].'  '.$p['punch_at']->format('Y-m-d H:i:s').'  '.$p['direction'].(($p['machine'] ?? '') !== '' ? '  MC:'.$p['machine'] : ''));
                 }
                 $any = true;
 
                 continue;
             }
-            $punches = ETimeOfficeService::parse($res['json']);
+            $punches = ETimeOfficeService::parse($res['json'], $cfg);
             if ($this->option('dry')) {
                 $this->info('  Parsed '.count($punches).' punch(es) (dry-run, not written).');
                 $any = true;
