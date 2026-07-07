@@ -616,50 +616,83 @@ class AttendanceReportController extends Controller
      */
     private function pairPunches($punches): array
     {
-        $times = [];
+        // rev173g — DIRECTION-AWARE pairing when the day's punches carry BOTH an
+        // 'in' and an 'out' (reliable directions, e.g. separate In/Out machines
+        // via the rev173e Machine IDs): an IN opens a session (repeat INs while
+        // open are double-taps → ignored), an OUT closes it (orphan OUTs ignored).
+        // Otherwise (directions missing/one-sided) fall back to the rev158
+        // chronological ALTERNATION, which is immune to wrong direction flags.
+        // Payroll's dayStats applies the SAME rule so the two never disagree.
+        $rows = [];
         foreach ($punches as $p) {
-            $times[] = Carbon::parse($p->punch_at);
+            $rows[] = ['t' => Carbon::parse($p->punch_at), 'dir' => strtolower(trim((string) ($p->direction ?? '')))];
         }
-        usort($times, fn ($a, $b) => $a->getTimestamp() <=> $b->getTimestamp());
-        $n = count($times);
+        usort($rows, fn ($a, $b) => $a['t']->getTimestamp() <=> $b['t']->getTimestamp());
+        $n = count($rows);
+        $hasIn = false;
+        $hasOut = false;
+        foreach ($rows as $r) {
+            if ($r['dir'] === 'in') {
+                $hasIn = true;
+            } elseif ($r['dir'] === 'out') {
+                $hasOut = true;
+            }
+        }
+
+        $sessions = [];   // list of ['in' => Carbon, 'out' => Carbon|null]
+        if ($hasIn && $hasOut) {
+            $openAt = null;
+            foreach ($rows as $r) {
+                if ($r['dir'] === 'out') {
+                    if ($openAt !== null) {
+                        $sessions[] = ['in' => $openAt, 'out' => $r['t']];
+                        $openAt = null;
+                    }
+                    // orphan OUT (no open session) → ignore
+                } else {   // 'in' or unknown → treat as in
+                    if ($openAt === null) {
+                        $openAt = $r['t'];
+                    }
+                    // repeated IN while open → double-tap, ignore (keep first)
+                }
+            }
+            if ($openAt !== null) {
+                $sessions[] = ['in' => $openAt, 'out' => null];
+            }
+        } else {
+            for ($i = 0; $i < $n; $i += 2) {
+                $sessions[] = ['in' => $rows[$i]['t'], 'out' => ($i + 1 < $n) ? $rows[$i + 1]['t'] : null];
+            }
+        }
 
         $pairs = [];
         $totalWork = 0;
-        for ($i = 0; $i + 1 < $n; $i += 2) {
-            $work = $this->mins($times[$i], $times[$i + 1]);
+        $totalBreak = 0;
+        $prevOut = null;
+        foreach ($sessions as $s) {
+            $work = $s['out'] ? $this->mins($s['in'], $s['out']) : 0;
             $totalWork += $work;
             $pairs[] = [
                 'no' => count($pairs) + 1,
-                'in' => $times[$i]->format('H:i'),
-                'out' => $times[$i + 1]->format('H:i'),
+                'in' => $s['in']->format('H:i'),
+                'out' => $s['out'] ? $s['out']->format('H:i') : '—',
                 'worked' => $work,
                 'break_after' => null,
             ];
+            if ($prevOut !== null) {
+                $brk = $this->mins($prevOut, $s['in']);
+                $pairs[count($pairs) - 2]['break_after'] = $brk;
+                $totalBreak += $brk;
+            }
+            $prevOut = $s['out'];
         }
 
-        $totalBreak = 0;
-        for ($k = 0; $k + 1 < count($pairs); $k++) {
-            $brk = $this->mins($times[2 * $k + 1], $times[2 * $k + 2]);
-            $pairs[$k]['break_after'] = $brk;
-            $totalBreak += $brk;
-        }
-
-        $open = ($n % 2 === 1);
-        if ($open) {
-            $pairs[] = [
-                'no' => count($pairs) + 1,
-                'in' => $times[$n - 1]->format('H:i'),
-                'out' => '—',
-                'worked' => 0,
-                'break_after' => null,
-            ];
-        }
-
-        $firstIn = $n > 0 ? $times[0] : null;
-        $lastOutIdx = ($n % 2 === 0) ? $n - 1 : $n - 2;
-        $lastOut = ($lastOutIdx >= 1) ? $times[$lastOutIdx] : null;
-        $lastInIdx = ($n % 2 === 1) ? $n - 1 : $n - 2;
-        $lastIn = ($lastInIdx >= 0) ? $times[$lastInIdx] : null;
+        $closed = array_values(array_filter($sessions, fn ($s) => $s['out'] !== null));
+        $last = $sessions ? $sessions[count($sessions) - 1] : null;
+        $open = $last && $last['out'] === null;
+        $firstIn = $sessions ? $sessions[0]['in'] : null;
+        $lastOut = $closed ? $closed[count($closed) - 1]['out'] : null;
+        $lastIn = $last ? $last['in'] : null;
 
         return [
             'pairs' => $pairs,
@@ -669,8 +702,8 @@ class AttendanceReportController extends Controller
             'total_work' => $totalWork,
             'total_break' => $totalBreak,
             'open' => $open,
-            'in_count' => intdiv($n + 1, 2),
-            'out_count' => intdiv($n, 2),
+            'in_count' => count($sessions),
+            'out_count' => count($closed),
         ];
     }
 

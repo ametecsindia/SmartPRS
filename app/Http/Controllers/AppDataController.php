@@ -299,6 +299,12 @@ class AppDataController extends Controller
         if (! $lines) {
             return response()->json(['ok' => false, 'error' => 'Empty file'], 422);
         }
+        // rev173g — STRIP the UTF-8 BOM Excel's "CSV UTF-8" always writes. It glued
+        // itself to the FIRST header (emp_code → "\xEF\xBB\xBFemp_code"), so every
+        // imported employee silently got a RANDOM EMP-xxxx code instead of the
+        // file's code — re-imports then created duplicates and leave/payslips
+        // couldn't match the codes people expected.
+        $lines[0] = preg_replace('/^\xEF\xBB\xBF/', '', $lines[0]);
         $header = array_map(fn ($h) => strtolower(trim($h)), str_getcsv(array_shift($lines)));
 
         $salaryMap = ['salary' => 'only_salary', 'salary + commission' => 'salary_commission', 'commission' => 'only_commission'];
@@ -327,15 +333,24 @@ class AppDataController extends Controller
         }
 
         $count = 0;
+        $skipped = 0;
         foreach ($lines as $line) {
+            try {
             $cells = str_getcsv($line);
             if (count(array_filter($cells, fn ($c) => trim((string) $c) !== '')) === 0) {
                 continue;
             }
-            $row = array_combine($header, array_pad($cells, count($header), null));
+            // rev173g — tolerate rows with EXTRA cells (an unquoted comma in the
+            // address was enough): pad AND slice to the header width. Previously
+            // array_combine threw and the whole import died mid-file with no message.
+            $cells = array_slice(array_pad($cells, count($header), null), 0, count($header));
+            $row = array_combine($header, $cells);
+            $row = array_map(fn ($v) => is_string($v) ? trim($v) : $v, $row); // rev173g — trim every cell
             $row = self::stripHtmlDeep($row); // rev172 (H3) — sanitise imported free-text against stored XSS
             $name = trim((string) ($row['name'] ?? ''));
             if ($name === '') {
+                $skipped++;
+
                 continue;
             }
             $code = trim((string) ($row['emp_code'] ?? $row['code'] ?? '')) ?: ('EMP-'.random_int(1000, 9999));
@@ -351,15 +366,32 @@ class AppDataController extends Controller
             ];
             // rev149 — richer fields from the full template (only set when present;
             // the columns were ensured above, so these are schema-safe).
+            // rev173g — normalise Indian date formats (13/05/2024, 13-05-2024,
+            // 2024-05-13…) to Y-m-d so payroll/reports never misread d/m as m/d.
+            $normDate = function ($s) {
+                $s = trim((string) $s);
+                if ($s === '') {
+                    return null;
+                }
+                if (preg_match('/^(\d{4})-(\d{1,2})-(\d{1,2})/', $s, $m)) {
+                    return sprintf('%04d-%02d-%02d', $m[1], $m[2], $m[3]);
+                }
+                if (preg_match('#^(\d{1,2})[/-](\d{1,2})[/-](\d{4})#', $s, $m)) {
+                    return sprintf('%04d-%02d-%02d', $m[3], $m[2], $m[1]);   // d/m/Y (Indian)
+                }
+
+                return $s;   // unknown shape — store as-is
+            };
             $extra = [
                 'department' => trim((string) ($row['department'] ?? '')) ?: null,
                 'designation' => trim((string) ($row['designation'] ?? '')) ?: null,
                 'branch' => trim((string) ($row['branch'] ?? '')) ?: null,
                 'team' => trim((string) ($row['team'] ?? '')) ?: null,
+                'shift' => trim((string) ($row['shift'] ?? ($row['working_shift'] ?? ''))) ?: null,   // rev173g
                 'whatsapp' => trim((string) ($row['whatsapp'] ?? ($row['whatsapp_number'] ?? ''))) ?: null,
                 'address' => trim((string) ($row['address'] ?? '')) ?: null,
-                'dob' => trim((string) ($row['dob'] ?? ($row['date_of_birth'] ?? ''))) ?: null,
-                'doj' => trim((string) ($row['doj'] ?? ($row['date_of_joining'] ?? ''))) ?: null,
+                'dob' => $normDate($row['dob'] ?? ($row['date_of_birth'] ?? '')),
+                'doj' => $normDate($row['doj'] ?? ($row['date_of_joining'] ?? '')),
             ];
             foreach ($extra as $k => $v) {
                 if ($v !== null && Schema::hasColumn('employees', $k)) {
@@ -425,9 +457,17 @@ class AppDataController extends Controller
                 }
             }
             $count++;
+            } catch (\Throwable $rowErr) {
+                // rev173g — one malformed row must never abort the whole import.
+                $skipped++;
+            }
         }
 
-        return response()->json(['ok' => true, 'count' => $count]);
+        return response()->json([
+            'ok' => true,
+            'count' => $count,
+            'skipped' => $skipped,   // rev173g — surfaced so bad rows are visible, not silent
+        ]);
     }
 
     /**
@@ -463,10 +503,10 @@ class AppDataController extends Controller
     {
         // rev149 — full template: company / department / designation / branch / team
         // / dates / WhatsApp / address / password are now included and imported.
-        $head = 'emp_code,name,type,company,department,designation,branch,team,doj,dob,mobile,whatsapp,address,email,ctc,salary_type,pan,uan,bank_acc,ifsc,password';
+        $head = 'emp_code,name,type,company,department,designation,branch,team,shift,doj,dob,mobile,whatsapp,address,email,ctc,salary_type,pan,uan,bank_acc,ifsc,password';
         $csv = $head."\n"
-            .'EMP100,Sample Name,office,Acme Recovery Pvt Ltd,Operations,Executive,Head Office,Alpha Team,2024-04-01,1995-06-15,+919999999999,+919999999999,"12 MG Road, Hyderabad",sample@company.in,600000,Salary,ABCDE1234F,100200300400,12345678901,SBIN0001234,Welcome@123'."\n"
-            .'EMP101,Field Agent Name,field,Acme Recovery Pvt Ltd,Collections,Field Officer,Branch-2,Bravo Team,2024-05-10,1998-02-20,+918888888888,+918888888888,"45 Park Street, Pune",agent@company.in,336000,Salary + Commission,FGHIJ5678K,100200300401,10987654321,HDFC0005678,Welcome@123'."\n";
+            .'EMP100,Sample Name,office,Acme Recovery Pvt Ltd,Operations,Executive,Head Office,Alpha Team,General Shift,2024-04-01,1995-06-15,+919999999999,+919999999999,"12 MG Road, Hyderabad",sample@company.in,600000,Salary,ABCDE1234F,100200300400,12345678901,SBIN0001234,Welcome@123'."\n"
+            .'EMP101,Field Agent Name,field,Acme Recovery Pvt Ltd,Collections,Field Officer,Branch-2,Bravo Team,General Shift,2024-05-10,1998-02-20,+918888888888,+918888888888,"45 Park Street, Pune",agent@company.in,336000,Salary + Commission,FGHIJ5678K,100200300401,10987654321,HDFC0005678,Welcome@123'."\n";
 
         return response($csv, 200, [
             'Content-Type' => 'text/csv',

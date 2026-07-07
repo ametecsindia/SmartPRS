@@ -1836,9 +1836,26 @@ CSS;
     }
     window.leaveApplyOpen = function () {
         var emps = ((typeof DB !== 'undefined' && DB.employees) || []).map(function (e) { return e.name; });
+        // rev173f — empty employee list means the /app/data feed failed (or no
+        // employees exist yet): say so instead of a silent unusable dropdown.
+        if (!emps.length && typeof toast === 'function') { toast('Employee list is empty — refresh the page (Ctrl+F5). If it stays empty, add employees first or contact your admin.'); }
         var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
-        var empOpts = '<option value="">Select employee…</option>' + emps.map(function (n) { return '<option>' + n + '</option>'; }).join('');
-        var typeOpts = ['Casual Leave', 'Sick Leave', 'Earned Leave', 'Comp-Off', 'Loss of Pay'].map(function (t) { return '<option>' + t + '</option>'; }).join('');
+        // rev173f — submit the EMP CODE (value attr), display the name. Posting the
+        // display name broke on names with double/trailing spaces (HTML collapses
+        // whitespace, so the posted name no longer matched the DB → "Employee not
+        // found"). Codes are clean and matched exactly by the backend.
+        var empOpts = '<option value="">Select employee…</option>' + (((typeof DB !== 'undefined' && DB.employees) || []).map(function (e) {
+            var code = String(e.id || '').replace(/"/g, '&quot;');
+            var nm = String(e.name || '').replace(/</g, '&lt;');
+            return '<option value="' + code + '">' + nm + (code ? ' (' + code + ')' : '') + '</option>';
+        }).join(''));
+        // rev173f — the tenant's OWN configured leave types (from the leaves feed),
+        // falling back to the standard five. Previously hardcoded, so a client
+        // with custom type names could never apply against their real types.
+        var lvTypes = (window.__LEAVE && window.__LEAVE.types && window.__LEAVE.types.length)
+            ? window.__LEAVE.types
+            : ['Casual Leave', 'Sick Leave', 'Earned Leave', 'Comp-Off', 'Loss of Pay'];
+        var typeOpts = lvTypes.map(function (t) { return '<option>' + String(t).replace(/</g, '&lt;') + '</option>'; }).join('');
         var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
         var m = document.getElementById('leave-modal') || (function () { var x = document.createElement('div'); x.id = 'leave-modal'; document.body.appendChild(x); return x; })();
         m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
@@ -9451,8 +9468,8 @@ CSS;
                 method: 'POST', credentials: 'same-origin',
                 headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd
             }).then(function (r) { return r.json(); }).then(function (d) {
-                if (d && d.ok) { if (typeof toast === 'function') { toast('Imported ' + d.count + ' employees'); } reloadEmployees(cfg); }
-                else if (typeof toast === 'function') { toast('Import failed — check the CSV format'); }
+                if (d && d.ok) { if (typeof toast === 'function') { toast('Imported ' + d.count + ' employees' + (d.skipped ? ' (' + d.skipped + ' row(s) skipped — check name/format)' : '')); } reloadEmployees(cfg); }
+                else if (typeof toast === 'function') { toast((d && d.error) || 'Import failed — check the CSV format'); }
             }).catch(function () {});
             inp.value = '';
         };

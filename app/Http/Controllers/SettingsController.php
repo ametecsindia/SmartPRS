@@ -40,8 +40,8 @@ class SettingsController extends Controller
             'no_pan_tds_rate' => 20,      // higher TDS % when deductee has no PAN
             'lwf_enabled' => false,       // Labour Welfare Fund deduction (state-specific) — OFF by default
             'lwf_employee' => 0,          // LWF employee amount deducted per payroll month (₹) when enabled
-            'conveyance_enabled' => 0,    // Conveyance allowance toggle (0 = off). When enabled + amount > 0, a Conveyance line is carved from Special Allowance (gross/net unchanged).
-            'conveyance_rate' => 0,       // Conveyance deduction rate (% of Basic+DA, capped like PF) — same formula as PF; used when enabled.
+            'conveyance_enabled' => 0,    // OPTIONAL Conveyance DEDUCTION toggle (0 = off, the default). Works exactly like PF when on.
+            'conveyance_rate' => 0,       // Conveyance deduction rate — SAME CONDITIONS AS PF: rate% of min(Basic+DA, pf_wage_cap). Deducted on the payslip (own "Conveyance" line) only when enabled AND rate > 0; disabled = no deduction.
             'payslip_dl_mode' => 'all',   // rev172 — employee SELF-download of payslips: all | none | dept (block listed departments) | emp (block listed emp codes). HR/Admin can always download.
             'payslip_dl_depts' => [],     // department names blocked when mode = dept
             'payslip_dl_emps' => [],      // emp codes blocked when mode = emp

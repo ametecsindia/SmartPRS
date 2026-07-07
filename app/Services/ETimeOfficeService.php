@@ -310,10 +310,15 @@ class ETimeOfficeService
             $matched++;
             // rev172 — tenant_id in the MATCH keys (when present): emp codes repeat
             // across tenants; prevents cross-tenant overwrite of an identical punch.
+            // rev173g — DIRECTION REMOVED from the match keys: it used to be part of
+            // the identity, so after fixing the In/Out Machine IDs a re-sync
+            // re-inserted every punch with the corrected direction NEXT TO the old
+            // wrong-direction row → duplicate punches → attendance/payroll wrong.
+            // A punch's identity is (tenant, emp, moment, source); direction is a
+            // PROPERTY that a re-sync may correct in place.
             $match = [
                 'emp_code' => $emp->emp_code,
                 'punch_at' => $p['punch_at']->format('Y-m-d H:i:s'),
-                'direction' => $p['direction'],
                 'source' => 'etimeoffice',
             ];
             if (! empty($emp->tenant_id)) {
@@ -322,6 +327,7 @@ class ETimeOfficeService
             DB::table('attendance_logs')->updateOrInsert(
                 $match,
                 [
+                    'direction' => $p['direction'],
                     'emp_name' => $emp->name ?? $p['name'],
                     'log_date' => $p['punch_at']->toDateString(),
                     'tenant_id' => $emp->tenant_id ?? null,

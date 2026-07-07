@@ -269,28 +269,60 @@ class PayrollGenController extends Controller
             $byDay[$d][] = $p;
         }
         foreach ($byDay as $d => $ps) {
+            // rev173g — SAME pairing rule as the Attendance Report (pairPunches):
+            // direction-aware only when the day has BOTH an 'in' and an 'out'
+            // (repeat INs while open = double-tap → ignored; orphan OUTs ignored);
+            // otherwise chronological alternation. Previously this trusted the
+            // direction flag blindly — a day whose punches were all marked 'in'
+            // (wrong device flags) computed ZERO worked minutes and payroll cut pay.
+            $rows = [];
+            foreach ($ps as $p) {
+                $rows[] = ['t' => Carbon::parse($p->punch_at), 'dir' => strtolower(trim((string) ($p->direction ?? '')))];
+            }
+            usort($rows, fn ($a, $b) => $a['t']->getTimestamp() <=> $b['t']->getTimestamp());
+            $hasIn = false;
+            $hasOut = false;
+            foreach ($rows as $r) {
+                if ($r['dir'] === 'in') {
+                    $hasIn = true;
+                } elseif ($r['dir'] === 'out') {
+                    $hasOut = true;
+                }
+            }
             $firstIn = null;
             $worked = 0;
             $break = 0;
-            $open = null;
-            $prevOut = null;
-            foreach ($ps as $p) {
-                $t = Carbon::parse($p->punch_at);
-                $isIn = ($p->direction === 'in' || $p->direction === null || $p->direction === '');
-                if ($isIn) {
-                    if ($firstIn === null) {
-                        $firstIn = $t;
+            if ($hasIn && $hasOut) {
+                $open = null;
+                $prevOut = null;
+                foreach ($rows as $r) {
+                    if ($r['dir'] === 'out') {
+                        if ($open !== null) {
+                            $worked += max(0, $open->diffInMinutes($r['t']));
+                            $open = null;
+                            $prevOut = $r['t'];
+                        }
+                    } else {
+                        if ($firstIn === null) {
+                            $firstIn = $r['t'];
+                        }
+                        if ($open === null) {
+                            if ($prevOut !== null) {
+                                $break += max(0, $prevOut->diffInMinutes($r['t']));
+                                $prevOut = null;
+                            }
+                            $open = $r['t'];
+                        }
+                        // repeated IN while open → double-tap, ignore
                     }
-                    if ($prevOut !== null) {
-                        $break += max(0, $prevOut->diffInMinutes($t));
-                        $prevOut = null;
-                    }
-                    $open = $t;
-                } else {
-                    if ($open !== null) {
-                        $worked += max(0, $open->diffInMinutes($t));
-                        $open = null;
-                        $prevOut = $t;
+                }
+            } else {
+                $nD = count($rows);
+                $firstIn = $nD ? $rows[0]['t'] : null;
+                for ($i = 0; $i + 1 < $nD; $i += 2) {
+                    $worked += max(0, $rows[$i]['t']->diffInMinutes($rows[$i + 1]['t']));
+                    if ($i + 2 < $nD) {
+                        $break += max(0, $rows[$i + 1]['t']->diffInMinutes($rows[$i + 2]['t']));
                     }
                 }
             }

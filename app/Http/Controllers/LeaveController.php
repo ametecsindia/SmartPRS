@@ -156,7 +156,23 @@ class LeaveController extends Controller
                 ];
             })->values();
 
-            return response()->json(['rows' => $out, 'me' => $me->name ?? $request->user()->name, 'isManager' => $manager]);
+            // rev173f — the tenant's OWN leave types for the Apply form's dropdown
+            // (falls back to the standard five when none are configured yet).
+            $typeNames = [];
+            try {
+                if (Schema::hasTable('leave_types')) {
+                    $typeNames = DB::table('leave_types')
+                        ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+                        ->orderBy('name')->pluck('name')->filter()->values()->all();
+                }
+            } catch (\Throwable $e) {
+                $typeNames = [];
+            }
+            if (! $typeNames) {
+                $typeNames = ['Casual Leave', 'Sick Leave', 'Earned Leave', 'Comp-Off', 'Loss of Pay'];
+            }
+
+            return response()->json(['rows' => $out, 'me' => $me->name ?? $request->user()->name, 'isManager' => $manager, 'types' => $typeNames]);
         } catch (\Throwable $e) {
             return response()->json(['rows' => [], 'error' => $e->getMessage()]);
         }
@@ -259,14 +275,34 @@ class LeaveController extends Controller
                 'reason' => ['nullable', 'string', 'max:500'],
             ]);
 
-            $emp = DB::table('employees')
-                ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
-                ->whereNull('deleted_at')
-                ->where(function ($q) use ($v) {
-                    $q->where('name', $v['employee'])->orWhere('emp_code', $v['employee']);
+            // rev173f — TOLERANT employee resolution. The old exact-match broke on
+            // (a) names with double/trailing spaces (the HTML dropdown collapses
+            // whitespace, so the posted name differed from the DB), and (b) installs
+            // where users have no tenant_id but the fallback picked the first tenant
+            // while employee rows carry NULL. Scope like the /app/data feed does
+            // (only the USER's tenant, no fallback), try exact code/name, then a
+            // whitespace/case-normalised name comparison.
+            $needle = trim((string) $v['employee']);
+            $userTid = $user->tenant_id;
+            $empBase = fn () => DB::table('employees')
+                ->when($userTid, fn ($q) => $q->where('tenant_id', $userTid))
+                ->whereNull('deleted_at');
+            $emp = $empBase()
+                ->where(function ($q) use ($needle) {
+                    $q->where('emp_code', $needle)->orWhere('name', $needle);
                 })->first();
             if (! $emp) {
-                return response()->json(['ok' => false, 'error' => 'Employee not found: '.$v['employee']], 422);
+                $norm = fn ($s) => preg_replace('/\s+/u', ' ', mb_strtolower(trim((string) $s)));
+                $want = $norm($needle);
+                foreach ($empBase()->get() as $cand) {   // full rows — column list varies by install
+                    if ($norm($cand->name) === $want || $norm($cand->emp_code) === $want) {
+                        $emp = $cand;
+                        break;
+                    }
+                }
+            }
+            if (! $emp) {
+                return response()->json(['ok' => false, 'error' => 'Employee not found: '.$v['employee'].'. Refresh the page (Ctrl+F5) and pick from the list again — if it repeats, the employee record may be deleted or under another company login.'], 422);
             }
 
             try {
@@ -284,6 +320,15 @@ class LeaveController extends Controller
             $typeName = $v['type'] ?? 'Leave';
             $bal = collect($this->computeBalances($emp, $tenantId))->firstWhere('type', $typeName);
             if ($bal && $bal['paid'] && $bal['balance'] !== null) {
+                // rev173f — a PAID type whose yearly quota was never set (days/year
+                // 0 or blank) blocked EVERY application with a cryptic "Available: 0".
+                // Name the real problem so the admin can fix it in one step.
+                if (($bal['entitlement'] ?? 0) <= 0) {
+                    return response()->json([
+                        'ok' => false,
+                        'error' => 'The leave type "'.$typeName.'" has no yearly quota configured (days/year is 0). An admin should set it under Leave → Leave Types — or apply as Loss of Pay.',
+                    ], 422);
+                }
                 $remaining = $bal['balance'] - $bal['pending'];
                 if ($days > $remaining) {
                     return response()->json([
