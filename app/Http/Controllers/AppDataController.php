@@ -1547,7 +1547,13 @@ class AppDataController extends Controller
             'Commission' => 'only_commission',
         ];
         $type = stripos($e['type'] ?? '', 'field') !== false ? 'field' : 'office';
-        $code = $e['id'] ?? ('EMP-'.random_int(1000, 9999));
+        $code = trim((string) ($e['id'] ?? ''));
+        if ($code === '') {
+            do {
+                $code = 'EMP-'.random_int(1000, 9999);
+            } while (DB::table('employees')->where('tenant_id', $tenantId)->where('emp_code', $code)->exists());
+        }
+        $origCode = trim((string) ($e['orig_id'] ?? ''));
 
         $payload = [
             'tenant_id' => $tenantId,
@@ -1588,12 +1594,42 @@ class AppDataController extends Controller
             'updated_at' => now(),
         ];
 
-        // Upsert by (tenant_id, emp_code): edit updates the same record, add inserts.
-        $existing = DB::table('employees')->where('tenant_id', $tenantId)->where('emp_code', $code)->first();
+        // Upsert by (tenant_id, emp_code). On EDIT the form sends the ORIGINAL code
+        // (orig_id) so the Employee ID can be RENAMED on the same record without
+        // creating a duplicate; the rename cascades to emp_code-keyed history. rev171.
+        $findCode = $origCode !== '' ? $origCode : $code;
+        $existing = DB::table('employees')->where('tenant_id', $tenantId)->where('emp_code', $findCode)->first();
+        if ($origCode === '' && $existing) {
+            return response()->json(['ok' => false, 'error' => 'Employee ID "'.$code.'" is already in use — choose a different one.'], 422);
+        }
+        if ($existing && $code !== $existing->emp_code) {
+            $clash = DB::table('employees')->where('tenant_id', $tenantId)
+                ->where('emp_code', $code)->where('id', '!=', $existing->id)->exists();
+            if ($clash) {
+                return response()->json(['ok' => false, 'error' => 'Employee ID "'.$code.'" is already in use — choose a different one.'], 422);
+            }
+        }
         if ($existing) {
+            $oldCode = $existing->emp_code;
             DB::table('employees')->where('id', $existing->id)->update($payload);
             $empId = $existing->id;
             DB::table('employee_references')->where('employee_id', $empId)->delete();
+            // rev171 — cascade an Employee-ID rename to every table that keys rows by
+            // emp_code, so attendance / commissions / leaves / etc. history follows.
+            if ($oldCode !== $code) {
+                foreach (['attendance_logs', 'commissions', 'advances', 'loans', 'expenses', 'leaves', 'transfers', 'documents'] as $tbl) {
+                    try {
+                        if (Schema::hasTable($tbl) && Schema::hasColumn($tbl, 'emp_code')) {
+                            $cq = DB::table($tbl)->where('emp_code', $oldCode);
+                            if (Schema::hasColumn($tbl, 'tenant_id')) {
+                                $cq->where('tenant_id', $tenantId);
+                            }
+                            $cq->update(['emp_code' => $code]);
+                        }
+                    } catch (\Throwable $e2) {
+                    }
+                }
+            }
         } else {
             // SEAT LIMIT (rev 75): a NEW employee must fit within the subscribed
             // seats (active on-roll count). Edits of existing employees are never

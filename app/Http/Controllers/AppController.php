@@ -1336,7 +1336,7 @@ CSS;
             var refs = collectRefs();
             if (window._editEmp) {
                 var editing = window._editEmp;
-                var updated = readEmpForm(editing); updated.id = editing.id; updated.refs = refs;
+                var updated = readEmpForm(editing); updated.orig_id = editing.id; updated.refs = refs;
                 var idx = (DB.employees || []).findIndex(function (e) { return e.id === editing.id; });
                 if (idx >= 0) { DB.employees[idx] = updated; }
                 if (typeof persist === 'function') { persist(); }
@@ -1354,6 +1354,7 @@ CSS;
                 ['team', 'teamManager', 'teamLeader', 'designation', 'branch', 'dept', 'shift'].forEach(function (k) {
                     var el = document.getElementById('f_' + k); if (el && el.value) { emp[k] = el.value; }
                 });
+                var _fid = document.getElementById('f_id'); if (_fid && _fid.value && _fid.value.trim()) { emp.id = _fid.value.trim(); }
                 postEmp(emp).then(function (d) { if (d && d.ok && typeof toast === 'function') { toast('Saved to database (' + d.emp_code + ')'); } }).catch(function () {});
             }
         };
