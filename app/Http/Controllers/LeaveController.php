@@ -130,6 +130,7 @@ class LeaveController extends Controller
                 ->leftJoin('employees as e', 'e.id', '=', 'l.employee_id')
                 ->leftJoin('companies as c', 'c.id', '=', 'l.company_id')
                 ->when($tenantId, fn ($q) => $q->where('l.tenant_id', $tenantId))
+                ->when(! $manager, fn ($q) => $q->where('l.employee_id', (int) ($myId ?? -1)))
                 ->orderByDesc('l.id')
                 ->get(['l.*', 'e.name as emp_name', 'e.emp_code', 'c.name as company_name']);
 

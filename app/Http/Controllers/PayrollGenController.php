@@ -826,8 +826,8 @@ class PayrollGenController extends Controller
             $teamC = property_exists($e, 'team') ? $e->team : null;
             $salComps = $this->resolveComponents($compRows, $e->emp_code, $teamC);
             $s = $salComps->isNotEmpty()
-                ? (AppDataController::computeSlipFromComponents($ctc * $factor, $salComps, $rates) ?: AppDataController::computeSlip($ctc * $factor, $rates))
-                : AppDataController::computeSlip($ctc * $factor, $rates);
+                ? (AppDataController::computeSlipFromComponents($ctc * $factor, $salComps, $rates, (string) ($e->employment_stage ?? '')) ?: AppDataController::computeSlip($ctc * $factor, $rates, (string) ($e->employment_stage ?? '')))
+                : AppDataController::computeSlip($ctc * $factor, $rates, (string) ($e->employment_stage ?? ''));
             $commission = (float) ($commByEmp[$e->id] ?? 0.0);
             $commRows = $commRowsByEmp[$e->id] ?? [];
             // rev165 — split commission entries by Purpose so incentive and
@@ -1044,8 +1044,8 @@ class PayrollGenController extends Controller
             $compRows = $this->componentRows($company, $tid);
             $salComps = $this->resolveComponents($compRows, $target->emp_code, $team);
             $sFull = $salComps->isNotEmpty()
-                ? (AppDataController::computeSlipFromComponents($ctc, $salComps, $rates) ?: AppDataController::computeSlip($ctc, $rates))
-                : AppDataController::computeSlip($ctc, $rates);
+                ? (AppDataController::computeSlipFromComponents($ctc, $salComps, $rates, (string) ($target->employment_stage ?? '')) ?: AppDataController::computeSlip($ctc, $rates, (string) ($target->employment_stage ?? '')))
+                : AppDataController::computeSlip($ctc, $rates, (string) ($target->employment_stage ?? ''));
             $sNow = $salComps->isNotEmpty()
                 ? (AppDataController::computeSlipFromComponents($ctc * $factor, $salComps, $rates) ?: AppDataController::computeSlip($ctc * $factor, $rates))
                 : AppDataController::computeSlip($ctc * $factor, $rates);

@@ -36,7 +36,7 @@ class AppDataController extends Controller
         if (! Schema::hasTable('employees')) {
             return;
         }
-        $cols = ['department', 'designation', 'branch', 'team', 'reporting_manager', 'team_leader', 'father', 'spouse', 'blood_group', 'id_marks', 'gender', 'address', 'pt_state', 'shift'];
+        $cols = ['department', 'designation', 'branch', 'team', 'reporting_manager', 'team_leader', 'father', 'spouse', 'blood_group', 'id_marks', 'gender', 'address', 'pt_state', 'shift', 'employment_stage'];
         $missing = array_values(array_filter($cols, fn ($c) => ! Schema::hasColumn('employees', $c)));
         if (! $missing) {
             return;
@@ -88,6 +88,32 @@ class AppDataController extends Controller
         }
     }
 
+    /**
+     * rev175 — Employee self-service isolation. Returns ['id','code'] of the
+     * LOGGED-IN employee when the user is a plain 'employee' (no admin / HR /
+     * super-admin); null for privileged roles (never scoped). An employee not
+     * linked to any record gets a non-matching sentinel so they see nobody else.
+     */
+    public static function selfScope(Request $request): ?array
+    {
+        $user = $request->user();
+        if (! $user || $user->hasAnyRole(['super_admin', 'admin', 'hr_manager']) || ! $user->hasRole('employee')) {
+            return null;
+        }
+        $tid = $user->tenant_id;
+        $e = null;
+        if (! empty($user->employee_id)) {
+            $e = DB::table('employees')->where('id', $user->employee_id)->whereNull('deleted_at')->first();
+        }
+        if (! $e) {
+            $e = DB::table('employees')->whereNull('deleted_at')
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+                ->where(fn ($q) => $q->where('email', $user->email)->orWhere('name', $user->name))
+                ->first();
+        }
+        return ['id' => (int) ($e->id ?? -1), 'code' => (string) ($e->emp_code ?? '__no_such_employee__')];
+    }
+
     public function bootstrap(Request $request)
     {
         $tenantId = $request->user()->tenant_id;   // null = super admin (all tenants)
@@ -103,6 +129,13 @@ class AppDataController extends Controller
         if ($tenantId) {
             $empQ->where('tenant_id', $tenantId);
             $compQ->where('tenant_id', $tenantId);
+        }
+        // rev175 — EMPLOYEE SELF-SERVICE ISOLATION: a plain employee sees ONLY
+        // their own record; payslips / TDS / dashboard / directory all derive
+        // from $emps, so scoping here isolates every one of them.
+        $selfScope = self::selfScope($request);
+        if ($selfScope) {
+            $empQ->where('id', $selfScope['id']);
         }
 
         $deptNames = DB::table('departments')->pluck('name', 'id');
@@ -156,6 +189,7 @@ class AppDataController extends Controller
                 'reporting' => $col('reporting_manager') ?: ($mgrId ? ($empNames[$mgrId] ?? '') : ''),
                 'leader' => $col('team_leader') ?: (($teamId && ($teamLeaderId[$teamId] ?? null)) ? ($empNames[$teamLeaderId[$teamId]] ?? '') : ''),
                 'type' => $col('type') === 'field' ? 'Field / FOS' : 'Office',
+                'employment_stage' => $col('employment_stage') ?: 'Permanent',
                 'doj' => $col('doj') ?? '',
                 'mobile' => $col('mobile') ?? '',
                 'email' => $col('email') ?? '',
@@ -524,6 +558,11 @@ class AppDataController extends Controller
         $e = DB::table('employees')->where('emp_code', $code)
             ->when($userTenant, fn ($q) => $q->where('tenant_id', $userTenant))
             ->whereNull('deleted_at')->first();
+        // rev175 — an employee may download only their OWN payslip.
+        $selfScope = self::selfScope($request);
+        if ($selfScope && $selfScope['code'] !== $code) {
+            abort(403, 'You can only access your own payslip.');
+        }
 
         if (! $e) {
             // Friendly message instead of a blank 404 page. Most common cause:
@@ -626,7 +665,7 @@ class AppDataController extends Controller
             ];
             $note = Schema::hasColumn('payslips', 'calc_note') ? ($slipRow->calc_note ?? null) : null;
         } else {
-            $s = self::computeSlip((float) $e->ctc, $rates);
+            $s = self::computeSlip((float) $e->ctc, $rates, (string) ($e->employment_stage ?? ''));
         }
 
         // --- rev162 (Payslip Phase 1, DISPLAY-ONLY): richer, A4 payslip metadata.
@@ -960,7 +999,7 @@ class AppDataController extends Controller
                 ['k' => 'total', 'l' => 'Total', 'amt' => true],
             ];
             foreach ($emps as $e) {
-                $s = self::computeSlip((float) $e->ctc, $rates);
+                $s = self::computeSlip((float) $e->ctc, $rates, (string) ($e->employment_stage ?? ''));
                 $wage = min($s['basic'], (float) $rates['pf_wage_cap']);
                 $ee = $s['pf']; $er = $ee; $tot = $ee + $er;
                 $addSum($sum, 'basic', $wage); $addSum($sum, 'ee', $ee); $addSum($sum, 'er', $er); $addSum($sum, 'total', $tot);
@@ -977,7 +1016,7 @@ class AppDataController extends Controller
                 ['k' => 'total', 'l' => 'Total', 'amt' => true],
             ];
             foreach ($emps as $e) {
-                $s = self::computeSlip((float) $e->ctc, $rates);
+                $s = self::computeSlip((float) $e->ctc, $rates, (string) ($e->employment_stage ?? ''));
                 $elig = $s['gross'] <= $esiThreshold;
                 $ee = $elig ? round($s['gross'] * $esiEeRate, 2) : 0;
                 $er = $elig ? round($s['gross'] * $esiErRate, 2) : 0;
@@ -1202,7 +1241,7 @@ class AppDataController extends Controller
         ];
     }
 
-    public static function computeSlip(float $ctc, ?array $rates = null): array
+    public static function computeSlip(float $ctc, ?array $rates = null, string $stage = ''): array
     {
         $r = $rates ?: SettingsController::defaults();
         $gross = round($ctc / 12, 2);
@@ -1215,6 +1254,12 @@ class AppDataController extends Controller
         $esi = $st['esi'];
         $pt = $st['pt'];
         $tds = self::salaryTdsMonthly($ctc, $r);
+        // rev174 — Probation / Internship: no statutory PF, PT or TDS (ESI, LWF,
+        // Conveyance and attendance loss-of-pay still apply). Deduction section is nil.
+        if (in_array(strtolower(trim($stage)), ['probation', 'internship'], true)) {
+            $pf = 0.0; $pt = 0.0; $tds = 0.0;
+            foreach (['pf_wage', 'pf_employer', 'pf_eps', 'pf_epf_employer', 'pf_edli'] as $z) { $st[$z] = 0; }
+        }
         // Optional Labour Welfare Fund (state-specific) — OFF unless enabled in Settings.
         $lwf = (! empty($r['lwf_enabled'])) ? (float) ($r['lwf_employee'] ?? 0) : 0.0;
         // Optional Conveyance deduction — computed like PF (rate% of capped Basic).
@@ -1242,7 +1287,7 @@ class AppDataController extends Controller
      * Each component: ctype (earning|deduction), base (fixed | pct_gross |
      * pct_basic | balance), calc_value (amount or percent), seq (order).
      */
-    public static function computeSlipFromComponents(float $ctc, $components, ?array $rates = null): ?array
+    public static function computeSlipFromComponents(float $ctc, $components, ?array $rates = null, string $stage = ''): ?array
     {
         $comps = [];
         foreach ($components as $c) {
@@ -1370,6 +1415,12 @@ class AppDataController extends Controller
         $esi = $st['esi'];
         $pt = $st['pt'];
         $tds = self::salaryTdsMonthly($ctc, $r);
+        // rev174 — Probation / Internship: no statutory PF, PT or TDS (ESI, LWF,
+        // Conveyance and attendance loss-of-pay still apply). Deduction section is nil.
+        if (in_array(strtolower(trim($stage)), ['probation', 'internship'], true)) {
+            $pf = 0.0; $pt = 0.0; $tds = 0.0;
+            foreach (['pf_wage', 'pf_employer', 'pf_eps', 'pf_epf_employer', 'pf_edli'] as $z) { $st[$z] = 0; }
+        }
         $deductions = ['PF' => $pf, 'ESI' => $esi, 'Professional Tax' => $pt, 'TDS' => $tds];
         foreach ($dedComps as $c) {
             $base = $baseOf($c);
@@ -1448,7 +1499,7 @@ class AppDataController extends Controller
             $runId = DB::table('payroll_runs')->insertGetId($runRow);
             $netTotal = 0;
             foreach ($emps as $e) {
-                $s = self::computeSlip((float) $e->ctc, $rates);
+                $s = self::computeSlip((float) $e->ctc, $rates, (string) ($e->employment_stage ?? ''));
                 $slipRow = $this->onlyExistingCols('payslips', [
                     'uuid' => (string) Str::uuid(), 'tenant_id' => $tenantId, 'company_id' => $companyId,
                     'employee_id' => $e->id, 'run_id' => $runId, 'month' => $month,
@@ -1493,6 +1544,7 @@ class AppDataController extends Controller
             ->leftJoin('companies as c', 'c.id', '=', 'p.company_id')
             ->leftJoin('payroll_runs as r', 'r.id', '=', 'p.run_id')
             ->where('p.tenant_id', $tenantId)
+            ->whereIn('p.employee_id', $emps->pluck('id'))   // rev175 — employee self-service: $emps is role-scoped (self for a plain employee)
             ->orderBy('p.month', 'desc')->orderBy('e.emp_code')
             ->get($psCols)
             ->map(function ($p) use ($hasLine, $lineLabels) {
@@ -1589,6 +1641,7 @@ class AppDataController extends Controller
             'blood_group' => $e['bloodGroup'] ?? null,
             'id_marks' => $e['idMarks'] ?? null,
             'gender' => $e['gender'] ?? null,
+            'employment_stage' => $e['employment_stage'] ?? ($e['employmentStage'] ?? null),
             'address' => $e['addr'] ?? ($e['address'] ?? null),
             'dob' => $e['dob'] ?? null,
             'updated_at' => now(),

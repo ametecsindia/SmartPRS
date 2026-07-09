@@ -42,7 +42,7 @@ class DashboardController extends Controller
                 return response()->json(['scope' => 'platform', 'cards' => $this->platformCards(), 'notices' => $this->activeNotices(null)]);
             }
 
-            return response()->json(['scope' => 'company', 'cards' => $this->companyCards($tid), 'notices' => $this->activeNotices($tid)]);
+            return response()->json(['scope' => 'company', 'cards' => $this->companyCards($tid, \App\Http\Controllers\AppDataController::selfScope($request)), 'notices' => $this->activeNotices($tid)]);
         } catch (\Throwable $e) {
             return response()->json(['scope' => 'company', 'cards' => [], 'error' => $e->getMessage()]);
         }
@@ -73,40 +73,48 @@ class DashboardController extends Controller
         }
     }
 
-    private function companyCards(?int $tid): array
+    private function companyCards(?int $tid, ?array $self = null): array
     {
         $headcount = (int) DB::table('employees')->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+            ->when($self, fn ($q) => $q->where('id', $self['id']))
             ->where('status', 'active')->whereNull('deleted_at')->count();
 
         $presentToday = 0;
         if (Schema::hasTable('attendance_logs')) {
             $presentToday = (int) DB::table('attendance_logs')->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+                ->when($self, fn ($q) => $q->where('emp_code', $self['code']))
                 ->whereDate('log_date', now()->toDateString())->distinct()->count('emp_code');
         }
 
         $pending = Schema::hasTable('leaves')
-            ? (int) DB::table('leaves')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->where('status', 'pending')->count()
+            ? (int) DB::table('leaves')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->when($self, fn ($q) => $q->where('employee_id', $self['id']))->where('status', 'pending')->count()
             : 0;
         foreach (ApprovalService::modules() as $m) {
             $t = $m['table'];
             if (Schema::hasTable($t) && Schema::hasColumn($t, 'status')) {
-                $pending += (int) DB::table($t)->when($tid, fn ($q) => $q->where('tenant_id', $tid))->where('status', 'pending')->count();
+                $pending += (int) DB::table($t)->when($tid, fn ($q) => $q->where('tenant_id', $tid))->when($self && Schema::hasColumn($t, 'employee_id'), fn ($q) => $q->where('employee_id', $self['id']))->where('status', 'pending')->count();
             }
         }
 
         $compliance = 0;
         if (Schema::hasColumn('employees', 'dra_expiry')) {
             $soon = now()->addDays(30)->toDateString();
-            $compliance = (int) DB::table('employees')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->whereNull('deleted_at')
+            $compliance = (int) DB::table('employees')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->when($self, fn ($q) => $q->where('id', $self['id']))->whereNull('deleted_at')
                 ->where(fn ($q) => $q->where('dra_expiry', '<=', $soon)->orWhere('pcc_expiry', '<=', $soon))->count();
         }
 
         $tickets = Schema::hasTable('helpdesk')
-            ? (int) DB::table('helpdesk')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->where('status', 'open')->count()
+            ? (int) DB::table('helpdesk')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->when($self && Schema::hasColumn('helpdesk', 'employee_id'), fn ($q) => $q->where('employee_id', $self['id']))->where('status', 'open')->count()
             : 0;
 
         $payroll = ['cycle' => '—', 'net' => 0, 'status' => '—'];
-        if (Schema::hasTable('payroll_runs')) {
+        if ($self && Schema::hasTable('payslips')) {
+            // rev175 — employee dashboard shows THEIR own latest payslip, never the company payroll total.
+            $slip = (array) (DB::table('payslips')->where('employee_id', $self['id'])->orderByDesc('month')->orderByDesc('id')->first() ?: []);
+            if ($slip) {
+                $payroll = ['cycle' => $slip['month'] ?? '—', 'net' => (float) ($slip['net'] ?? $slip['net_pay'] ?? $slip['net_total'] ?? 0), 'status' => $slip['status'] ?? 'paid'];
+            }
+        } elseif (Schema::hasTable('payroll_runs')) {
             $run = DB::table('payroll_runs')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->orderByDesc('id')->first();
             if ($run) {
                 $payroll = ['cycle' => $run->cycle_label, 'net' => (float) $run->net_total, 'status' => $run->status];

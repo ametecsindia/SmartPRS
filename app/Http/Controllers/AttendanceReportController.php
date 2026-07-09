@@ -101,8 +101,10 @@ class AttendanceReportController extends Controller
             // demo seeding is best-effort; real logs still render
         }
 
+        $selfScope = \App\Http\Controllers\AppDataController::selfScope($request);
         $logsQ = DB::table('attendance_logs')
             ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->when($selfScope, fn ($q) => $q->where('emp_code', $selfScope['code']))
             ->whereBetween('log_date', [$from, $to])
             ->orderBy('emp_code')->orderBy('punch_at');
         $logs = $logsQ->get();
@@ -530,8 +532,10 @@ class AttendanceReportController extends Controller
 
         $this->ensureDemo($tenantId, $from, $to);
 
+        $selfScope = \App\Http\Controllers\AppDataController::selfScope($request);
         $logs = DB::table('attendance_logs')
             ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->when($selfScope, fn ($q) => $q->where('emp_code', $selfScope['code']))
             ->whereBetween('log_date', [$from, $to])
             ->orderBy('emp_code')->orderBy('punch_at')->get();
 
