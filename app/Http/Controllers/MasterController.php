@@ -742,9 +742,76 @@ class MasterController extends Controller
                 }
             }
 
+            // rev180 (Gap 4) — LABOUR CODE CHECK on Salary Structure saves: the
+            // four Labour Codes (in force Nov 2025) define "wages" such that
+            // Basic+DA must be at least 50% of total pay. After any component
+            // save, test the affected scope's full component set on a sample
+            // gross and warn (save still succeeds — HR decides).
+            if ($type === 'salary-setup') {
+                $lcWarn = $this->labourCodeWarning($row, $tid);
+                if ($lcWarn) {
+                    return response()->json(['ok' => true, 'warning' => $lcWarn]);
+                }
+            }
+
             return response()->json(['ok' => true]);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * rev180 (Gap 4) — Labour Code "wages ≥ 50%" check for a saved Salary
+     * Structure component's scope. Loads the scope's full component set, runs
+     * the REAL engine on a sample CTC, and compares (Basic + DA) against the
+     * wage gross (gross minus reimbursements). Returns a warning string when
+     * below 50%, null when compliant or on any failure (fail-soft, never blocks).
+     */
+    private function labourCodeWarning(array $row, $tid): ?string
+    {
+        try {
+            if (! Schema::hasTable('salary_components')) {
+                return null;
+            }
+            $comps = DB::table('salary_components')
+                ->when($tid && Schema::hasColumn('salary_components', 'tenant_id'), fn ($q) => $q->where('tenant_id', $tid))
+                ->when(Schema::hasColumn('salary_components', 'company_name'), function ($q) use ($row) {
+                    $cn = trim((string) ($row['company_name'] ?? ''));
+                    $q->where(fn ($x) => $cn === ''
+                        ? $x->whereNull('company_name')->orWhere('company_name', '')
+                        : $x->where('company_name', $cn));
+                })
+                ->when(Schema::hasColumn('salary_components', 'scope'), function ($q) use ($row) {
+                    $sc = trim((string) ($row['scope'] ?? 'company'));
+                    $q->where(fn ($x) => $x->where('scope', $sc)->orWhereNull('scope')->orWhere('scope', ''));
+                })
+                ->get();
+            if ($comps->isEmpty()) {
+                return null;
+            }
+            $slip = AppDataController::computeSlipFromComponents(1200000, $comps, SettingsController::rates($tid ? (int) $tid : null), '');
+            if (! $slip) {
+                return null;
+            }
+            $wageGross = (float) ($slip['wage_gross'] ?? $slip['gross'] ?? 0);
+            if ($wageGross <= 0) {
+                return null;
+            }
+            $basicDa = (float) ($slip['basic'] ?? 0);
+            foreach (($slip['earnings'] ?? []) as $en => $ea) {
+                $lc = strtolower((string) $en);
+                if (str_contains($lc, 'dearness') || preg_match('/(^|[^a-z])da([^a-z]|$)/', $lc)) {
+                    $basicDa += (float) $ea;
+                }
+            }
+            $pct = round($basicDa / $wageGross * 100, 1);
+            if ($pct < 50) {
+                return 'Labour Code check: Basic+DA is only '.$pct.'% of pay for this structure — the Code on Wages expects at least 50%. The structure is saved, but consider raising Basic (affects PF & gratuity).';
+            }
+
+            return null;
+        } catch (\Throwable $e) {
+            return null;
         }
     }
 

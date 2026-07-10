@@ -330,6 +330,45 @@ class ComplianceController extends Controller
     }
 
     /**
+     * rev181 — is this employee's DRA certification VALID today?
+     * Primary source: the structured dra_certs table (latest cert row: verified
+     * with no expiry or a future expiry). Fallback: the legacy employees.
+     * dra_status / dra_expiry columns (same order the Agent Readiness check uses).
+     * Returns ['ok' => bool, 'note' => short human detail for warnings].
+     */
+    public static function draValid(int $employeeId): array
+    {
+        $today = Carbon::today()->toDateString();
+        try {
+            if (Schema::hasTable('dra_certs')) {
+                $d = DB::table('dra_certs')->where('employee_id', $employeeId)->orderByDesc('id')->first();
+                if ($d) {
+                    $ok = (($d->status ?? '') === 'verified') && (empty($d->expiry) || $d->expiry >= $today);
+
+                    return ['ok' => $ok, 'note' => $ok
+                        ? trim(($d->cert_no ?? 'DRA cert').($d->expiry ? ' valid to '.$d->expiry : ''))
+                        : ((($d->status ?? '') !== 'verified') ? 'DRA cert on file but not verified' : 'DRA cert expired on '.$d->expiry)];
+                }
+            }
+            if (Schema::hasTable('employees')) {
+                $e = DB::table('employees')->where('id', $employeeId)->first();
+                if ($e && ($e->dra_status ?? '') === 'verified') {
+                    $ok = empty($e->dra_expiry) || $e->dra_expiry >= $today;
+
+                    return ['ok' => $ok, 'note' => $ok
+                        ? 'DRA verified'.($e->dra_expiry ? ' to '.$e->dra_expiry : '')
+                        : 'DRA expired on '.$e->dra_expiry];
+                }
+            }
+        } catch (\Throwable $e) {
+            // fail-open on data errors — the gate must never 500 a money screen
+            return ['ok' => true, 'note' => 'DRA check unavailable'];
+        }
+
+        return ['ok' => false, 'note' => 'No DRA certification on record'];
+    }
+
+    /**
      * rev172 — RBI Recovery-Agent Compliance Audit Report (per agent), as a PDF
      * on the AGENT'S OWN COMPANY letterhead (brandFor), not SmartPRS branding.
      * Assembles one agent's compliance file from the existing modules (KYC/ID,

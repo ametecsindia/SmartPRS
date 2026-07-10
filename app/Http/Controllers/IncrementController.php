@@ -346,11 +346,90 @@ HR Department, {{company}}';
                 'applied_at' => now(), 'applied_by' => $by, 'updated_at' => now(),
             ]));
 
+            // rev180 (Gap 6) — BACKDATED ARREARS. If the increment's effective
+            // date is in a PAST month, the salary difference for the elapsed
+            // months has never been paid. Create ONE approved 'Salary Arrears'
+            // entry (the single money channel) that folds into the NEXT payroll
+            // as its own earning line. Months counted: effective month through
+            // the month BEFORE the current one (the current month already pays
+            // the new CTC); a mid-month effective date prorates its first month
+            // by calendar days. Best-effort — never blocks the apply.
+            $arrearsMsg = '';
+            try {
+                $oldCtc = (float) ($r->old_ctc ?? 0);
+                $newCtc = (float) $r->new_ctc;
+                $effRaw = trim((string) ($r->effective ?? ''));
+                if ($oldCtc > 0 && $newCtc > $oldCtc && $effRaw !== '' && Schema::hasTable('commissions')) {
+                    $eff = Carbon::parse(substr($effRaw, 0, 10));
+                    $curMonth = now()->format('Y-m');
+                    if ($eff->format('Y-m') < $curMonth) {
+                        $diffMonthly = ($newCtc - $oldCtc) / 12;
+                        $months = 0.0;
+                        $cursor = $eff->copy()->startOfMonth();
+                        $firstFraction = ($eff->daysInMonth - $eff->day + 1) / $eff->daysInMonth;
+                        $isFirst = true;
+                        while ($cursor->format('Y-m') < $curMonth) {
+                            $months += $isFirst ? $firstFraction : 1.0;
+                            $isFirst = false;
+                            $cursor->addMonth();
+                        }
+                        $arrears = round($diffMonthly * $months, 2);
+                        if ($arrears >= 1) {
+                            FinYearController::stamp('commissions', $tid);
+                            $cid = DB::table('employees')->where('id', $r->employee_id)->value('company_id');
+                            // Target the first month whose payroll can still pick it
+                            // up: if the CURRENT month's run is already past draft,
+                            // the arrears ride NEXT month's payslip instead of
+                            // stranding on a locked month.
+                            $targetMonth = $curMonth;
+                            try {
+                                $runNow = DB::table('payroll_runs')
+                                    ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+                                    ->where('company_id', $cid)->where('cycle_label', $curMonth)
+                                    ->orderByDesc('id')->first();
+                                if ($runNow && ($runNow->status ?? '') !== 'draft') {
+                                    $targetMonth = Carbon::parse($curMonth.'-01')->addMonth()->format('Y-m');
+                                }
+                            } catch (\Throwable $eRun) {
+                                // keep current month
+                            }
+                            DB::table('commissions')->insert(ApprovalService::safeRow('commissions', [
+                                'tenant_id' => $tid,
+                                'company_id' => $cid,
+                                'employee_id' => $r->employee_id,
+                                'purpose' => 'Salary Arrears',
+                                'description' => 'Increment arrears: CTC '.number_format($oldCtc).' -> '.number_format($newCtc)
+                                    .' w.e.f. '.$eff->format('d M Y').' · '.rtrim(rtrim(number_format($months, 2), '0'), '.').' month(s) @ Rs '
+                                    .number_format($diffMonthly, 2).'/month (increment #'.$id.')',
+                                'gross_amount' => $arrears,
+                                'tds_rate' => 0,
+                                'tds_amount' => 0,
+                                'amount' => $arrears,
+                                'cycle_month' => $targetMonth,
+                                'month' => $targetMonth,
+                                'fin_year' => FinYearController::fyOf($targetMonth),
+                                'payout_method' => 'with_salary',
+                                'status' => 'approved',
+                                'entered_by' => $by,
+                                'created_at' => now(),
+                                'updated_at' => now(),
+                            ]));
+                            $arrearsMsg = ' Arrears of Rs '.number_format($arrears, 2).' for '
+                                .rtrim(rtrim(number_format($months, 2), '0'), '.')
+                                .' back month(s) created as an approved "Salary Arrears" entry — it will fold into the '
+                                .Carbon::parse($targetMonth.'-01')->format('M Y').' payroll.';
+                        }
+                    }
+                }
+            } catch (\Throwable $eArr) {
+                $arrearsMsg = ' (Arrears could not be auto-computed: '.$eArr->getMessage().' — add manually via Bonus & Encashment if due.)';
+            }
+
             return response()->json([
                 'ok' => true,
                 'message' => 'CTC updated to Rs '.number_format((float) $r->new_ctc, 2)
                     .(! empty($r->new_designation) ? ' · designation now '.$r->new_designation : '')
-                    .' — payroll uses the new salary from the next generation.',
+                    .' — payroll uses the new salary from the next generation.'.$arrearsMsg,
             ]);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);

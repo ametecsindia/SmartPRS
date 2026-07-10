@@ -148,6 +148,9 @@ class AppController extends Controller
             'complianceUrl' => url('/app/compliance-alerts'),       // DRA/PCC expiry alerts
             'complianceRunUrl' => url('/app/compliance-alerts/run'),
             'payrollPreviewUrl' => url('/app/payroll/preview'),     // Generate Payroll: preview a run
+            'salarySimUrl' => url('/app/salary-simulate'),          // rev178 — what-if Salary Simulator (all roles)
+            'bankPackBase' => url('/app/bank-pack'),                // rev181 — bank/NBFC payout & billing pack
+            'calcGuideUrl' => url('/app/calc-guide'),               // rev181b — in-app Salary Calculation Guide + demo FAQs
             'payrollGenUrl' => url('/app/payroll/generate'),        // Generate Payroll: create draft run
             'reportsPreviewUrl' => url('/app/reports/preview'),     // Reports: preview a dataset
             'reportsExportUrl' => url('/app/reports/export'),       // Reports: CSV download
@@ -605,11 +608,11 @@ CSS;
         employees: ['emp-list', 'emp-add', 'idcard', 'teams', 'onboarding-board', 'recruitment', 'bgv', 'documents', 'roster', 'offroll-agents', 'transfers'],
         attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'biometric-setup', 'geofence', 'geofence-list', 'shifts', 'late-policy', 'overtime'],
         leave: ['leave-apply', 'leave-types', 'holidays'],
-        payroll: ['pay-cycle', 'salary-schedules', 'salary-setup', 'salary-gen', 'salary-approval', 'payslip', 'deductions', 'payout-recon', 'live-salary', 'pay-ledger'],
-        commissions: ['commissions', 'incentive-schemes', 'clawbacks', 'bonus-enc'],
+        payroll: ['pay-cycle', 'salary-schedules', 'salary-setup', 'salary-gen', 'salary-approval', 'payslip', 'deductions', 'payout-recon', 'live-salary', 'pay-ledger', 'calc-logic'],
+        commissions: ['commissions', 'incentive-schemes', 'clawbacks', 'bonus-enc', 'bank-pack'],
         expenses: ['expenses', 'advance'],
         loans: ['loans'],
-        statutory: ['pf-esic', 'tds', 'pt', 'gratuity', 'tds-returns', 'min-wages', 'audit-reports'],
+        statutory: ['pf-esic', 'tds', 'pt', 'gratuity', 'bonus', 'tds-returns', 'min-wages', 'audit-reports'],
         performance: ['performance', 'increments', 'exits', 'awards', 'points-scores', 'points-ledger', 'points-rules', 'tests', 'test-results', 'test-reports', 'attrition'],
         field: ['escalations', 'agent-auth', 'dra-certs', 'complaints', 'compliance-alerts'],
         kb: ['kb', 'faqs', 'training-programs', 'training-records', 'training-content', 'code-of-conduct', 'policies', 'helpdesk', 'letters-offer', 'letters-increment', 'letters-warning', 'letters-relieving', 'letters-nda', 'letters-templates', 'notice', 'messages', 'send-message'],
@@ -1098,10 +1101,10 @@ CSS;
         'salary-setup': 'fa-sitemap', 'salary-schedules': 'fa-calendar-days', 'salary-gen': 'fa-gears',
         'salary-approval': 'fa-check-double', 'payslip': 'fa-file-invoice-dollar', 'pay-ledger': 'fa-book',
         'deductions': 'fa-money-bill-transfer', 'payout-recon': 'fa-scale-balanced', 'pay-cycle': 'fa-arrows-spin',
-        'pf-esic': 'fa-shield-halved', 'pt': 'fa-landmark', 'tds': 'fa-file-invoice', 'tds-returns': 'fa-file-arrow-up', 'gratuity': 'fa-gift', 'audit-reports': 'fa-user-shield',
+        'pf-esic': 'fa-shield-halved', 'pt': 'fa-landmark', 'tds': 'fa-file-invoice', 'tds-returns': 'fa-file-arrow-up', 'gratuity': 'fa-gift', 'bonus': 'fa-coins', 'audit-reports': 'fa-user-shield',
         'expenses': 'fa-receipt', 'advance': 'fa-hand-holding-dollar', 'loans': 'fa-building-columns', 'bonus-enc': 'fa-coins',
         'increments': 'fa-arrow-trend-up', 'commissions': 'fa-percent', 'commission-calc': 'fa-calculator',
-        'clawbacks': 'fa-rotate-left', 'incentive-schemes': 'fa-bullseye',
+        'clawbacks': 'fa-rotate-left', 'incentive-schemes': 'fa-bullseye', 'bank-pack': 'fa-building-columns', 'calc-logic': 'fa-book-open',
         'performance': 'fa-chart-line', 'points-rules': 'fa-list-check', 'points-ledger': 'fa-book-open',
         'points-scores': 'fa-ranking-star', 'awards': 'fa-trophy', 'tests': 'fa-clipboard-question',
         'test-reports': 'fa-file-lines', 'test-results': 'fa-square-poll-vertical',
@@ -1472,7 +1475,7 @@ CSS;
         // Dashboards → live widgets (company + platform).
         try { if (typeof SCREENS !== 'undefined') { if (SCREENS['dashboard']) { SCREENS['dashboard'] = { title: 'Dashboard', type: 'custom' }; } if (SCREENS['platform-dashboard']) { SCREENS['platform-dashboard'] = { title: 'Platform Dashboard', type: 'custom' }; } } } catch (e) {}
         // Computed statutory reports → Gratuity + Professional Tax.
-        try { if (typeof SCREENS !== 'undefined') { if (SCREENS['gratuity']) { SCREENS['gratuity'] = { title: 'Gratuity', type: 'custom' }; } if (SCREENS['pt']) { SCREENS['pt'] = { title: 'Professional Tax', type: 'custom' }; } } } catch (e) {}
+        try { if (typeof SCREENS !== 'undefined') { if (SCREENS['gratuity']) { SCREENS['gratuity'] = { title: 'Gratuity', type: 'custom' }; } if (SCREENS['pt']) { SCREENS['pt'] = { title: 'Professional Tax', type: 'custom' }; } SCREENS['bonus'] = { title: 'Statutory Bonus', type: 'custom' }; } } catch (e) {}
         // Computed views (live salary / points / test reports / attrition / activity) + ID cards.
         try { if (typeof SCREENS !== 'undefined') { var CV = { 'live-salary': 'Live Salary', 'points-scores': 'Points Leaderboard', 'test-reports': 'Test Reports', 'attrition': 'Attrition', 'activity-logs': 'Activity Logs', 'idcard': 'ID Cards' }; for (var cvk in CV) { if (SCREENS[cvk]) { SCREENS[cvk] = { title: CV[cvk], type: 'custom' }; } } } } catch (e) {}
         // Send Message → real broadcast composer.
@@ -1491,6 +1494,10 @@ CSS;
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['account-settings']) { SCREENS['account-settings'] = { title: 'Account Settings', type: 'custom' }; } } catch (e) {}
         // Commission / Incentive bulk calculator — reached from the Commission Entries button (no nav item of its own).
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['commission-calc']) { SCREENS['commission-calc'] = { title: 'Commission / Incentive Calculator', type: 'custom' }; } } catch (e) {}
+        // rev181 — Bank / NBFC Payout & Billing Pack (collection-industry USP).
+        try { if (typeof SCREENS !== 'undefined' && !SCREENS['bank-pack']) { SCREENS['bank-pack'] = { title: 'Bank Payout Pack', type: 'custom' }; } } catch (e) {}
+        // rev181b — the Salary Calculation Guide (engine rules + demo FAQs, in-app).
+        try { if (typeof SCREENS !== 'undefined' && !SCREENS['calc-logic']) { SCREENS['calc-logic'] = { title: 'Salary Calculation Guide', type: 'custom' }; } } catch (e) {}
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['fin-year']) { SCREENS['fin-year'] = { title: 'Financial Year', type: 'custom' }; } } catch (e) {}
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['my-subscription']) { SCREENS['my-subscription'] = { title: 'My Subscription', type: 'custom' }; } } catch (e) {}
         try { if (typeof SCREENS !== 'undefined' && !SCREENS['transfers']) { SCREENS['transfers'] = { title: 'Employee Transfers', type: 'custom' }; } } catch (e) {}
@@ -1525,6 +1532,8 @@ CSS;
             if (id === 'incentive-schemes') { return schemesScreen(); }
             if (id === 'mobile-devices') { return mobileDevicesScreen(); }
             if (id === 'commission-calc') { return commissionCalcScreen(); }
+            if (id === 'bank-pack') { return bankPackScreen(); }
+            if (id === 'calc-logic') { return calcGuideScreen(); }
             if (id === 'fin-year') { return finYearScreen(); }
             if (id === 'my-subscription') { return mySubScreen(); }
             if (id === 'att-manual') { return attManualScreen(); }
@@ -1546,7 +1555,7 @@ CSS;
             if (id === 'salary-gen') { return salaryGenScreen(); }
             if (id === 'reports') { return reportsScreen(); }
             if (id === 'dashboard' || id === 'platform-dashboard') { return dashboardScreen(id); }
-            if (id === 'gratuity' || id === 'pt') { return statRptScreen(id); }
+            if (id === 'gratuity' || id === 'pt' || id === 'bonus') { return statRptScreen(id); }
             if (id === 'live-salary') { return liveSalaryScreen(); }
             if (id === 'points-scores' || id === 'test-reports' || id === 'attrition' || id === 'activity-logs') { return statRptScreen(id); }
             if (id === 'idcard') { return idcardScreen(); }
@@ -2138,6 +2147,12 @@ CSS;
             // approved entry; Admin can Lock manually. History always available.
             if (navId === 'commissions') {
                 act += ' <a onclick="commHist(' + r.id + ')" title="Full history of this entry" style="cursor:pointer;color:#4f46e5;font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-clock-rotate-left"></i> History</a>';
+                // rev181 — BOUNCE: chip when bounced; one-click action for Accounts/managers.
+                if (r.bounced) {
+                    act += ' <span title="' + (r.bounceReason || '') + (r.bounceClawbackId ? ' - clawback #' + r.bounceClawbackId : '') + '" style="background:#fee2e2;color:#991b1b;font-size:10px;font-weight:800;padding:2px 8px;border-radius:99px;margin-left:8px;white-space:nowrap"><i class="fas fa-rotate-left"></i> BOUNCED</span>';
+                } else if ((d.canAccounts || d.isManager) && r.status !== 'Rejected') {
+                    act += ' <a onclick="commBounce(' + r.id + ')" title="Cheque returned / settlement cancelled - creates an approved clawback automatically if this was already paid" style="cursor:pointer;color:#b91c1c;font-size:12px;margin-left:8px;white-space:nowrap"><i class="fas fa-rotate-left"></i> Bounce</a>';
+                }
                 // rev 116: collection evidence — proof link + ACCOUNTS stage chip
                 // + Confirm/Flag actions for the Accounts role.
                 if (r.hasProof) {
@@ -2230,6 +2245,18 @@ CSS;
             var defVal = '';
             if (fl.defRate) { defVal = '5'; try { var rr = spRates(); if (rr && rr.comm_tds_rate != null) { defVal = String(rr.comm_tds_rate); } } catch (e) {} }
             else if (fl.t === 'month') { try { defVal = new Date().toISOString().slice(0, 7); } catch (e) {} }
+            else if (fl.k === 'payout_date') {
+                // rev181c (D4) — the tenant payout lag pre-fills the payout date
+                // (1st of earned month + N); fully editable before submitting.
+                try {
+                    var lg0 = Number((spRates() || {}).incentive_payout_lag) || 0;
+                    if (lg0 > 0) {
+                        var dt0 = new Date(); dt0.setDate(1); dt0.setMonth(dt0.getMonth() + lg0);
+                        var mm0 = dt0.getMonth() + 1;
+                        defVal = dt0.getFullYear() + '-' + (mm0 < 10 ? '0' + mm0 : mm0) + '-01';
+                    }
+                } catch (e) {}
+            }
             var ctrl = fl.opts ? ('<select id="rqf_' + fl.k + '" style="' + inp + '"' + extraAttr + '>' + fl.opts.map(function (o) { return '<option>' + o + '</option>'; }).join('') + '</select>')
                 : ('<input id="rqf_' + fl.k + '" type="' + (fl.t || 'text') + '" value="' + defVal + '" style="' + inp + '"' + extraAttr + '>');
             f += '<div><label style="' + lbl + '">' + fl.l + '</label>' + ctrl + '</div>';
@@ -2866,13 +2893,31 @@ CSS;
             .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
             .then(function (res) {
                 if (res.ok && res.j && res.j.ok) {
-                    if (typeof toast === 'function') { toast('Request ' + res.j.status); }
+                    if (typeof toast === 'function') { toast('Request ' + res.j.status + (res.j.warning ? ' - ' + res.j.warning : '')); }
                     window.__APPROVALS = null;
                     // Refresh whichever request screen is loaded.
                     Object.keys(RQ_MAP).forEach(function (k) { if (RQ_MAP[k].m === module && window.__REQ[k]) { requestLoad(k); } });
                     if (typeof render === 'function') { render(); }
                 } else if (typeof toast === 'function') { toast((res.j && res.j.error) || 'Action failed'); }
             }).catch(function () { if (typeof toast === 'function') { toast('Action failed'); } });
+    };
+    // rev181 — BOUNCE a commission: cheque returned / settlement cancelled.
+    // Already-paid entries get an auto-created APPROVED clawback (recovered on
+    // the next payslip); unpaid entries are simply rejected. Reason mandatory.
+    window.commBounce = function (id) {
+        var reason = window.prompt('Mark BOUNCED - what happened? (cheque returned, settlement cancelled, payment reversed...)', '');
+        if (reason === null) { return; }
+        if (!reason.replace(/ /g, '')) { if (typeof toast === 'function') { toast('A reason is required for a bounce'); } return; }
+        if (!window.confirm('Confirm the bounce? If money was already paid on this entry, an APPROVED clawback is created automatically and recovers from the next payslip.')) { return; }
+        fetch(cfg.requestsBase + '/commissions/' + id + '/bounce', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ reason: reason }) })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (j && j.ok) {
+                    if (typeof toast === 'function') { toast(j.message || 'Bounce recorded'); }
+                    Object.keys(RQ_MAP).forEach(function (k) { if ((RQ_MAP[k].m === 'commissions' || RQ_MAP[k].m === 'clawbacks') && window.__REQ[k]) { requestLoad(k); } });
+                    if (typeof render === 'function') { render(); }
+                } else if (typeof toast === 'function') { toast((j && j.error) || 'Bounce failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Bounce failed'); } });
     };
     // Inbox dispatcher: leave items use leaveDecide, all others use reqDecide.
     window.inboxDecide = function (module, id, action) {
@@ -3155,6 +3200,10 @@ CSS;
                 payLink = ' <a onclick="slipPayOpen(&#39;' + l.month + '&#39;,' + l.slipBalance + ')" style="cursor:pointer;color:#15803d;font-size:11.5px;font-weight:700;white-space:nowrap"><i class="fas fa-money-bill-wave"></i> Record payment (bal ' + inr(l.slipBalance) + ')</a>';
             } else if (l.kind === 'salary' && l.credit && l.slipBalance != null && l.slipBalance <= 0.005) {
                 payLink = ' <span style="background:#dcfce7;color:#15803d;font-size:9.5px;font-weight:800;padding:1px 7px;border-radius:99px">PAID</span>';
+            }
+            // rev181c — printable voucher on every manual commission payment.
+            if (l.kind !== 'salary' && l.debit && l.paymentId && l.pmode !== 'payslip') {
+                payLink += ' <a href="' + cfg.requestsBase + '/commissions/payments/' + l.paymentId + '/voucher" target="_blank" rel="noopener" title="Print the payment voucher" style="color:#0891b2;font-size:11.5px;font-weight:700;white-space:nowrap"><i class="fas fa-file-invoice"></i> Voucher</a>';
             }
             return '<tr><td style="' + ltd + ';white-space:nowrap;color:var(--text3)">' + l.date + '</td>'
                 + '<td style="' + ltd + ';white-space:normal;max-width:380px;line-height:1.45">' + l.particulars + kindTag + payLink + '</td>'
@@ -4335,9 +4384,9 @@ CSS;
             + '<div><label style="' + lbl + '">Company</label>' + compSel + '</div>'
             + '<div><label style="' + lbl + '">Month</label>' + monthInp + '</div>'
             + '<div style="padding-bottom:8px">' + lopChk + '</div>'
-            + '<div style="margin-left:auto"><button class="btn btn-primary" onclick="pgPreview()"><i class="fas fa-calculator"></i> Preview</button></div>'
+            + '<div style="margin-left:auto;display:flex;gap:8px"><button class="btn btn-outline" onclick="salarySimOpen()" title="What-if: simulate any salary with every variable"><i class="fas fa-sliders"></i> Salary Simulator</button><button class="btn btn-primary" onclick="pgPreview()"><i class="fas fa-calculator"></i> Preview</button></div>'
             + '</div>';
-        var out = pghead('Generate Payroll', 'Compute a month’s salaries, then create a draft run for Salary Approval', '') + controls;
+        var out = pghead('Generate Payroll', 'Compute a month’s salaries, then create a draft run for Salary Approval', '<button class="btn btn-outline" onclick="go(&#39;calc-logic&#39;)"><i class="fas fa-book-open"></i> How salary is calculated</button>') + controls;
         var p = pg.preview;
         if (!p) { return out + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Pick a company and month, then click <b>Preview</b> to compute salaries.</div></div>'; }
         if (p.error) { return out + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + String(p.error) + '</b></div></div>'; }
@@ -4944,8 +4993,8 @@ CSS;
             .then(function (r) { return r.json(); }).then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast('Saved'); } perfClose(); perfLoad(); } else if (typeof toast === 'function') { toast((j && j.error) || 'Could not save'); } }).catch(function () { if (typeof toast === 'function') { toast('Could not save'); } });
     };
     // ---- Computed statutory reports (Gratuity / Professional Tax) -------------
-    var STAT_TITLES = { gratuity: 'Gratuity', pt: 'Professional Tax', 'live-salary': 'Live Salary', 'points-scores': 'Points Leaderboard', 'test-reports': 'Test Reports', attrition: 'Attrition', 'activity-logs': 'Activity Logs' };
-    var STAT_STATUTORY = { gratuity: 1, pt: 1 };
+    var STAT_TITLES = { gratuity: 'Gratuity', pt: 'Professional Tax', bonus: 'Statutory Bonus', 'live-salary': 'Live Salary', 'points-scores': 'Points Leaderboard', 'test-reports': 'Test Reports', attrition: 'Attrition', 'activity-logs': 'Activity Logs' };
+    var STAT_STATUTORY = { gratuity: 1, pt: 1, bonus: 1 };
     window.__STATRPT = window.__STATRPT || {};
     window.statRptLoad = function (id) {
         var base = STAT_STATUTORY[id] ? cfg.statutoryReportBase : cfg.computedBase;
@@ -4971,12 +5020,12 @@ CSS;
         if (!d) { setTimeout(function () { if (!window.__STATRPT[id]) { statRptLoad(id); } }, 10); return pghead(title, 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
         if (d.error) { return pghead(title, 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + String(d.error) + '</b></div></div>'; }
         var cols = d.columns || []; var rows = d.rows || [];
-        var moneyCols = { 'Monthly Basic': 1, 'Gratuity': 1, 'Monthly Gross': 1, 'Monthly PT': 1, 'Annual PT': 1 };
-        var thHtml = cols.map(function (h) { var num = moneyCols[h]; return '<th style="padding:10px 12px;text-align:' + (num ? 'right' : 'left') + ';font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        var moneyCols = { 'Monthly Basic': 1, 'Gratuity': 1, 'Monthly Gross': 1, 'Monthly PT': 1, 'Annual PT': 1, 'Bonus Wage/mo': 1 };
+        var thHtml = cols.map(function (h) { var num = moneyCols[h] || /^Annual Bonus/.test(h); return '<th style="padding:10px 12px;text-align:' + (num ? 'right' : 'left') + ';font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
         var body = rows.map(function (r, i) {
             var c = 'padding:8px 12px;font-size:13px;border-top:1px solid var(--border);white-space:nowrap';
             var tds = cols.map(function (h, ci) {
-                var v = r[h]; var num = moneyCols[h]; var disp = (v === '' || v == null) ? '—' : (num ? inr(v) : String(v));
+                var v = r[h]; var num = moneyCols[h] || /^Annual Bonus/.test(h); var disp = (v === '' || v == null) ? '—' : (num ? inr(v) : String(v));
                 var info = (ci === 0 && r._note) ? '<a onclick="srNote(\'' + id + '\',' + i + ')" style="cursor:pointer;color:#0891b2;margin-right:6px" title="How this pay was calculated"><i class="fas fa-circle-info"></i></a>' : '';
                 return '<td style="' + c + (num ? ';text-align:right' : '') + (h === 'Code' ? ';font-weight:600' : '') + '">' + info + disp + '</td>';
             }).join('');
@@ -4990,6 +5039,298 @@ CSS;
             + (rows.length ? body : '<tr><td colspan="' + (cols.length || 1) + '" style="padding:30px;text-align:center;color:var(--text3)">No active employees.</td></tr>')
             + '</tbody></table></div>';
     }
+    // ---- rev181b: SALARY CALCULATION GUIDE — the engine's rules + demo FAQs -
+    // The i-help explains each SCREEN; this screen documents the ENGINE: the
+    // full CTC-to-net pipeline in plain language with worked rupee examples,
+    // plus the exact questions clients ask in demos, searchable and printable.
+    // Content is served by CalcGuideController (plain PHP arrays — never in
+    // this heredoc), so extending it is a cheap, safe append.
+    window.__CALCG = null;
+    window.cgLoad = function () {
+        fetch(cfg.calcGuideUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__CALCG = (j && j.ok) ? j : { error: (j && j.error) || 'Could not load' }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__CALCG = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    window.cgGo = function (id) { var el = document.getElementById('cg_sec_' + id); if (el) { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) { el.scrollIntoView(); } } };
+    window.cgFaqToggle = function (i) {
+        var el = document.getElementById('cg_fa_' + i); if (!el) { return; }
+        var open = el.style.display === 'none';
+        el.style.display = open ? '' : 'none';
+        var ic = document.getElementById('cg_fi_' + i); if (ic) { ic.className = 'fas ' + (open ? 'fa-chevron-up' : 'fa-chevron-down'); }
+    };
+    window.cgFilter = function () {
+        var q = String((document.getElementById('cg_search') || {}).value || '').toLowerCase();
+        var items = document.querySelectorAll('.cg-faq-item');
+        var n = 0;
+        for (var i = 0; i < items.length; i++) {
+            var hit = !q || (items[i].getAttribute('data-t') || '').indexOf(q) >= 0;
+            items[i].style.display = hit ? '' : 'none';
+            if (hit) { n++; }
+        }
+        var c = document.getElementById('cg_count'); if (c) { c.textContent = n + ' question(s)'; }
+    };
+    function calcGuideScreen() {
+        var d = window.__CALCG;
+        if (!d) { setTimeout(function () { if (!window.__CALCG) { cgLoad(); } }, 10); return pghead('Salary Calculation Guide', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading the guide…</div></div>'; }
+        if (d.error) { return pghead('Salary Calculation Guide', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + bpEsc(d.error) + '</b></div></div>'; }
+        var secs = d.sections || [];
+        var faqs = d.faqs || [];
+        var chips = secs.map(function (sx) {
+            return '<a onclick="cgGo(&#39;' + sx.id + '&#39;)" style="cursor:pointer;background:#f1f5f9;border:1px solid var(--border);border-radius:99px;padding:5px 13px;font-size:12px;font-weight:600;color:var(--text2);white-space:nowrap"><i class="fas ' + sx.icon + '" style="margin-right:5px;color:var(--accent)"></i>' + sx.title.replace(/^[0-9]+ · /, '') + '</a>';
+        }).join(' ') + ' <a onclick="cgGo(&#39;faq&#39;)" style="cursor:pointer;background:#0891b2;border:1px solid #0891b2;border-radius:99px;padding:5px 13px;font-size:12px;font-weight:700;color:#fff;white-space:nowrap"><i class="fas fa-circle-question" style="margin-right:5px"></i>Demo FAQs (' + faqs.length + ')</a>';
+        var chipBar = '<div class="card" style="padding:12px 16px;margin-bottom:16px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' + chips + '</div></div>';
+        var secHtml = secs.map(function (sx) {
+            var pts = (sx.points || []).map(function (pt) { return '<li style="margin:0 0 8px;font-size:13.5px;line-height:1.6;color:var(--text2)">' + pt + '</li>'; }).join('');
+            var ex = sx.example ? '<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:9px;padding:11px 15px;font-size:13px;color:#0c4a6e;margin-top:6px"><b>Worked example:</b> ' + sx.example + '</div>' : '';
+            return '<div class="card" id="cg_sec_' + sx.id + '" style="margin-bottom:16px;padding:18px 22px">'
+                + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:2px"><i class="fas ' + sx.icon + '" style="color:var(--accent);font-size:17px"></i><h3 style="margin:0;font-size:16.5px">' + sx.title + '</h3></div>'
+                + '<div style="font-size:12.5px;color:var(--text3);margin-bottom:10px">' + (sx.tag || '') + '</div>'
+                + '<ul style="margin:0;padding-left:20px">' + pts + '</ul>' + ex
+                + '</div>';
+        }).join('');
+        var faqHtml = faqs.map(function (f, i) {
+            var t = bpEsc(String(f.q + ' ' + f.a + ' ' + (f.w || '')).toLowerCase());
+            return '<div class="cg-faq-item" data-t="' + t + '" style="border-top:1px solid var(--border)">'
+                + '<div onclick="cgFaqToggle(' + i + ')" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 18px;cursor:pointer">'
+                + '<div style="font-size:14px;font-weight:600;color:var(--text)">' + f.q + '</div><i id="cg_fi_' + i + '" class="fas fa-chevron-down" style="color:var(--text3);flex:none"></i></div>'
+                + '<div id="cg_fa_' + i + '" style="display:none;padding:0 18px 15px;font-size:13.5px;line-height:1.65;color:var(--text2)">' + f.a
+                + (f.w ? '<div style="margin-top:7px;font-size:12px;color:#0369a1"><i class="fas fa-location-arrow" style="margin-right:5px"></i>Where: ' + f.w + '</div>' : '') + '</div>'
+                + '</div>';
+        }).join('');
+        var srch = '<div style="display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border)">'
+            + '<div style="font-weight:700">Demo FAQs — the questions every client asks</div>'
+            + '<input id="cg_search" oninput="cgFilter()" placeholder="Search a question… (e.g. TDS, EMI, bounce)" style="flex:1;min-width:180px;padding:8px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:13px;background:#f8fafc">'
+            + '<span id="cg_count" style="font-size:12px;color:var(--text3);white-space:nowrap">' + faqs.length + ' question(s)</span></div>';
+        var faqCard = '<div class="card" id="cg_sec_faq" style="padding:0;overflow:hidden">' + srch + faqHtml + '</div>';
+        var intro = '<div style="font-size:12px;color:var(--text3);margin:-6px 0 14px">Everything below is how the engine ACTUALLY computes — the same rules the Simulator and every payslip note follow. Content updated: ' + bpEsc(d.updated || '') + '.</div>';
+        return pghead('Salary Calculation Guide', 'How every rupee on a payslip is computed — engine rules, worked examples and demo FAQs', '<button class="btn btn-outline" onclick="cgPrint()"><i class="fas fa-print"></i> Print the guide</button>')
+            + intro + chipBar + secHtml + faqCard;
+    }
+    window.cgPrint = function () {
+        var d = window.__CALCG; if (!d || d.error) { if (typeof toast === 'function') { toast('Open the guide first'); } return; }
+        var html = '<h1>SmartPRS — Salary Calculation Guide</h1><div class="muted">How every rupee on a payslip is computed · content updated ' + bpEsc(d.updated || '') + ' · printed ' + new Date().toLocaleDateString() + '</div>';
+        (d.sections || []).forEach(function (sx) {
+            html += '<h2>' + sx.title + '</h2>';
+            if (sx.tag) { html += '<div class="muted">' + sx.tag + '</div>'; }
+            html += '<ul>' + (sx.points || []).map(function (pt) { return '<li>' + pt + '</li>'; }).join('') + '</ul>';
+            if (sx.example) { html += '<div style="border:1px solid #bae6fd;background:#f0f9ff;border-radius:8px;padding:9px 13px;font-size:12px"><b>Worked example:</b> ' + sx.example + '</div>'; }
+        });
+        html += '<h2>Demo FAQs</h2>';
+        (d.faqs || []).forEach(function (f, i) {
+            html += '<div style="margin:0 0 12px"><b>' + (i + 1) + '. ' + f.q + '</b><br>' + f.a + (f.w ? '<br><span class="muted">Where: ' + f.w + '</span>' : '') + '</div>';
+        });
+        bpWin('Salary Calculation Guide', html);
+    };
+    // ---- rev181: BANK / NBFC PAYOUT & BILLING PACK (collection-industry USP) --
+    // One bank + one month -> (1) payout register: every commission entry earned
+    // against that bank's portfolio, agent-wise gross / TDS 194H / net; (2) a
+    // deductee-wise TDS annexure for 26Q / Form 16A; (3) a GST service invoice
+    // to the bank (CGST+SGST vs IGST decided from the two GSTINs, saved and
+    // numbered server-side, printable). Bank key = the Portfolio / Bank field
+    // commission entries already carry. Off-roll earnings have no bank tag (v1).
+    window.__BANKPACK = null;
+    window.bpState = window.bpState || { month: '', bank: '' };
+    window.bpLoad = function () {
+        var mEl = document.getElementById('bp_month');
+        var bEl = document.getElementById('bp_bank');
+        var m = (mEl && mEl.value) || window.bpState.month || new Date().toISOString().slice(0, 7);
+        var b = bEl ? bEl.value : (window.bpState.bank || '');
+        window.bpState = { month: m, bank: b };
+        window.__BANKPACK = null;
+        fetch(cfg.bankPackBase + '/data?month=' + encodeURIComponent(m) + '&bank=' + encodeURIComponent(b), { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) { window.__BANKPACK = (j && j.ok) ? j : { error: (j && j.error) || 'Could not load' }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__BANKPACK = { error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    };
+    function bpEsc(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+    function bpStatusChip(r) {
+        var map = { approved: ['#dcfce7', '#166534'], pending: ['#fef3c7', '#92400e'], rejected: ['#fee2e2', '#991b1b'] };
+        var c = map[r.status] || map.pending;
+        var extra = r.bounced ? ' · BOUNCED' : (r.locked ? ' · PAID' : '');
+        return '<span style="background:' + c[0] + ';color:' + c[1] + ';font-size:10px;font-weight:800;padding:2px 8px;border-radius:99px;white-space:nowrap">' + bpEsc(String(r.status || '').toUpperCase()) + extra + '</span>';
+    }
+    function bankPackScreen() {
+        var d = window.__BANKPACK;
+        var st = window.bpState || {};
+        if (!d) { setTimeout(function () { if (!window.__BANKPACK) { bpLoad(); } }, 10); return pghead('Bank Payout Pack', 'Loading…', '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        if (d.error) { return pghead('Bank Payout Pack', 'Error', '') + '<div class="card"><div style="padding:24px;color:var(--red)"><b>' + bpEsc(d.error) + '</b></div></div>'; }
+        var inp = 'padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var bankOpts = '<option value="">Select bank / portfolio…</option>' + (d.banks || []).map(function (b) { return '<option value="' + bpEsc(b) + '"' + (b === d.bank ? ' selected' : '') + '>' + bpEsc(b) + '</option>'; }).join('');
+        var filters = '<div class="card" style="padding:16px 18px;margin-bottom:16px"><div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">'
+            + '<div><label style="' + lbl + '">Month</label><input type="month" id="bp_month" value="' + bpEsc(d.month || st.month || '') + '" style="' + inp + '"></div>'
+            + '<div style="min-width:260px"><label style="' + lbl + '">Bank / NBFC (portfolio)</label><select id="bp_bank" style="' + inp + ';width:100%">' + bankOpts + '</select></div>'
+            + '<div><button class="btn btn-primary" onclick="bpLoad()"><i class="fas fa-magnifying-glass"></i> Load pack</button></div>'
+            + '</div><div style="font-size:12px;color:var(--text3);margin-top:8px">The bank key is the <b>Portfolio / Bank</b> field on commission entries. Off-roll agent earnings carry no bank tag and are not included here.</div></div>';
+        if (!d.bank) {
+            return pghead('Bank Payout Pack', 'Payout register + TDS 194H annexure + GST invoice, per bank per month', '') + filters
+                + '<div class="card"><div style="padding:36px;text-align:center;color:var(--text3)">Pick a bank / portfolio and click <b>Load pack</b>.' + ((d.banks || []).length ? '' : ' No bank names found yet — commission entries need their Portfolio / Bank field filled first.') + '</div></div>';
+        }
+        var t = d.totals || {};
+        var stats = '<div class="stats-grid">'
+            + statBox(String(t.entries || 0), 'Entries', '#3b82f6', 'fa-list')
+            + statBox(inr(t.collected || 0), 'Collected from customers', '#0891b2', 'fa-sack-dollar')
+            + statBox(inr(t.gross || 0), 'Commission gross', '#8b5cf6', 'fa-coins')
+            + statBox(inr(t.tds || 0), 'TDS 194H', '#ef4444', 'fa-receipt')
+            + statBox(inr(t.netApproved || 0), 'Net payable (approved)', '#16a34a', 'fa-money-bill-wave')
+            + '</div>';
+        var cs = 'padding:8px 10px;font-size:12.5px;border-top:1px solid var(--border);white-space:nowrap';
+        var th = function (arr) { return arr.map(function (h) { return '<th style="padding:9px 10px;text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join(''); };
+        var regRows = (d.rows || []).map(function (r) {
+            return '<tr' + (r.status === 'rejected' ? ' style="opacity:.55"' : '') + '><td style="' + cs + ';font-weight:600">' + bpEsc(r.employee) + (r.code ? ' <span style="color:var(--text3);font-weight:400">(' + bpEsc(r.code) + ')</span>' : '') + '</td>'
+                + '<td style="' + cs + '">' + bpEsc(r.purpose || '—') + '</td>'
+                + '<td style="' + cs + ';white-space:normal;max-width:220px">' + bpEsc(r.customer || '—') + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + (r.collected ? inr(r.collected) : '—') + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + inr(r.gross) + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + inr(r.tds) + '</td>'
+                + '<td style="' + cs + ';text-align:right;font-weight:700">' + inr(r.net) + '</td>'
+                + '<td style="' + cs + '">' + bpStatusChip(r) + '</td></tr>';
+        }).join('');
+        var register = '<div class="card" style="padding:0;overflow:auto;margin-top:16px"><div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border)"><div style="font-weight:700">Payout register — ' + bpEsc(d.bank) + ' · ' + bpEsc(d.month) + '</div><button class="btn btn-outline btn-sm" onclick="bpPrint(&#39;register&#39;)"><i class="fas fa-print"></i> Print</button></div>'
+            + '<table style="width:100%;border-collapse:collapse"><thead><tr>' + th(['Agent', 'Purpose', 'Customer', 'Collected', 'Gross', 'TDS 194H', 'Net', 'Status']) + '</tr></thead><tbody>'
+            + (regRows || '<tr><td colspan="8" style="padding:30px;text-align:center;color:var(--text3)">No commission entries for this bank in this month.</td></tr>')
+            + '</tbody></table></div>';
+        var annRows = (d.annexure || []).map(function (a) {
+            return '<tr><td style="' + cs + ';font-weight:600">' + bpEsc(a.employee) + (a.code ? ' (' + bpEsc(a.code) + ')' : '') + '</td>'
+                + '<td style="' + cs + '">' + (a.pan ? bpEsc(a.pan) : '<span style="color:var(--red)">No PAN</span>') + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + a.entries + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + inr(a.gross) + '</td>'
+                + '<td style="' + cs + ';text-align:right">' + inr(a.tds) + '</td>'
+                + '<td style="' + cs + ';text-align:right;font-weight:700">' + inr(a.net) + '</td></tr>';
+        }).join('');
+        var annexure = '<div class="card" style="padding:0;overflow:auto;margin-top:16px"><div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border)"><div style="font-weight:700">TDS 194H annexure (deductee-wise)</div><button class="btn btn-outline btn-sm" onclick="bpPrint(&#39;annexure&#39;)"><i class="fas fa-print"></i> Print</button></div>'
+            + '<table style="width:100%;border-collapse:collapse"><thead><tr>' + th(['Deductee', 'PAN', 'Entries', 'Gross', 'TDS', 'Net']) + '</tr></thead><tbody>'
+            + (annRows || '<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--text3)">Nothing to report.</td></tr>')
+            + '</tbody></table></div>';
+        var invRows = (d.invoices || []).map(function (i) {
+            return '<tr><td style="' + cs + ';font-weight:700">' + bpEsc(i.no) + '</td><td style="' + cs + '">' + bpEsc(i.at || '') + '</td><td style="' + cs + ';text-align:right">' + inr(i.taxable) + '</td><td style="' + cs + ';text-align:right">' + inr(Math.round((i.cgst + i.sgst + i.igst) * 100) / 100) + '</td><td style="' + cs + ';text-align:right;font-weight:700">' + inr(i.total) + '</td><td style="' + cs + '">' + (i.mode === 'intra' ? 'CGST+SGST' : 'IGST') + '</td><td style="' + cs + '"><button class="btn btn-sm btn-outline" onclick="bpPrintInvoice(' + i.id + ')"><i class="fas fa-print"></i> Print</button></td></tr>';
+        }).join('');
+        var invBtn = d.canInvoice ? '<button class="btn btn-primary btn-sm" onclick="bpInvoiceOpen()"><i class="fas fa-file-invoice-dollar"></i> New GST invoice</button>' : '';
+        var invoices = '<div class="card" style="padding:0;overflow:auto;margin-top:16px"><div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border)"><div style="font-weight:700">GST service invoices — ' + bpEsc(d.bank) + ' · ' + bpEsc(d.month) + '</div>' + invBtn + '</div>'
+            + '<table style="width:100%;border-collapse:collapse"><thead><tr>' + th(['Invoice No', 'Date', 'Taxable', 'GST', 'Total', 'Split', '']) + '</tr></thead><tbody>'
+            + (invRows || '<tr><td colspan="7" style="padding:26px;text-align:center;color:var(--text3)">No invoice for this bank/month yet.' + (d.canInvoice ? ' Click <b>New GST invoice</b> — the amount is pre-suggested from the register and fully editable before saving.' : '') + '</td></tr>')
+            + '</tbody></table></div>';
+        var noteCard = d.note ? '<div style="font-size:11.5px;color:var(--text3);margin-top:10px">' + bpEsc(d.note) + '</div>' : '';
+        return pghead('Bank Payout Pack', 'Payout register + TDS 194H annexure + GST invoice, per bank per month', '<button class="btn btn-outline" onclick="window.__BANKPACK=null;bpLoad()"><i class="fas fa-rotate"></i> Refresh</button>')
+            + filters + stats + register + annexure + invoices + noteCard;
+    }
+    window.bpInvoiceClose = function () { var m = document.getElementById('bp-inv-modal'); if (m) { m.remove(); } };
+    window.bpInvLineAdd = function (desc, amount) {
+        var tb = document.getElementById('bp_inv_lines'); if (!tb) { return; }
+        var inp = 'width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;background:#f8fafc';
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td style="padding:4px 6px 4px 0"><input class="bp_l_desc" value="' + bpEsc(desc || '') + '" placeholder="Service description" style="' + inp + '"></td>'
+            + '<td style="padding:4px 0;width:150px"><input class="bp_l_amt" type="number" step="any" value="' + (amount || '') + '" oninput="bpInvCalc()" style="' + inp + '"></td>'
+            + '<td style="padding:4px 0 4px 6px;width:30px;text-align:center"><a onclick="bpInvLineDel(this)" style="cursor:pointer;color:var(--red)"><i class="fas fa-trash"></i></a></td>';
+        tb.appendChild(tr);
+    };
+    window.bpInvLineDel = function (el) { var tr = el; while (tr && tr.tagName !== 'TR') { tr = tr.parentNode; } if (tr) { tr.parentNode.removeChild(tr); } bpInvCalc(); };
+    window.bpInvCalc = function () {
+        var d = window.__BANKPACK || {};
+        var amts = document.querySelectorAll('.bp_l_amt');
+        var sum = 0; for (var i = 0; i < amts.length; i++) { sum += Number(amts[i].value) || 0; }
+        var bg = String(((document.getElementById('bp_inv_gstin') || {}).value || '')).replace(/ /g, '');
+        var sg = String((d.seller && d.seller.gstin) || '').replace(/ /g, '');
+        var intra = sg.length >= 2 && bg.length >= 2 && sg.slice(0, 2) === bg.slice(0, 2);
+        var half = Math.round(sum * 9) / 100;
+        var gst = intra ? Math.round(half * 2 * 100) / 100 : Math.round(sum * 18) / 100;
+        var el = document.getElementById('bp_inv_totals');
+        if (el) { el.innerHTML = 'Taxable ' + inr(sum) + ' + ' + (intra ? 'CGST 9% (' + inr(half) + ') + SGST 9% (' + inr(half) + ')' : 'IGST 18% (' + inr(gst) + ')') + ' = <b>' + inr(Math.round((sum + gst) * 100) / 100) + '</b>'; }
+    };
+    window.bpInvoiceOpen = function () {
+        var d = window.__BANKPACK; if (!d || !d.bank) { return; }
+        var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc';
+        var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
+        var m = document.getElementById('bp-inv-modal') || (function () { var x = document.createElement('div'); x.id = 'bp-inv-modal'; document.body.appendChild(x); return x; })();
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:44px 16px;overflow:auto';
+        m.innerHTML = '<div class="card" style="max-width:680px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px">GST invoice — ' + bpEsc(d.bank) + ' · ' + bpEsc(d.month) + '</h3><button class="btn btn-outline btn-sm" onclick="bpInvoiceClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:20px 22px;display:grid;gap:14px">'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+            + '<div><label style="' + lbl + '">Bank GSTIN (decides CGST+SGST vs IGST)</label><input id="bp_inv_gstin" value="' + bpEsc(d.buyerGstin || '') + '" oninput="bpInvCalc()" placeholder="15-character GSTIN" style="' + inp + '"></div>'
+            + '<div><label style="' + lbl + '">Bank billing address</label><input id="bp_inv_addr" value="' + bpEsc(d.buyerAddress || '') + '" style="' + inp + '"></div>'
+            + '</div>'
+            + '<div><label style="' + lbl + '">Invoice lines</label><table style="width:100%;border-collapse:collapse"><tbody id="bp_inv_lines"></tbody></table>'
+            + '<a onclick="bpInvLineAdd()" style="cursor:pointer;color:var(--accent);font-size:12.5px;font-weight:700"><i class="fas fa-plus"></i> Add line</a></div>'
+            + '<div id="bp_inv_totals" style="font-size:13px;color:var(--text2)"></div>'
+            + '<div style="font-size:11.5px;color:var(--text3)">The suggested amount is this bank&#39;s commission GROSS for the month — replace it with your contracted service fee if different. The GSTIN/address you type is remembered for the next invoice to this bank.</div>'
+            + '</div>'
+            + '<div style="display:flex;gap:10px;justify-content:flex-end;padding:0 22px 20px"><button class="btn btn-outline" onclick="bpInvoiceClose()">Cancel</button><button class="btn btn-primary" onclick="bpInvoiceSave()"><i class="fas fa-check"></i> Save invoice</button></div>'
+            + '</div>';
+        m.onclick = function (e) { if (e.target === m) { bpInvoiceClose(); } };
+        var t = d.totals || {};
+        bpInvLineAdd('Collection / recovery services — ' + d.bank + ' — ' + d.month, t.gross || 0);
+        bpInvCalc();
+    };
+    window.bpInvoiceSave = function () {
+        var d = window.__BANKPACK; if (!d) { return; }
+        var lines = [];
+        var trs = document.querySelectorAll('#bp_inv_lines tr');
+        for (var i = 0; i < trs.length; i++) {
+            var de = trs[i].querySelector('.bp_l_desc'); var am = trs[i].querySelector('.bp_l_amt');
+            var a = Number(am && am.value) || 0;
+            var txt = de ? String(de.value).replace(/^ +| +$/g, '') : '';
+            if (txt && a > 0) { lines.push({ desc: txt, amount: a }); }
+        }
+        if (!lines.length) { if (typeof toast === 'function') { toast('Add at least one line with a description and a positive amount'); } return; }
+        var body = { bank: d.bank, month: d.month, buyer_gstin: (document.getElementById('bp_inv_gstin') || {}).value || '', buyer_address: (document.getElementById('bp_inv_addr') || {}).value || '', lines: lines };
+        fetch(cfg.bankPackBase + '/invoice', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(body) })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || ('Invoice ' + j.no + ' saved')); } bpInvoiceClose(); bpLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Save failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Save failed'); } });
+    };
+    function bpWin(title, html) {
+        var w = window.open('', '_blank');
+        if (!w) { if (typeof toast === 'function') { toast('Popup blocked — allow popups to print'); } return; }
+        w.document.write('<html><head><title>' + bpEsc(title) + '</title><style>body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;padding:26px}h1{font-size:19px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px}table{width:100%;border-collapse:collapse;margin-top:8px}th,td{border:1px solid #cbd5e1;padding:6px 8px;font-size:12px;text-align:left}th{background:#f1f5f9;font-size:10px;text-transform:uppercase}.r{text-align:right}.muted{color:#64748b;font-size:11px}.tot td{font-weight:700;background:#f8fafc}</style></head><body>' + html + '</body></html>');
+        w.document.close();
+        setTimeout(function () { try { w.focus(); w.print(); } catch (e) {} }, 350);
+    }
+    window.bpPrint = function (kind) {
+        var d = window.__BANKPACK; if (!d || !d.bank) { return; }
+        var seller = d.seller || {};
+        var head = '<h1>' + bpEsc(seller.name || '') + '</h1><div class="muted">' + bpEsc(seller.address || '') + (seller.pan ? ' · PAN ' + bpEsc(seller.pan) : '') + (seller.gstin ? ' · GSTIN ' + bpEsc(seller.gstin) : '') + '</div>';
+        var t = d.totals || {};
+        var html = '';
+        if (kind === 'register') {
+            html = head + '<h2>Payout Register — ' + bpEsc(d.bank) + ' — ' + bpEsc(d.month) + '</h2>'
+                + '<table><thead><tr><th>Agent</th><th>Purpose</th><th>Customer / Ref</th><th class="r">Collected</th><th class="r">Gross</th><th class="r">TDS 194H</th><th class="r">Net</th><th>Status</th></tr></thead><tbody>'
+                + (d.rows || []).map(function (r) { return '<tr><td>' + bpEsc(r.employee) + (r.code ? ' (' + bpEsc(r.code) + ')' : '') + '</td><td>' + bpEsc(r.purpose || '') + '</td><td>' + bpEsc(r.customer || '') + '</td><td class="r">' + (r.collected ? inr(r.collected) : '') + '</td><td class="r">' + inr(r.gross) + '</td><td class="r">' + inr(r.tds) + '</td><td class="r">' + inr(r.net) + '</td><td>' + bpEsc(r.status) + (r.bounced ? ' / BOUNCED' : '') + '</td></tr>'; }).join('')
+                + '<tr class="tot"><td colspan="3">Totals (rejected excluded)</td><td class="r">' + inr(t.collected || 0) + '</td><td class="r">' + inr(t.gross || 0) + '</td><td class="r">' + inr(t.tds || 0) + '</td><td class="r">' + inr(t.net || 0) + '</td><td></td></tr>'
+                + '</tbody></table><div class="muted" style="margin-top:8px">Net payable on APPROVED entries: ' + inr(t.netApproved || 0) + '. Generated by SmartPRS on ' + new Date().toLocaleDateString() + '.</div>';
+        } else {
+            html = head + '<h2>TDS 194H Annexure (deductee-wise) — ' + bpEsc(d.bank) + ' — ' + bpEsc(d.month) + '</h2>'
+                + '<table><thead><tr><th>Deductee</th><th>PAN</th><th class="r">Entries</th><th class="r">Commission Gross</th><th class="r">TDS Deducted</th><th class="r">Net Paid</th></tr></thead><tbody>'
+                + (d.annexure || []).map(function (a) { return '<tr><td>' + bpEsc(a.employee) + (a.code ? ' (' + bpEsc(a.code) + ')' : '') + '</td><td>' + bpEsc(a.pan || 'No PAN') + '</td><td class="r">' + a.entries + '</td><td class="r">' + inr(a.gross) + '</td><td class="r">' + inr(a.tds) + '</td><td class="r">' + inr(a.net) + '</td></tr>'; }).join('')
+                + '<tr class="tot"><td colspan="3">Totals</td><td class="r">' + inr(t.gross || 0) + '</td><td class="r">' + inr(t.tds || 0) + '</td><td class="r">' + inr(t.net || 0) + '</td></tr>'
+                + '</tbody></table><div class="muted" style="margin-top:8px">Section 194H commission TDS. Cross-check with the TDS screen&#39;s deductee register before filing 26Q. Generated by SmartPRS on ' + new Date().toLocaleDateString() + '.</div>';
+        }
+        bpWin(kind === 'register' ? 'Payout Register' : 'TDS Annexure', html);
+    };
+    window.bpPrintInvoice = function (id) {
+        var d = window.__BANKPACK; if (!d) { return; }
+        var inv = null;
+        (d.invoices || []).forEach(function (x) { if (x.id === id) { inv = x; } });
+        if (!inv) { return; }
+        var seller = d.seller || {};
+        var lines = (inv.lines || []).map(function (l, n) { return '<tr><td class="r" style="width:36px">' + (n + 1) + '</td><td>' + bpEsc(l.desc) + '</td><td class="r">' + inr(l.amount) + '</td></tr>'; }).join('');
+        var taxRows = inv.mode === 'intra'
+            ? '<tr><td colspan="2" class="r">CGST @ 9%</td><td class="r">' + inr(inv.cgst) + '</td></tr><tr><td colspan="2" class="r">SGST @ 9%</td><td class="r">' + inr(inv.sgst) + '</td></tr>'
+            : '<tr><td colspan="2" class="r">IGST @ 18%</td><td class="r">' + inr(inv.igst) + '</td></tr>';
+        var html = '<h1>TAX INVOICE</h1><div class="muted">' + bpEsc(inv.no) + ' · dated ' + bpEsc(inv.at || '') + ' · service month ' + bpEsc(inv.month) + '</div>'
+            + '<table style="margin-top:14px"><tr><td style="width:50%;vertical-align:top"><b>' + bpEsc(seller.name || '') + '</b><br>' + bpEsc(seller.address || '') + '<br>' + (seller.gstin ? 'GSTIN: ' + bpEsc(seller.gstin) : '') + (seller.pan ? '<br>PAN: ' + bpEsc(seller.pan) : '') + '</td>'
+            + '<td style="vertical-align:top"><b>To: ' + bpEsc(d.bank) + '</b><br>' + bpEsc(inv.buyerAddress || '') + '<br>' + (inv.buyerGstin ? 'GSTIN: ' + bpEsc(inv.buyerGstin) : 'GSTIN: not provided') + '</td></tr></table>'
+            + '<h2>Services</h2><table><thead><tr><th style="width:36px">#</th><th>Description</th><th class="r" style="width:140px">Amount</th></tr></thead><tbody>' + lines
+            + '<tr class="tot"><td colspan="2" class="r">Taxable value</td><td class="r">' + inr(inv.taxable) + '</td></tr>'
+            + taxRows
+            + '<tr class="tot"><td colspan="2" class="r">Invoice total</td><td class="r">' + inr(inv.total) + '</td></tr>'
+            + '</tbody></table>'
+            + '<div class="muted" style="margin-top:10px">SAC 9985 (collection / recovery agency services) · GST @ 18%. System-generated from SmartPRS. Where e-invoicing (IRN) applies to your turnover, register this invoice in your GSP portal.</div>';
+        bpWin('Invoice ' + inv.no, html);
+    };
     // ---- SaaS billing (super admin): subscriptions / invoices / payments / gateways
     window.__BILL = window.__BILL || {};
     function billPost(path, body, cb) {
@@ -5272,7 +5613,8 @@ CSS;
         var s = d.stats || {};
         var tab = window.__RECRUIT_TAB || 'pipeline';
         if (!recruitHasVolumeHiring() && (tab === 'drives' || tab === 'campaigns')) { tab = 'pipeline'; window.__RECRUIT_TAB = 'pipeline'; }
-        var addBtns = '<a href="' + cfg.recruitmentBase + '/template" class="btn btn-outline btn-sm" style="text-decoration:none" title="Download CSV template"><i class="fas fa-file-csv"></i> Template</a> '
+        var addBtns = '<button class="btn btn-outline btn-sm" onclick="salarySimOpen()" title="Explain CTC to in-hand during interviews — live payslip illustration"><i class="fas fa-calculator"></i> Salary Simulator</button> '
+            + '<a href="' + cfg.recruitmentBase + '/template" class="btn btn-outline btn-sm" style="text-decoration:none" title="Download CSV template"><i class="fas fa-file-csv"></i> Template</a> '
             + '<label class="btn btn-outline btn-sm" style="cursor:pointer" title="Import applicants from a job-portal export (Excel .xlsx or CSV) straight into the Talent Pool"><i class="fas fa-file-import"></i> Import from Portal<input type="file" accept=".xlsx,.xls,.csv,text/csv" style="display:none" onchange="recruitImportFile(this)"></label> '
             + (recruitHasVolumeHiring() ? '<label class="btn btn-sm" style="cursor:pointer;background:#25d366;color:#fff" title="Upload a portal export (needs Name + Mobile columns) and WhatsApp them directly"><i class="fab fa-whatsapp"></i> Bulk WhatsApp from file<input type="file" accept=".xlsx,.xls,.csv,text/csv" style="display:none" onchange="recruitMsgFile(this)"></label> ' : '')
             + '<button class="btn btn-outline btn-sm" onclick="recruitReq(null)"><i class="fas fa-clipboard-list"></i> Raise Requisition</button> '
@@ -6700,7 +7042,7 @@ CSS;
     window.offrollEarnDecide = function (id, eid, action) {
         fetch(cfg.offrollAgentBase + '/earnings/' + eid + '/decide', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ action: action }) })
             .then(function (r) { return r.json(); }).then(function (j) {
-                if (j && j.ok) { if (typeof toast === 'function') { toast('Entry ' + action + 'd'); } offrollEarnings(id); }
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.warning ? j.warning : ('Entry ' + action + 'd')); } offrollEarnings(id); }
                 else if (typeof toast === 'function') { toast((j && j.error) || 'Failed'); }
             }).catch(function () { if (typeof toast === 'function') { toast('Failed'); } });
     };
@@ -7315,11 +7657,11 @@ CSS;
             + '<div style="font-size:12.5px;color:var(--text3)">These deductions reduce paid days in payroll for that month, for the selected scope. You can edit or delete this policy anytime.</div>';
     }
     // ---- Commission / Incentive bulk calculator -----------------------------
-    window.__CC = { cfg: { type: 'commission', month: '', basis: 'collected', formula: 'flat', flat_rate: 2.5, threshold: 100, status: 'pending', scope: 'all', scopeval: '', slabs: [], portfolio_rates: [] }, rows: [], preview: null };
+    window.__CC = { cfg: { type: 'commission', month: '', basis: 'collected', formula: 'flat', flat_rate: 2.5, threshold: 100, status: 'pending', scope: 'all', scopeval: '', payout_method: 'with_salary', payout_date: '', slabs: [], portfolio_rates: [] }, rows: [], preview: null };
     function ccG(id) { var e = document.getElementById(id); return e ? e.value : ''; }
     function ccReadCfg() {
         var c = window.__CC.cfg;
-        ['type', 'month', 'basis', 'formula', 'flat_rate', 'threshold', 'status', 'scope', 'scopeval'].forEach(function (k) { if (document.getElementById('cc_' + k)) { c[k] = ccG('cc_' + k); } });
+        ['type', 'month', 'basis', 'formula', 'flat_rate', 'threshold', 'status', 'scope', 'scopeval', 'payout_method', 'payout_date'].forEach(function (k) { if (document.getElementById('cc_' + k)) { c[k] = ccG('cc_' + k); } });
         var slabs = []; for (var i = 1; i <= 4; i++) { var r = ccG('cc_sr' + i); if (r !== '') { slabs.push({ upto: ccG('cc_su' + i), rate: r }); } } if (document.getElementById('cc_sr1')) { c.slabs = slabs; }
         var prs = []; for (var j = 1; j <= 6; j++) { var n = ccG('cc_pn' + j); if (n !== '') { prs.push({ name: n, rate: ccG('cc_pr' + j) }); } } if (document.getElementById('cc_pn1')) { c.portfolio_rates = prs; }
     }
@@ -7355,7 +7697,7 @@ CSS;
     };
     function ccPayload() {
         ccReadCfg(); ccCollectGrid(); var c = window.__CC.cfg;
-        return { type: c.type, month: c.month, basis: c.basis, formula: c.formula, flat_rate: Number(c.flat_rate || 0), threshold: Number(c.threshold || 100), slabs: (c.slabs || []).map(function (s) { return { upto: Number(s.upto || 0), rate: Number(s.rate || 0) }; }), portfolio_rates: (c.portfolio_rates || []).map(function (p) { return { name: p.name, rate: Number(p.rate || 0) }; }), rows: window.__CC.rows, status: c.status };
+        return { type: c.type, month: c.month, basis: c.basis, formula: c.formula, flat_rate: Number(c.flat_rate || 0), threshold: Number(c.threshold || 100), slabs: (c.slabs || []).map(function (s) { return { upto: Number(s.upto || 0), rate: Number(s.rate || 0) }; }), portfolio_rates: (c.portfolio_rates || []).map(function (p) { return { name: p.name, rate: Number(p.rate || 0) }; }), rows: window.__CC.rows, status: c.status, payout_method: c.payout_method || 'with_salary', payout_date: c.payout_date || '' };
     }
     window.ccCalc = function () { if (!window.__CC.rows.length) { if (typeof toast === 'function') { toast('Import a CSV first'); } return; } fetch(cfg.incentiveBase + '/calculate', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(ccPayload()) }).then(function (r) { return r.json(); }).then(function (j) { if (j && j.ok) { window.__CC.preview = j; if (typeof render === 'function') { render(); } } else if (typeof toast === 'function') { toast((j && j.error) || 'Calculation failed'); } }).catch(function () { if (typeof toast === 'function') { toast('Calculation failed'); } }); };
     window.ccCommit = function () { var p = ccPayload(); if (!p.month) { if (typeof toast === 'function') { toast('Enter the month (e.g. May 2026)'); } return; } if (!window.confirm('Create commission entries for ' + window.__CC.rows.length + ' row(s) for ' + p.month + '?')) { return; } fetch(cfg.incentiveBase + '/commit', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(p) }).then(function (r) { return r.json(); }).then(function (j) { if (j && j.ok) { if (typeof toast === 'function') { toast(j.message || 'Created'); } window.__CC.rows = []; window.__CC.preview = null; if (typeof render === 'function') { render(); } } else if (typeof toast === 'function') { toast((j && j.error) || 'Could not create'); } }).catch(function () { if (typeof toast === 'function') { toast('Could not create'); } }); };
@@ -7392,7 +7734,13 @@ CSS;
             }
             if (c.basis === 'target') { rateBox += '<div style="margin-top:10px;max-width:280px">' + fld('cc_threshold', 'Pay only if achievement % is at least', c.threshold, 'number') + '</div>'; }
         }
-        var configCard = '<div class="card" style="padding:18px 20px">' + top + basisFormula + rateBox + '</div>';
+        // rev181c (D3b) — payout controls for the whole batch: method + date.
+        var payoutRow = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px">'
+            + '<div><label style="' + lbl + '">Payout method</label><select id="cc_payout_method" style="' + inp + '">' + opt('with_salary', c.payout_method || 'with_salary', 'With salary (folds into the payslip)') + opt('separate', c.payout_method || 'with_salary', 'Separate payout (ledger + voucher)') + '</select></div>'
+            + '<div><label style="' + lbl + '">Payout date (optional — decides which payslip pays)</label><input id="cc_payout_date" type="date" value="' + ev(c.payout_date) + '" style="' + inp + '"></div>'
+            + '<div style="font-size:12px;color:var(--text3);align-self:end;padding-bottom:9px">Blank date + a payout lag in Statutory Rates = the lag applies automatically. Separate entries never touch payslips — pay them via Record Payment.</div>'
+            + '</div>';
+        var configCard = '<div class="card" style="padding:18px 20px">' + top + payoutRow + basisFormula + rateBox + '</div>';
 
         var loaded = window.__CC.rows.length;
         var emps = (typeof DB !== 'undefined' && DB.employees) || [];
@@ -7738,7 +8086,8 @@ CSS;
             : ('no punches yet &mdash; estimated by ' + m.workingSoFar + ' of ' + m.workingDays + ' working days elapsed');
         var head = '<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px">'
             + '<div><div style="font-size:19px;font-weight:800">' + e.name + ' <span style="color:var(--text3);font-weight:500;font-size:13px">(' + e.code + ') &middot; ' + (e.company || '') + '</span></div>'
-            + '<div style="font-size:12.5px;color:var(--text3);margin-top:3px">' + m.monthLabel + ' &middot; as of ' + m.today + ' &middot; ' + att + '</div></div>' + picker + '</div>';
+            + '<div style="font-size:12.5px;color:var(--text3);margin-top:3px">' + m.monthLabel + ' &middot; as of ' + m.today + ' &middot; ' + att + '</div></div>'
+            + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' + picker + '<button class="btn btn-outline btn-sm" onclick="salarySimOpen()" title="What-if: simulate any salary with every variable"><i class="fas fa-sliders"></i> Simulator</button></div></div>';
         // rev 84 (Ejaz): TWO figures — certain (approved) vs projected (incl.
         // commissions still awaiting approval), clearly separated.
         var pendC = Number(d.pendingCommission || 0);
@@ -7829,7 +8178,7 @@ CSS;
         } else {
             bodyHtml = big + '<div class="two-col">' + eCard + dCard + '</div>' + logCard;
         }
-        return pghead('Live Salary', 'Running-month salary, component by component, computed with the same engine as payroll', '')
+        return pghead('Live Salary', 'Running-month salary, component by component, computed with the same engine as payroll', '<button class="btn btn-outline" onclick="go(&#39;calc-logic&#39;)"><i class="fas fa-book-open"></i> How salary is calculated</button>')
             + head + tabs + bodyHtml
             + '<div style="font-size:11.5px;color:var(--text3);margin-top:10px">Live estimate &mdash; the final payslip is generated at month end with full attendance and approvals.</div>';
     }
@@ -8395,7 +8744,7 @@ CSS;
         // the backend returns a specific "<Field> is required" message we surface below.
         fetch(cfg.masterBase + '/' + masterType(type), { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ item: item }) })
             .then(function (r) { return r.json(); }).then(function (j) {
-                if (j && j.ok) { if (typeof toast === 'function') { toast('Saved'); } masterClose(); masterLoad(type); }
+                if (j && j.ok) { if (typeof toast === 'function') { toast(j.warning ? ('Saved — ' + j.warning) : 'Saved'); } masterClose(); masterLoad(type); }
                 else if (typeof toast === 'function') { toast((j && j.error) || 'Save failed'); }
             }).catch(function () { if (typeof toast === 'function') { toast('Save failed'); } });
     };
@@ -8419,7 +8768,7 @@ CSS;
     function inr(n) { return '₹' + Number(Math.round(n)).toLocaleString('en-IN'); }
     // Effective statutory rates: server-provided (window.__RATES) overlaid on safe defaults.
     function spRates() {
-        var d = { pf_wage_cap: 15000, pf_rate: 12, esi_threshold: 21000, esi_employee_rate: 0.75, esi_employer_rate: 3.25, pt_amount: 200, std_deduction: 75000, rebate_87a_limit: 1200000, cess_rate: 4, comm_tds_rate: 5, no_pan_tds_rate: 20, conveyance_enabled: 0, conveyance_rate: 0, tds_slabs: [{ upto: 400000, rate: 0 }, { upto: 800000, rate: 5 }, { upto: 1200000, rate: 10 }, { upto: 1600000, rate: 15 }, { upto: 2000000, rate: 20 }, { upto: 2400000, rate: 25 }, { upto: 0, rate: 30 }] };
+        var d = { pf_wage_cap: 15000, pf_rate: 12, esi_threshold: 21000, esi_employee_rate: 0.75, esi_employer_rate: 3.25, pt_amount: 200, std_deduction: 75000, rebate_87a_limit: 1200000, cess_rate: 4, comm_tds_rate: 5, no_pan_tds_rate: 20, conveyance_enabled: 0, conveyance_rate: 0, lop_basis: 'working', payslip_show_ytd: 1, sandwich_rule: 0, bonus_pct: 8.33, tds_slabs: [{ upto: 400000, rate: 0 }, { upto: 800000, rate: 5 }, { upto: 1200000, rate: 10 }, { upto: 1600000, rate: 15 }, { upto: 2000000, rate: 20 }, { upto: 2400000, rate: 25 }, { upto: 0, rate: 30 }] };
         var r = window.__RATES || {};
         var out = {}; for (var k in d) { out[k] = (r[k] != null) ? r[k] : d[k]; }
         if (!out.tds_slabs || !out.tds_slabs.length) { out.tds_slabs = d.tds_slabs; }
@@ -8452,10 +8801,14 @@ CSS;
             var mode = r.payslip_dl_mode || 'all';
             var mopts = [['all', 'Everyone may download their own payslip'], ['none', 'Nobody — HR/Admin only'], ['dept', 'Block selected departments'], ['emp', 'Block selected employees']];
             m.innerHTML = '<div class="card" style="max-width:560px;width:100%;padding:0">'
-                + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px">Payslip Download Policy</h3><button class="btn btn-outline btn-sm" onclick="document.getElementById(\'pspol-modal\').remove()"><i class="fas fa-xmark"></i></button></div>'
+                + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px">Payslip Policy</h3><button class="btn btn-outline btn-sm" onclick="document.getElementById(\'pspol-modal\').remove()"><i class="fas fa-xmark"></i></button></div>'
                 + '<div style="padding:20px 22px">'
-                + '<div style="font-size:12px;color:var(--text3);margin-bottom:14px">Controls whether employees can download their own payslip PDF from My Space. HR and Admin can ALWAYS download or email any payslip regardless of this policy.</div>'
+                + '<div style="font-size:12px;color:var(--text3);margin-bottom:14px">Controls whether employees can download their own payslip PDF from My Space, and what the payslip PDF shows. HR and Admin can ALWAYS download or email any payslip regardless of this policy.</div>'
                 + '<div style="margin-bottom:12px"><label style="' + lbl + '">Who may self-download</label><select id="pspol_mode" onchange="psPolicyMode()" style="' + inp + '">' + mopts.map(function (o) { return '<option value="' + o[0] + '"' + (mode === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>'
+                + '<div style="margin-bottom:12px"><label style="' + lbl + '">YTD column on payslips</label><select id="pspol_ytd" style="' + inp + '">'
+                + '<option value="1"' + (Number(r.payslip_show_ytd != null ? r.payslip_show_ytd : 1) !== 0 ? ' selected' : '') + '>Show — Month + financial-year-to-date on every line</option>'
+                + '<option value="0"' + (Number(r.payslip_show_ytd != null ? r.payslip_show_ytd : 1) === 0 ? ' selected' : '') + '>Hide — month figures only</option>'
+                + '</select><div style="font-size:11px;color:var(--text3);margin-top:3px">YTD totals run from April (financial year). Applies to every payslip PDF generated after saving — old downloads are unaffected.</div></div>'
                 + '<div id="pspol_dept_w" style="margin-bottom:12px;display:none"><label style="' + lbl + '">Blocked departments (comma-separated)</label><textarea id="pspol_depts" rows="2" style="' + inp + ';resize:vertical" placeholder="Collections, Field Operations">' + ((r.payslip_dl_depts || []).join(', ')) + '</textarea></div>'
                 + '<div id="pspol_emp_w" style="margin-bottom:12px;display:none"><label style="' + lbl + '">Blocked employee codes (comma-separated)</label><textarea id="pspol_emps" rows="2" style="' + inp + ';resize:vertical" placeholder="EMP-1001, EMP-1042">' + ((r.payslip_dl_emps || []).join(', ')) + '</textarea></div>'
                 + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn btn-outline" onclick="document.getElementById(\'pspol-modal\').remove()">Cancel</button><button class="btn btn-primary" onclick="psPolicySave()"><i class="fas fa-check"></i> Save Policy</button></div>'
@@ -8479,7 +8832,7 @@ CSS;
     window.psPolicySave = function () {
         var g = function (id) { var el = document.getElementById(id); return el ? el.value : ''; };
         var split = function (id) { return g(id).split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s; }); };
-        var payload = { payslip_dl_mode: g('pspol_mode') || 'all', payslip_dl_depts: split('pspol_depts'), payslip_dl_emps: split('pspol_emps') };
+        var payload = { payslip_dl_mode: g('pspol_mode') || 'all', payslip_dl_depts: split('pspol_depts'), payslip_dl_emps: split('pspol_emps'), payslip_show_ytd: Number(g('pspol_ytd') === '' ? 1 : g('pspol_ytd')) };
         fetch(cfg.settingsSaveUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
             .then(function (r) { return r.json(); })
             .then(function (d) {
@@ -8489,7 +8842,7 @@ CSS;
     };
     function payslipHistoryScreen() {
         var ps = window.__PAYSLIPS || [];
-        var sampleBtn = '<button class="btn btn-outline btn-sm" onclick="psPolicyOpen()"><i class="fas fa-user-lock"></i> Download Policy</button> <button class="btn btn-ghost btn-sm" onclick="viewSamplePayslip()"><i class="fas fa-eye"></i> View Sample Payslip</button>';
+        var sampleBtn = '<button class="btn btn-outline btn-sm" onclick="psPolicyOpen()"><i class="fas fa-user-lock"></i> Payslip Policy</button> <button class="btn btn-ghost btn-sm" onclick="viewSamplePayslip()"><i class="fas fa-eye"></i> View Sample Payslip</button>';
         var title = (typeof SCREENS !== 'undefined' && SCREENS.payslip && SCREENS.payslip.title) || 'Payslips';
         if (!ps.length) {
             return pghead(title, 'Monthly payslip history', sampleBtn) + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No payslips yet — open Payroll → Generate Payroll.</div></div>';
@@ -8543,11 +8896,14 @@ CSS;
             + '<div class="card"><div class="card-header"><div><h3>Payslips — ' + labelFor(sel) + '</h3><p>' + inMonth.length + ' employee(s) · net payable ' + inr(totNet) + '</p></div><div class="actions">' + filter + '</div></div><div class="table-wrap"><table><thead><tr><th>Code</th><th>Employee</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Status</th><th style="text-align:right">Payslip</th></tr></thead><tbody>' + (inMonth.length ? rows : '<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:24px">No payslips match the filters.</td></tr>') + '</tbody></table></div></div>';
     }
     window.viewSamplePayslip = function () {
+        // rev179 — the sample honours the Payslip Policy YTD toggle, so what
+        // HR previews here is exactly what the real PDFs will look like.
+        var sy = Number((window.__RATES && window.__RATES.payslip_show_ytd != null) ? window.__RATES.payslip_show_ytd : (spRates().payslip_show_ytd != null ? spRates().payslip_show_ytd : 1)) !== 0;
         var me = function (l, v) { return '<td style="padding:4px 10px 4px 0;vertical-align:top;width:33%"><div style="font-size:9px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3)">' + l + '</div><div style="font-size:12px">' + v + '</div></td>'; };
         var th = function (t, a) { return '<th style="text-align:' + a + ';padding:4px 8px;background:var(--bg2,#f1f5f9);font-size:9px;text-transform:uppercase;color:var(--text3)">' + t + '</th>'; };
-        var er = function (n, mn, y) { return '<tr><td style="padding:3px 8px;border-bottom:1px solid var(--border)">' + n + '</td><td style="padding:3px 8px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono)">' + mn + '</td><td style="padding:3px 8px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);color:var(--text3)">' + (y || '') + '</td></tr>'; };
-        var gr = function (t) { return '<tr><td colspan="3" style="padding:4px 8px;background:var(--bg2,#f8fafc);font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:var(--text2)">' + t + '</td></tr>'; };
-        var tot = function (n, v, bd) { return '<tr><td style="padding:4px 8px;border-top:' + bd + ';font-weight:700">' + n + '</td><td style="padding:4px 8px;border-top:' + bd + ';text-align:right;font-family:var(--mono);font-weight:700">' + v + '</td><td style="border-top:' + bd + '"></td></tr>'; };
+        var er = function (n, mn, y) { return '<tr><td style="padding:3px 8px;border-bottom:1px solid var(--border)">' + n + '</td><td style="padding:3px 8px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono)">' + mn + '</td>' + (sy ? '<td style="padding:3px 8px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);color:var(--text3)">' + (y || '') + '</td>' : '') + '</tr>'; };
+        var gr = function (t) { return '<tr><td colspan="' + (sy ? 3 : 2) + '" style="padding:4px 8px;background:var(--bg2,#f8fafc);font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:var(--text2)">' + t + '</td></tr>'; };
+        var tot = function (n, v, bd) { return '<tr><td style="padding:4px 8px;border-top:' + bd + ';font-weight:700">' + n + '</td><td style="padding:4px 8px;border-top:' + bd + ';text-align:right;font-family:var(--mono);font-weight:700">' + v + '</td>' + (sy ? '<td style="border-top:' + bd + '"></td>' : '') + '</tr>'; };
         var lg = function (f, m) { return '<tr><td style="padding:4px 8px;border-bottom:1px solid var(--border);font-weight:600;white-space:nowrap;vertical-align:top">' + f + '</td><td style="padding:4px 8px;border-bottom:1px solid var(--border);color:var(--text2)">' + m + '</td></tr>'; };
         var ls = function (t) { return '<tr><td colspan="2" style="padding:6px 8px;background:var(--bg2,#f8fafc);font-weight:700;font-size:12px">' + t + '</td></tr>'; };
 
@@ -8569,7 +8925,7 @@ CSS;
             + '<tr>' + me('Employee Type', 'Field') + me('Annual CTC', '&#8377;2,40,000.00') + me('Pay Date', '31 Aug 2026') + '</tr>'
             + '</tbody></table>';
 
-        var earn = '<table style="width:100%;border-collapse:collapse;border:1px solid var(--border)"><thead><tr>' + th('Earnings', 'left') + th('Month', 'right') + th('YTD', 'right') + '</tr></thead><tbody>'
+        var earn = '<table style="width:100%;border-collapse:collapse;border:1px solid var(--border)"><thead><tr>' + th('Earnings', 'left') + th('Month', 'right') + (sy ? th('YTD', 'right') : '') + '</tr></thead><tbody>'
             + gr('A &#183; Fixed (guaranteed)')
             + er('Basic', '&#8377;9,000.00', '&#8377;45,000.00')
             + er('HRA', '&#8377;3,600.00', '&#8377;18,000.00')
@@ -8584,7 +8940,7 @@ CSS;
             + tot('Reimbursements (C)', '&#8377;3,000.00', '1px dashed var(--border)')
             + '</tbody></table>';
 
-        var ded = '<table style="width:100%;border-collapse:collapse;border:1px solid var(--border)"><thead><tr>' + th('Deductions', 'left') + th('Month', 'right') + th('YTD', 'right') + '</tr></thead><tbody>'
+        var ded = '<table style="width:100%;border-collapse:collapse;border:1px solid var(--border)"><thead><tr>' + th('Deductions', 'left') + th('Month', 'right') + (sy ? th('YTD', 'right') : '') + '</tr></thead><tbody>'
             + er('PF (12% of Basic)', '&#8377;1,080.00', '&#8377;5,400.00')
             + er('ESI (0.75% of wage)', '&#8377;139.00', '&#8377;695.00')
             + er('Professional Tax', '&#8377;150.00', '&#8377;750.00')
@@ -8627,7 +8983,7 @@ CSS;
             + lg('B &#183; Variable', 'Performance pay (collection incentive, recovery commission). Banks usually discount this as it fluctuates.')
             + lg('C &#183; Reimbursements', 'Bills-based payouts (fuel, field allowance). Non-taxable, paid on top, and excluded from the PF/ESI wage base.')
             + lg('Gross Earnings (A + B)', 'The wage on which statutory deductions are computed.')
-            + lg('Month / YTD', 'Each line shows this month plus the financial-year-to-date total (from April).')
+            + (sy ? lg('Month / YTD', 'Each line shows this month plus the financial-year-to-date total (from April). The YTD column can be switched off under Payslip Policy on this screen.') : lg('Month column', 'Payslips currently show month figures only — the YTD (financial-year-to-date) column is switched OFF under Payslip Policy on this screen. Enable it there to add running totals from April.'))
             + ls('Deductions')
             + lg('PF', 'Provident Fund &mdash; 12% of Basic (capped at &#8377;15,000 Basic).')
             + lg('ESI', '0.75% of wage when eligible (wage &le; &#8377;21,000).')
@@ -9407,19 +9763,34 @@ CSS;
             + rateField('No-PAN higher TDS (%)', 'no_pan_tds_rate', r.no_pan_tds_rate)
             + rateToggle('Conveyance allowance', 'conveyance_enabled', r.conveyance_enabled)
             + rateField('Conveyance rate (% of Basic, PF cap)', 'conveyance_rate', r.conveyance_rate)
+            + rateField('Statutory bonus % (8.33–20)', 'bonus_pct', r.bonus_pct != null ? r.bonus_pct : 8.33)
             + '</div>';
         var selStyle = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
         var selLbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
         var wodOpts = [['sunday', 'Sunday'], ['monday', 'Monday'], ['tuesday', 'Tuesday'], ['wednesday', 'Wednesday'], ['thursday', 'Thursday'], ['friday', 'Friday'], ['saturday', 'Saturday']];
         var satOpts = [['none', 'All Saturdays working'], ['2_4', '2nd & 4th Saturday off'], ['1_3', '1st & 3rd Saturday off'], ['all', 'All Saturdays off']];
+        // rev177 — LOP / per-day basis: what one day of salary is worth when prorating.
+        var lopOpts = [['working', 'Working days (month minus offs & holidays)'], ['calendar', 'Calendar days (offs & holidays are paid)'], ['fixed30', 'Fixed 30 days every month']];
         var mkSel = function (id, opts, cur) { return '<select id="rate_' + id + '" style="' + selStyle + '">' + opts.map(function (o) { return '<option value="' + o[0] + '"' + (String(cur || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>'; };
         var weekOff = '<h3 style="margin:20px 0 6px;font-size:15px">Weekly offs (non-working days)</h3>'
             + '<p style="font-size:12px;color:var(--text3);margin:0 0 8px">Payroll working days = days in month &minus; weekly offs below &minus; holidays from the <b>Leave &rarr; Holidays</b> calendar. Loss-of-pay is never charged for these days.</p>'
             + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">'
             + '<div><label style="' + selLbl + '">Weekly off day</label>' + mkSel('weekly_off_day', wodOpts, r.weekly_off_day || 'sunday') + '</div>'
             + '<div><label style="' + selLbl + '">Saturday policy</label>' + mkSel('sat_off_mode', satOpts, r.sat_off_mode || 'none') + '<div style="font-size:11px;color:var(--text3);margin-top:3px">e.g. banks/NBFCs: 2nd &amp; 4th Saturday off</div></div>'
+            + '<div><label style="' + selLbl + '">Salary / LOP day basis</label>' + mkSel('lop_basis', lopOpts, r.lop_basis || 'working') + '<div style="font-size:11px;color:var(--text3);margin-top:3px">Calendar: 1 LOP day costs gross &divide; days in month (matches most Indian payslips, e.g. "Total days 31"). Working: gross &divide; working days. Fixed 30: gross &divide; 30.</div></div>'
+            + '<div><label style="' + selLbl + '">Sandwich rule</label>' + mkSel('sandwich_rule', [['0', 'Off (default)'], ['1', 'On — off-day between two absent days = LOP']], String(r.sandwich_rule != null ? r.sandwich_rule : 0)) + '<div style="font-size:11px;color:var(--text3);margin-top:3px">Example: absent Saturday &amp; Monday &rarr; Sunday also becomes loss-of-pay when ON.</div></div>'
             + '</div>';
         grid += weekOff;
+        // rev181 — money-point gates (collection industry): DRA validity + points eligibility.
+        var gateOpts = [['off', 'Off - no check'], ['warn', 'Warn - pay but flag (default)'], ['block', 'Block - refuse until valid']];
+        var gates = '<h3 style="margin:20px 0 6px;font-size:15px">Money-point gates (collection industry)</h3>'
+            + '<p style="font-size:12px;color:var(--text3);margin:0 0 8px">Checked when incentives are bulk-committed, commissions approved and off-roll earnings approved. The DRA gate reads the <b>DRA Certifications</b> screen; the points gate reads the <b>Points Ledger</b> for the incentive month (points never convert to money — they only decide eligibility).</p>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">'
+            + '<div><label style="' + selLbl + '">DRA certification gate</label>' + mkSel('dra_gate', gateOpts, r.dra_gate || 'warn') + '<div style="font-size:11px;color:var(--text3);margin-top:3px">Expired/missing DRA: Warn pays but records it in the audit log; Block refuses the payout.</div></div>'
+            + rateField('Min points in month for incentives (0 = off)', 'points_gate_min', r.points_gate_min != null ? r.points_gate_min : 0, 'Bulk incentive commit skips agents below this many points in the incentive month.')
+            + rateField('Incentive payout lag (months, 0 = off)', 'incentive_payout_lag', r.incentive_payout_lag != null ? r.incentive_payout_lag : 0, 'Entries without a payout date auto-pay N months after the earned month — the retention-guard lag.')
+            + '</div>';
+        grid += gates;
         var slabTbl = '<h3 style="margin:20px 0 6px;font-size:15px">Income-tax slabs (new regime)</h3>'
             + '<p style="font-size:12px;color:var(--text3);margin:0 0 8px">Annual taxable income up to the amount is taxed at the rate beside it. Put 0 in the last row to mean "and above".</p>'
             + '<table style="border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px 8px 4px 0;font-size:11px;color:var(--text3)">Up to (₹)</th><th style="text-align:left;padding:4px 0;font-size:11px;color:var(--text3)">Rate</th></tr></thead><tbody>' + slabRows + '</tbody></table>';
@@ -9435,10 +9806,10 @@ CSS;
         m.onclick = function (e) { if (e.target === m) { rateSettingsClose(); } };
     }
     window.rateSettingsSave = function () {
-        var keys = ['pf_wage_cap', 'pf_rate', 'pt_amount', 'esi_threshold', 'esi_employee_rate', 'esi_employer_rate', 'std_deduction', 'rebate_87a_limit', 'cess_rate', 'comm_tds_rate', 'no_pan_tds_rate', 'conveyance_enabled', 'conveyance_rate'];
+        var keys = ['pf_wage_cap', 'pf_rate', 'pt_amount', 'esi_threshold', 'esi_employee_rate', 'esi_employer_rate', 'std_deduction', 'rebate_87a_limit', 'cess_rate', 'comm_tds_rate', 'no_pan_tds_rate', 'conveyance_enabled', 'conveyance_rate', 'bonus_pct', 'sandwich_rule', 'points_gate_min', 'incentive_payout_lag'];
         var payload = {};
         keys.forEach(function (k) { var el = document.getElementById('rate_' + k); if (el && el.value !== '') { payload[k] = Number(el.value); } });
-        ['weekly_off_day', 'sat_off_mode'].forEach(function (k) { var el = document.getElementById('rate_' + k); if (el && el.value !== '') { payload[k] = el.value; } });
+        ['weekly_off_day', 'sat_off_mode', 'lop_basis', 'dra_gate'].forEach(function (k) { var el = document.getElementById('rate_' + k); if (el && el.value !== '') { payload[k] = el.value; } });
         var uptos = document.querySelectorAll('.slab_upto'); var rs = document.querySelectorAll('.slab_rate');
         var slabs = []; for (var i = 0; i < uptos.length; i++) { slabs.push({ upto: Number(uptos[i].value) || 0, rate: Number(rs[i].value) || 0 }); }
         payload.tds_slabs = slabs;
@@ -9449,6 +9820,109 @@ CSS;
                 else if (typeof toast === 'function') { toast('Save failed — admin only'); }
             }).catch(function () { if (typeof toast === 'function') { toast('Save failed'); } });
     };
+    // ---- rev178: SALARY SIMULATOR — every variable on the left, a live
+    // payslip-style illustration on the right. Computed SERVER-SIDE by the
+    // real payroll engine (POST /app/salary-simulate); writes nothing; open
+    // to all roles. Openable from Generate Payroll, Live Salary and Recruitment.
+    window.salarySimOpen = function () {
+        var m = document.getElementById('salsim-modal');
+        if (!m) { m = document.createElement('div'); m.id = 'salsim-modal'; document.body.appendChild(m); }
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:26px 14px;overflow:auto';
+        var inp = 'width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:13.5px;background:#fff;font-family:var(--font2)';
+        var lbl = 'font-size:10.5px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:3px';
+        var fld = function (label, id, val, type, hint) {
+            return '<div style="margin-bottom:10px"><label style="' + lbl + '">' + label + '</label>'
+                + '<input id="ss_' + id + '" type="' + (type || 'number') + '" min="0" value="' + (val != null ? val : '') + '" oninput="salarySimQueue()" style="' + inp + '">'
+                + (hint ? '<div style="font-size:10.5px;color:var(--text3);margin-top:2px">' + hint + '</div>' : '') + '</div>';
+        };
+        var sfd = function (label, id, opts, cur, hint) {
+            return '<div style="margin-bottom:10px"><label style="' + lbl + '">' + label + '</label>'
+                + '<select id="ss_' + id + '" onchange="salarySimQueue()" style="' + inp + '">'
+                + opts.map(function (o) { return '<option value="' + o[0] + '"' + (String(cur) === String(o[0]) ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
+                + '</select>'
+                + (hint ? '<div style="font-size:10.5px;color:var(--text3);margin-top:2px">' + hint + '</div>' : '') + '</div>';
+        };
+        var comps = (typeof DB !== 'undefined' && DB.companies) || [];
+        var compOpts = [['', 'Standard split (Basic 50% / HRA / Special)']].concat(comps.map(function (c) { return [c.id, c.name + ' — its Salary Structure']; }));
+        var r = spRates();
+        var nowMonth = new Date().toISOString().slice(0, 7);
+        var divider = function (t) { return '<div style="border-top:1px dashed var(--border);margin:12px 0 10px;padding-top:8px;font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">' + t + '</div>'; };
+        var left = '<div style="overflow:auto;max-height:74vh;padding-right:6px">'
+            + '<h4 style="margin:0 0 10px;font-size:13px;color:var(--text2)"><i class="fas fa-sliders"></i> Variables — change anything, the payslip updates live</h4>'
+            + fld('Annual CTC (₹)', 'ctc', 300000, 'number', 'The offer figure — everything derives from this')
+            + fld('Month', 'month', nowMonth, 'month', 'Decides days in month, weekly offs and holidays')
+            + sfd('Salary structure', 'company', compOpts, '', 'Pick a company to apply ITS component structure')
+            + sfd('Employment stage', 'stage', [['', 'Permanent'], ['probation', 'Probation — no PF / PT / TDS'], ['internship', 'Internship — no PF / PT / TDS']], '')
+            + fld('PT state (optional)', 'ptstate', '', 'text', 'e.g. Telangana, Maharashtra — drives the state PT slab; blank = default slab')
+            + sfd('LOP day basis', 'basis', [['working', 'Working days'], ['calendar', 'Calendar days (offs paid)'], ['fixed30', 'Fixed 30 days']], (r.lop_basis || 'working'), 'What one absent day costs')
+            + fld('LOP / absent days', 'lop', 0, 'number', 'Days of pay lost this month')
+            + divider('Extra earnings')
+            + fld('Commission / incentive (₹ net)', 'comm', 0, 'number', 'Approved commission due this month, after TDS')
+            + fld('Overtime hours', 'oth', 0, 'number', 'Pays hours × multiplier × hourly rate (gross ÷ 26 ÷ 8)')
+            + fld('OT multiplier', 'otm', 2, 'number', '2x is the standard')
+            + fld('Night shifts worked', 'nn', 0, 'number', '')
+            + fld('Night allowance (₹ per night)', 'nr', 0, 'number', 'From the Working Shifts master')
+            + divider('Recoveries')
+            + fld('Loan EMI (₹ this month)', 'emi', 0, 'number', '')
+            + fld('Salary advance to recover (₹)', 'adv', 0, 'number', '')
+            + '</div>';
+        var inner = '<div class="card" style="max-width:1180px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:8px">'
+            + '<h3 style="margin:0;font-size:17px"><i class="fas fa-calculator" style="color:#e8590c"></i> Salary Simulator <span style="font-size:11px;font-weight:600;color:#b45309;background:#fef3c7;padding:2px 10px;border-radius:12px;margin-left:8px">uses the real payroll engine &middot; writes nothing</span></h3>'
+            + '<div style="display:flex;gap:8px"><button class="btn btn-outline btn-sm" onclick="salarySimPrint()"><i class="fas fa-print"></i> Print / PDF</button><button class="btn btn-outline btn-sm" onclick="salarySimClose()"><i class="fas fa-xmark"></i></button></div></div>'
+            + '<div style="display:grid;grid-template-columns:minmax(280px,340px) 1fr" id="ss_grid">'
+            + '<div style="padding:16px 18px;border-right:1px solid var(--border);background:#fbfaf8">' + left + '</div>'
+            + '<div id="ss_out" style="padding:18px;background:#eceff3;overflow:auto;max-height:78vh"><div style="padding:40px;text-align:center;color:var(--text3)">Calculating…</div></div>'
+            + '</div></div>';
+        m.innerHTML = inner;
+        m.style.display = 'flex';
+        m.onclick = function (e) { if (e.target === m) { salarySimClose(); } };
+        if (window.innerWidth < 760) { var gEl = document.getElementById('ss_grid'); if (gEl) { gEl.style.gridTemplateColumns = '1fr'; } }
+        salarySimRun();
+    };
+    window.salarySimClose = function () { var m = document.getElementById('salsim-modal'); if (m) { m.style.display = 'none'; } };
+    window.salarySimQueue = function () { clearTimeout(window.__SIMT); window.__SIMT = setTimeout(window.salarySimRun, 350); };
+    window.salarySimRun = function () {
+        var g = function (id) { var el = document.getElementById('ss_' + id); return el ? el.value : ''; };
+        var payload = { ctc: Number(g('ctc')) || 0, month: g('month'), company_id: g('company') || 0, stage: g('stage'), pt_state: g('ptstate'), lop_basis: g('basis'), lop_days: Number(g('lop')) || 0, commission: Number(g('comm')) || 0, ot_hours: Number(g('oth')) || 0, ot_mult: Number(g('otm')) || 2, nights: Number(g('nn')) || 0, night_rate: Number(g('nr')) || 0, loan_emi: Number(g('emi')) || 0, advance: Number(g('adv')) || 0 };
+        fetch(cfg.salarySimUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify(payload) })
+            .then(function (x) { return x.json(); })
+            .then(function (d) { var out = document.getElementById('ss_out'); if (out) { out.innerHTML = salarySimSlip(d); } })
+            .catch(function () { var out = document.getElementById('ss_out'); if (out) { out.innerHTML = '<div style="padding:30px;color:var(--red)">Could not compute — check the inputs.</div>'; } });
+    };
+    function salarySimSlip(d) {
+        var esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
+        if (!d || !d.ok) { return '<div style="padding:30px;color:var(--red)"><b>' + esc((d && d.error) || 'Could not compute') + '</b></div>'; }
+        var tdL = 'padding:5px 12px;border-bottom:1px solid #eee;font-size:12.5px';
+        var tdR = tdL + ';text-align:right';
+        var rowsE = Object.keys(d.earnings || {}).map(function (k) { return '<tr><td style="' + tdL + '">' + esc(k) + '</td><td style="' + tdR + '">' + inr(d.earnings[k]) + '</td></tr>'; }).join('');
+        var rowsD = Object.keys(d.deductions || {}).map(function (k) { return '<tr><td style="' + tdL + '">' + esc(k) + '</td><td style="' + tdR + '">' + inr(d.deductions[k]) + '</td></tr>'; }).join('');
+        var rowsM = Object.keys(d.employer || {}).map(function (k) { return esc(k) + ' ' + inr(d.employer[k]); }).join(' &middot; ');
+        var basisTxt = d.basis === 'calendar' ? ('calendar days (' + d.daysInMonth + ')') : (d.basis === 'fixed30' ? 'fixed 30 days' : ('working days (' + d.workingDays + ')'));
+        return '<div id="ss_sheet" style="background:#fff;max-width:680px;margin:0 auto;box-shadow:0 8px 30px rgba(0,0,0,.18);border-radius:6px;overflow:hidden;font-family:Segoe UI,Arial,sans-serif;color:#1f2430">'
+            + '<div style="background:#fef3c7;color:#92400e;text-align:center;font-weight:800;font-size:11px;letter-spacing:2px;padding:5px">S I M U L A T I O N &nbsp;&mdash;&nbsp; NOT AN ACTUAL PAYSLIP</div>'
+            + '<div style="padding:18px 26px 10px;border-bottom:2px solid #1f2430"><div style="font-size:17px;font-weight:800">Salary Illustration &mdash; ' + d.monthLabel + '</div>'
+            + '<div style="font-size:12px;color:#555;margin-top:4px">Annual CTC ' + inr((d.monthlyGross || 0) * 12) + ' &middot; Monthly gross ' + inr(d.monthlyGross) + (d.structure ? ' &middot; structure: ' + esc(d.structure) : '') + (d.stage ? ' &middot; stage: ' + esc(d.stage) : '') + '</div>'
+            + '<div style="font-size:12px;color:#555;margin-top:2px">Attendance: ' + (d.lopDays > 0 ? (d.lopDays + ' LOP day(s) on ' + basisTxt + ' &rarr; paid factor ' + (Math.round(d.factor * 1000) / 10) + '%') : ('full month &middot; basis: ' + basisTxt)) + '</div></div>'
+            + '<div style="display:grid;grid-template-columns:1fr 1fr">'
+            + '<div style="border-right:1px solid #eee"><div style="background:#f6f7f9;font-weight:700;font-size:12px;padding:6px 12px;letter-spacing:.5px">EARNINGS</div><table style="width:100%;border-collapse:collapse">' + rowsE + '<tr><td style="padding:8px 12px;font-weight:800;font-size:12.5px">Gross Earnings</td><td style="padding:8px 12px;text-align:right;font-weight:800;font-size:12.5px">' + inr(d.gross) + '</td></tr></table></div>'
+            + '<div><div style="background:#f6f7f9;font-weight:700;font-size:12px;padding:6px 12px;letter-spacing:.5px">DEDUCTIONS</div><table style="width:100%;border-collapse:collapse">' + (rowsD || '<tr><td style="' + tdL + ';color:#888">None</td><td></td></tr>') + '<tr><td style="padding:8px 12px;font-weight:800;font-size:12.5px">Total Deductions</td><td style="padding:8px 12px;text-align:right;font-weight:800;font-size:12.5px">' + inr(d.totalDed) + '</td></tr></table></div>'
+            + '</div>'
+            + '<div style="background:#1f2430;color:#fff;display:flex;justify-content:space-between;align-items:center;padding:12px 26px"><span style="font-size:13px;letter-spacing:.5px">NET PAY (take-home this month)</span><b style="font-size:22px">' + inr(d.net) + '</b></div>'
+            + (rowsM ? '<div style="padding:8px 26px;font-size:11px;color:#666;border-bottom:1px solid #eee">Employer contributions (cost to company, NOT deducted from salary): ' + rowsM + '</div>' : '')
+            + (d.capNote ? '<div style="padding:8px 26px;font-size:11px;color:#b45309;background:#fffbeb">' + esc(d.capNote) + '</div>' : '')
+            + '<div style="padding:8px 26px 14px;font-size:10.5px;color:#999">Computed by the SmartPRS payroll engine with the configured statutory rates (PF, ESI, PT, TDS new regime). Illustration only &mdash; the real payslip depends on actual attendance and approvals.</div>'
+            + '</div>';
+    }
+    window.salarySimPrint = function () {
+        var sheet = document.getElementById('ss_sheet');
+        if (!sheet) { return; }
+        var w = window.open('', '_blank');
+        if (!w) { if (typeof toast === 'function') { toast('Allow pop-ups to print'); } return; }
+        w.document.write('<html><head><title>Salary Illustration</title></head><body style="background:#fff;margin:20px">' + sheet.outerHTML + '<script>window.onload = function () { window.print(); };<\/script></body></html>');
+        w.document.close();
+    };
+
     // Bulk employee import (CSV) + template download, added to the top bar.
     function wireImport(cfg) {
         var bar = document.querySelector('.topbar-actions');

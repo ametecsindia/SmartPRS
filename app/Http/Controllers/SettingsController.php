@@ -42,12 +42,19 @@ class SettingsController extends Controller
             'lwf_employee' => 0,          // LWF employee amount deducted per payroll month (₹) when enabled
             'conveyance_enabled' => 0,    // OPTIONAL Conveyance DEDUCTION toggle (0 = off, the default). Works exactly like PF when on.
             'conveyance_rate' => 0,       // Conveyance deduction rate — SAME CONDITIONS AS PF: rate% of min(Basic+DA, pf_wage_cap). Deducted on the payslip (own "Conveyance" line) only when enabled AND rate > 0; disabled = no deduction.
+            'payslip_show_ytd' => 1,      // rev179 — show the YTD (financial-year-to-date) column on payslip PDFs: 1 = on (default), 0 = month-only payslips
             'payslip_dl_mode' => 'all',   // rev172 — employee SELF-download of payslips: all | none | dept (block listed departments) | emp (block listed emp codes). HR/Admin can always download.
             'payslip_dl_depts' => [],     // department names blocked when mode = dept
             'payslip_dl_emps' => [],      // emp codes blocked when mode = emp
             'weekly_off_day' => 'sunday', // rev172 — weekly off day; payroll working-days exclude it (plus the Saturday policy below and the Holidays calendar)
             'sat_off_mode' => 'none',     // rev172 — Saturday policy: none (all working) | all | 2_4 (2nd & 4th off) | 1_3 (1st & 3rd off)
+            'lop_basis' => 'working',     // rev177 — LOP per-day basis: working (denominator = month − offs − holidays; 1 absent day costs gross/working-days) | calendar (denominator = days in month; weekly offs & holidays are PAID days — matches the common Indian payslip "Total days 31, LOP 2") | fixed30 (every month is a flat 30 days; per-day = gross/30)
+            'sandwich_rule' => 0,         // rev180 — OPTIONAL sandwich rule: a weekly off/holiday BETWEEN two absent working days counts as LOP too. Off by default.
+            'bonus_pct' => 8.33,          // rev180 — statutory bonus % for the Bonus Register (Payment of Bonus Act: min 8.33%, max 20%)
             'incentive_min_compliance' => 60, // F1 — min compliance score (0–100) to pay an incentive without an override note
+            'dra_gate' => 'warn',         // rev181 — DRA-expiry gate at money points (incentive commit / commission approval / off-roll earning approval): off | warn (default — pays but warns + audits) | block (refuses until the DRA cert is valid)
+            'points_gate_min' => 0,       // rev181 — minimum points EARNED IN THE INCENTIVE MONTH to be eligible on bulk incentive commit; 0 = gate off. Points stay a scoreboard — this gates ELIGIBILITY only, it never converts points to money.
+            'incentive_payout_lag' => 0,  // rev181c (D4) — retention guard: when a commission entry / bulk commit has NO payout date, auto-set it N months after the earned month (0 = off). Incentive timing is contractual — the lag keeps 1–N months of incentive always in the pipeline.
             'data_retention_months' => 84,    // G5 — record / recording retention period (months); 84 = 7 years
             'contact_window_start' => '08:00', // H1 — lawful borrower-contact window start (RBI 08:00–19:00)
             'contact_window_end' => '19:00',   // H1 — lawful borrower-contact window end
@@ -134,8 +141,15 @@ class SettingsController extends Controller
             'pt_amount' => $num, 'std_deduction' => $num, 'rebate_87a_limit' => $num,
             'cess_rate' => $num, 'comm_tds_rate' => $num, 'no_pan_tds_rate' => $num,
             'conveyance_enabled' => $num, 'conveyance_rate' => $num,
+            'payslip_show_ytd' => $num, // rev179 — 1/0 toggle
+            'sandwich_rule' => $num,    // rev180 — 1/0 toggle
+            'bonus_pct' => $num,        // rev180 — statutory bonus %
+            'points_gate_min' => $num,  // rev181 — monthly points threshold (0 = off)
+            'incentive_payout_lag' => $num, // rev181c — payout lag months (0 = off)
+            'dra_gate' => ['nullable', 'in:off,warn,block'], // rev181 — DRA money-point gate
             'weekly_off_day' => ['nullable', 'in:sunday,monday,tuesday,wednesday,thursday,friday,saturday'],
             'sat_off_mode' => ['nullable', 'in:none,all,2_4,1_3'],
+            'lop_basis' => ['nullable', 'in:working,calendar,fixed30'], // rev177
             'payslip_dl_mode' => ['nullable', 'in:all,none,dept,emp'],
             'payslip_dl_depts' => ['nullable', 'array'], 'payslip_dl_depts.*' => ['string', 'max:120'],
             'payslip_dl_emps' => ['nullable', 'array'], 'payslip_dl_emps.*' => ['string', 'max:60'],
@@ -148,7 +162,7 @@ class SettingsController extends Controller
         // saved overrides) so a partial save (e.g. only the payslip policy)
         // never silently resets other saved settings back to defaults.
         $merged = self::rates($request->user()->tenant_id ?? 0);
-        $strKeys = ['weekly_off_day', 'sat_off_mode', 'payslip_dl_mode']; // rev172 — string settings, no numeric cast
+        $strKeys = ['weekly_off_day', 'sat_off_mode', 'lop_basis', 'payslip_dl_mode', 'dra_gate']; // rev172/rev177/rev181 — string settings, no numeric cast
         $arrKeys = ['payslip_dl_depts', 'payslip_dl_emps'];               // rev172 — list settings
         foreach (self::defaults() as $k => $default) {
             if ($k === 'tds_slabs' || in_array($k, $strKeys, true) || in_array($k, $arrKeys, true)) {

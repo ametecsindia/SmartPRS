@@ -241,13 +241,32 @@ class OffrollAgentController extends Controller
                 return response()->json(['ok' => false, 'error' => 'Entry not found'], 404);
             }
             $v = $request->validate(['action' => ['required', 'in:approve,reject'], 'remarks' => ['nullable', 'string', 'max:300']]);
+            // rev181 — DRA gate for OFF-ROLL agents too: the agent master's DRA
+            // field is free text, so the gate only reacts to a BLANK field (no
+            // certification recorded at all). block = refuse; warn = approve but
+            // say so. Managed in Settings -> Statutory Rates -> DRA gate.
+            $draWarning = null;
+            if ($v['action'] === 'approve') {
+                try {
+                    $gate = (string) (SettingsController::rates($tid)['dra_gate'] ?? 'warn');
+                    $a = $this->agent($tid, (int) $r->agent_id);
+                    if ($gate !== 'off' && $a && trim((string) ($a->dra ?? '')) === '') {
+                        if ($gate === 'block') {
+                            return response()->json(['ok' => false, 'error' => 'DRA gate: no DRA certification is recorded for '.($a->name ?? 'this agent').' — fill the DRA field on the Off-roll Agents screen before approving earnings (or set the gate to Warn in Statutory Rates).'], 422);
+                        }
+                        $draWarning = 'DRA warning: no DRA certification recorded for '.($a->name ?? 'this agent').' — approved anyway (gate is in Warn mode).';
+                    }
+                } catch (\Throwable $e) {
+                    // the gate must never break earning approvals
+                }
+            }
             DB::table('agent_earnings')->where('id', $eid)->update([
                 'status' => $v['action'] === 'approve' ? 'approved' : 'rejected',
                 'decided_by' => $request->user()->name, 'decided_at' => now(),
                 'remarks' => $v['remarks'] ?? null, 'updated_at' => now(),
             ]);
 
-            return response()->json(['ok' => true]);
+            return response()->json(['ok' => true, 'warning' => $draWarning]);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
         }

@@ -257,6 +257,10 @@ class RequestController extends Controller
                     'accountsStatus' => $a['accounts_status'] ?? '',
                     'accountsBy' => $a['accounts_by'] ?? '',
                     'accountsNote' => $a['accounts_note'] ?? '',
+                    // rev181 — bounce trail.
+                    'bounced' => ! empty($a['bounced_at']),
+                    'bounceReason' => $a['bounce_reason'] ?? '',
+                    'bounceClawbackId' => $a['bounce_clawback_id'] ?? null,
                     // rev 85: disbursement ledger summary per entry.
                     'payoutMethod' => ($a['payout_method'] ?? '') ?: 'with_salary',
                     'paidTotal' => round((float) ($paidMap[(int) $a['id']] ?? 0), 2),
@@ -1132,6 +1136,8 @@ class RequestController extends Controller
                         'credit' => 0,
                         'debit' => round((float) $p->amount, 2),
                         'entryId' => (int) $p->commission_id,
+                        'paymentId' => (int) $p->id,                       // rev181c — voucher link
+                        'pmode' => (string) ($p->mode ?: 'bank'),          // rev181c — payslip debits get no voucher
                     ];
                 }
             }
@@ -1357,6 +1363,36 @@ class RequestController extends Controller
                     : 'Accounts must confirm this collection first — the money trail comes before the commission.'], 422);
             }
 
+            // rev181 — DRA-EXPIRY GATE at the money point: approving a commission
+            // for an agent whose DRA certification is expired/missing is refused
+            // (block mode) or allowed-with-warning (warn mode, the default).
+            // Controlled by Settings -> Statutory Rates -> DRA gate. Fail-soft.
+            $draWarning = null;
+            if ($module === 'commissions' && $v['action'] === 'approve' && ! empty($rec->employee_id)) {
+                try {
+                    $gate = (string) (\App\Http\Controllers\SettingsController::rates($tid)['dra_gate'] ?? 'warn');
+                    if ($gate !== 'off') {
+                        $dra = \App\Http\Controllers\ComplianceController::draValid((int) $rec->employee_id);
+                        if (! $dra['ok']) {
+                            if ($gate === 'block') {
+                                return response()->json(['ok' => false, 'error' => 'DRA gate: '.$dra['note'].' — this commission cannot be approved until the agent\'s DRA certification is valid (Field Force -> DRA Certifications). Switch the gate to Warn in Statutory Rates to override.'], 422);
+                            }
+                            $draWarning = 'DRA warning: '.$dra['note'].' — approved anyway (gate is in Warn mode); recorded in the audit log.';
+                            if (Schema::hasTable('activity_logs')) {
+                                DB::table('activity_logs')->insert([
+                                    'tenant_id' => $tid, 'user_id' => optional($request->user())->id,
+                                    'action' => 'incentive_dra_invalid', 'entity' => 'commissions', 'entity_id' => $id,
+                                    'detail' => json_encode(['note' => 'Commission approved with invalid/expired DRA', 'dra' => $dra['note']]),
+                                    'ip' => $request->ip(), 'created_at' => now(),
+                                ]);
+                            }
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    // the DRA gate must never break approvals
+                }
+            }
+
             $me = $this->currentEmployee($request);
             $myId = $me->id ?? null;
             $allowed = $this->isManager($request) || ($myId && (int) (($rec->approver_id ?? 0)) === (int) $myId);
@@ -1482,7 +1518,7 @@ class RequestController extends Controller
                 // best-effort
             }
 
-            return response()->json(['ok' => true, 'status' => $update['status']]);
+            return response()->json(['ok' => true, 'status' => $update['status'], 'warning' => $draWarning ?? null]);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
         }
@@ -1637,6 +1673,257 @@ class RequestController extends Controller
             return response()->json(['ok' => false, 'error' => implode(' ', collect($e->errors())->flatten()->all())], 422);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
+        }
+    }
+
+    /** rev181 — bounce columns on commissions (self-healing, idempotent). */
+    private static function ensureBounceCols(): void
+    {
+        try {
+            if (! Schema::hasTable('commissions')) {
+                return;
+            }
+            foreach ([
+                'bounced_at' => fn ($t) => $t->timestamp('bounced_at')->nullable(),
+                'bounced_by' => fn ($t) => $t->string('bounced_by', 120)->nullable(),
+                'bounce_reason' => fn ($t) => $t->string('bounce_reason', 300)->nullable(),
+                'bounce_clawback_id' => fn ($t) => $t->unsignedBigInteger('bounce_clawback_id')->nullable(),
+            ] as $name => $add) {
+                if (! Schema::hasColumn('commissions', $name)) {
+                    try {
+                        Schema::table('commissions', $add);
+                    } catch (\Throwable $e) {
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+    }
+
+    /**
+     * rev181 (Ejaz, collection-industry USP) — MARK A COLLECTION BOUNCED.
+     * A cheque returns / a settlement cancels after the commission entry exists.
+     * One action, and the money story corrects itself:
+     *   - entry NOT yet paid (pending, or approved-but-unlocked with no ledger
+     *     payments) -> it is REJECTED with the bounce reason: it will never pay.
+     *   - entry already PAID (locked into a payslip, or a separate-payout entry
+     *     with recorded payments) -> an APPROVED Clawback is auto-created for
+     *     the paid amount; the payroll engine recovers it from the next payslip
+     *     (see PayrollGenController::clawbacksDue) with the reason on record.
+     * Accounts or managers only. Idempotent: a bounced entry stays bounced.
+     */
+    public function bounce(Request $request, int $id)
+    {
+        if (! $this->isManager($request) && ! $this->isAccounts($request)) {
+            return response()->json(['ok' => false, 'error' => 'Only managers or Accounts can mark a bounce.'], 403);
+        }
+        try {
+            $v = $request->validate(['reason' => ['required', 'string', 'max:300']]);
+            $tid = $request->user()->tenant_id;
+            self::ensureBounceCols();
+            ApprovalService::ensureAuditCols('clawbacks');
+            $rec = DB::table('commissions')->where('id', $id)
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid))->first();
+            if (! $rec) {
+                return response()->json(['ok' => false, 'error' => 'Commission entry not found'], 404);
+            }
+            if (! empty($rec->bounced_at)) {
+                return response()->json(['ok' => false, 'error' => 'This entry is already marked bounced ('.substr((string) $rec->bounced_at, 0, 10).').'], 422);
+            }
+            if (($rec->status ?? '') === 'rejected') {
+                return response()->json(['ok' => false, 'error' => 'This entry is already rejected — nothing was paid, so there is nothing to bounce.'], 422);
+            }
+            $by = (string) ($request->user()->name ?? $request->user()->email);
+
+            // How much has actually been PAID on this entry?
+            $paid = 0.0;
+            $locked = ! empty($rec->locked_at);
+            try {
+                if (Schema::hasTable('commission_payments')) {
+                    $paid = (float) DB::table('commission_payments')->where('commission_id', $id)->sum('amount');
+                }
+            } catch (\Throwable $e) {
+            }
+            if ($locked && $paid <= 0) {
+                $paid = (float) ($rec->amount ?? 0);   // locked into a payslip = the net paid
+            }
+            $paid = round($paid, 2);
+
+            $stamp = ['bounced_at' => now(), 'bounced_by' => $by, 'bounce_reason' => $v['reason'], 'updated_at' => now()];
+            $clawbackId = null;
+            $msg = '';
+
+            // An UNLOCKED bounced entry must never pay anything further — reject
+            // it (locked entries stay frozen as-is; the clawback below carries
+            // the correction, and a regenerate of their run stays consistent).
+            if (! $locked) {
+                $stamp['status'] = 'rejected';
+                $stamp['decided_by'] = $by;
+                $stamp['decided_at'] = now();
+                $stamp['remarks'] = 'Bounced: '.$v['reason'];
+            }
+
+            if ($paid > 0) {
+                // Money is out — auto-create an APPROVED clawback for the paid amount.
+                // cycle_month: recover in the CURRENT month if its run is still open
+                // (none, or draft) — otherwise the NEXT month (mirrors the rev180
+                // arrears targeting). The payroll engine deducts what fits in the
+                // slip; any shortfall stays visible on the clawback row.
+                $target = now()->format('Y-m');
+                try {
+                    if (Schema::hasTable('payroll_runs')) {
+                        $gone = DB::table('payroll_runs')
+                            ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+                            ->where('cycle_label', $target)->where('status', '!=', 'draft')->exists();
+                        if ($gone) {
+                            $target = now()->addMonthNoOverflow()->format('Y-m');
+                        }
+                    }
+                } catch (\Throwable $e) {
+                }
+                $fy = FinYearController::fyOf($target);
+                FinYearController::stamp('clawbacks', $tid);
+                $cbRow = ApprovalService::safeRow('clawbacks', [
+                    'tenant_id' => $tid,
+                    'company_id' => $rec->company_id ?? null,
+                    'employee_id' => $rec->employee_id ?? null,
+                    'amount' => $paid,
+                    'portfolio' => $rec->portfolio ?? null,
+                    'cycle_month' => $target,
+                    'reason' => substr('Bounce: '.$v['reason'].' (commission #'.$id
+                        .(! empty($rec->customer_name) ? ' · '.$rec->customer_name : '')
+                        .(! empty($rec->account_ref) ? ' · '.$rec->account_ref : '').')', 0, 240),
+                    'status' => 'approved',
+                    'decided_by' => $by.' (bounce)',
+                    'decided_at' => now(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                $clawbackId = DB::table('clawbacks')->insertGetId($cbRow);
+                $stamp['bounce_clawback_id'] = $clawbackId;
+                $msg = 'Bounce recorded. ₹'.number_format($paid, 2).' was already paid — clawback #'.$clawbackId
+                    .' created (approved) and will be recovered from the '.$target.' payslip; any shortfall stays open on the clawback.';
+            } else {
+                // Nothing paid yet — the reject above already stops it forever.
+                $msg = 'Bounce recorded. Nothing was paid on this entry yet — it is now REJECTED and will never fold into a payslip.';
+            }
+            if ($paid > 0 && ! $locked) {
+                $msg .= ' The entry is also REJECTED so its unpaid balance can never pay.';
+            }
+            DB::table('commissions')->where('id', $id)->update(ApprovalService::safeRow('commissions', $stamp));
+
+            try {
+                ApprovalService::logCommission($tid, $id, 'bounced',
+                    'Marked BOUNCED — '.$v['reason'].($clawbackId ? ' · clawback #'.$clawbackId.' auto-created (approved)' : ' · entry rejected (nothing paid)'), $by);
+            } catch (\Throwable $e) {
+            }
+            try {
+                if (Schema::hasTable('activity_logs')) {
+                    DB::table('activity_logs')->insert([
+                        'tenant_id' => $tid, 'user_id' => optional($request->user())->id,
+                        'action' => 'commission_bounced', 'entity' => 'commissions', 'entity_id' => $id,
+                        'detail' => json_encode(['reason' => $v['reason'], 'paid' => $paid, 'clawback_id' => $clawbackId]),
+                        'ip' => $request->ip(), 'created_at' => now(),
+                    ]);
+                }
+            } catch (\Throwable $e) {
+            }
+
+            return response()->json(['ok' => true, 'message' => $msg, 'clawbackId' => $clawbackId]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['ok' => false, 'error' => implode(' ', collect($e->errors())->flatten()->all())], 422);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * rev181c (D3a, Ejaz) — COMMISSION PAYMENT VOUCHER: a printable, branded
+     * voucher for every SEPARATE payout recorded via Record Payment. Salary
+     * has a signed voucher; now commission payments do too. Rendered as a
+     * self-printing HTML page (letterhead style, signature blocks) so it works
+     * without any PDF library — print-to-PDF from the browser gives the file.
+     * Managers / HR / Accounts only. Payslip-mode ledger debits have no
+     * voucher (the payslip itself is the document).
+     */
+    public function commissionPaymentVoucher(Request $request, int $pid)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager', 'accountant'])) {
+            return $deny;
+        }
+        try {
+            $tid = $request->user()->tenant_id;
+            if (! Schema::hasTable('commission_payments')) {
+                return response('No payments recorded yet.', 404);
+            }
+            $p = DB::table('commission_payments')->where('id', $pid)->first();
+            if (! $p) {
+                return response('Payment not found.', 404);
+            }
+            $rec = DB::table('commissions')->where('id', (int) $p->commission_id)
+                ->when($tid, fn ($q) => $q->where('tenant_id', $tid))->first();
+            if (! $rec) {
+                return response('Payment not found.', 404);   // tenant mismatch reads as not-found
+            }
+            if (strtolower((string) ($p->mode ?? '')) === 'payslip') {
+                return response('Payslip-paid amounts have no separate voucher — the payslip is the document.', 422);
+            }
+            $emp = ! empty($rec->employee_id) ? DB::table('employees')->where('id', $rec->employee_id)->first() : null;
+            $co = ($emp && ! empty($emp->company_id)) ? DB::table('companies')->where('id', $emp->company_id)->first() : null;
+            $paidAll = (float) DB::table('commission_payments')->where('commission_id', (int) $p->commission_id)->sum('amount');
+            $net = round((float) ($rec->amount ?? 0), 2);
+            $balance = max(0, round($net - $paidAll, 2));
+            $h = fn ($x) => htmlspecialchars((string) ($x ?? ''), ENT_QUOTES, 'UTF-8');
+            $inr = fn ($n) => '₹'.number_format((float) $n, 2);
+            $no = 'CPV-'.str_pad((string) $pid, 6, '0', STR_PAD_LEFT);
+            $logo = ($co && ! empty($co->id)) ? url('/app/branding/logo/'.$co->id) : '';
+
+            $entryBits = array_filter([
+                'Entry #'.$rec->id,
+                $rec->purpose ?? null,
+                ! empty($rec->portfolio) ? 'Portfolio: '.$rec->portfolio : null,
+                ! empty($rec->customer_name) ? 'Customer: '.$rec->customer_name.(! empty($rec->account_ref) ? ' ('.$rec->account_ref.')' : '') : null,
+                ! empty($rec->cycle_month) ? 'Earned: '.$rec->cycle_month : null,
+            ]);
+            $gross = (float) ($rec->gross_amount ?? 0);
+            $tds = (float) ($rec->tds_amount ?? 0);
+
+            $html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>'.$h($no).' — Commission Payment Voucher</title>'
+                .'<style>body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;max-width:760px;margin:24px auto;padding:0 20px}'
+                .'.head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0f172a;padding-bottom:12px;margin-bottom:16px}'
+                .'h1{font-size:19px;margin:0}.co{font-size:13px;color:#334155}.muted{color:#64748b;font-size:11.5px}'
+                .'table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #cbd5e1;padding:7px 10px;font-size:12.5px;text-align:left}'
+                .'th{background:#f1f5f9;font-size:10px;text-transform:uppercase;color:#475569}.r{text-align:right}'
+                .'.amt{font-size:17px;font-weight:800}.sig{display:flex;justify-content:space-between;margin-top:60px}'
+                .'.sig div{width:220px;border-top:1.5px solid #0f172a;padding-top:6px;font-size:11.5px;text-align:center;color:#334155}'
+                .'.bar{background:#0f172a;color:#fff;display:inline-block;padding:3px 14px;border-radius:99px;font-size:11px;font-weight:800;letter-spacing:.6px}'
+                .'@media print{.noprint{display:none}}</style></head><body>'
+                .'<div class="head"><div>'
+                .($logo !== '' ? '<img src="'.$h($logo).'" alt="" style="max-height:46px;max-width:200px;margin-bottom:6px" onerror="this.style.display=&#39;none&#39;">' : '')
+                .'<h1>'.$h($co->name ?? 'Company').'</h1>'
+                .'<div class="co">'.$h($co->address ?? '').($co && ! empty($co->pan) ? ' · PAN '.$h($co->pan) : '').'</div></div>'
+                .'<div style="text-align:right"><span class="bar">COMMISSION PAYMENT VOUCHER</span>'
+                .'<div style="font-size:14px;font-weight:800;margin-top:8px">'.$h($no).'</div>'
+                .'<div class="muted">Paid on '.$h(substr((string) ($p->paid_on ?: $p->created_at), 0, 10)).'</div></div></div>'
+                .'<table><tr><th style="width:32%">Paid to</th><td><b>'.$h($emp->name ?? ('#'.($rec->employee_id ?? ''))).'</b>'
+                .($emp && ! empty($emp->emp_code) ? ' ('.$h($emp->emp_code).')' : '')
+                .($emp && ! empty($emp->pan) ? ' · PAN '.$h($emp->pan) : '').'</td></tr>'
+                .'<tr><th>Against</th><td>'.$h(implode(' · ', $entryBits)).'</td></tr>'
+                .($gross > 0 ? '<tr><th>Entry value</th><td>Gross '.$inr($gross).' − TDS 194H '.$inr($tds).' = Net payable '.$inr($net).'</td></tr>' : '<tr><th>Entry net payable</th><td>'.$inr($net).'</td></tr>')
+                .'<tr><th>This payment</th><td class="amt">'.$inr($p->amount).'</td></tr>'
+                .'<tr><th>Mode / reference</th><td>'.$h(strtoupper((string) ($p->mode ?: 'bank'))).(! empty($p->reference) ? ' · '.$h($p->reference) : '').'</td></tr>'
+                .(! empty($p->note) ? '<tr><th>Note</th><td>'.$h($p->note).'</td></tr>' : '')
+                .'<tr><th>Recorded by</th><td>'.$h($p->by ?? '').'</td></tr>'
+                .'<tr><th>Cumulative on this entry</th><td>Paid '.$inr($paidAll).' · Balance '.$inr($balance).($balance <= 0.005 ? ' — FULLY PAID' : '').'</td></tr></table>'
+                .'<div class="muted">TDS u/s 194H was deducted when the commission entry was recorded; this voucher pays the NET amount. System-generated from SmartPRS — entry #'.$h($rec->id).' carries the full history and audit trail.</div>'
+                .'<div class="sig"><div>Received by (signature / date)</div><div>Authorised signatory</div></div>'
+                .'<div class="noprint" style="margin-top:26px"><button onclick="window.print()" style="padding:9px 20px;font-size:14px;border-radius:8px;border:1px solid #0f172a;background:#0f172a;color:#fff;cursor:pointer">Print voucher</button></div>'
+                .'<script>setTimeout(function () { try { window.print(); } catch (e) {} }, 400);</script>'
+                .'</body></html>';
+
+            return response($html);
+        } catch (\Throwable $e) {
+            return response('Voucher error: '.htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8'), 422);
         }
     }
 }

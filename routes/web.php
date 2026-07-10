@@ -272,6 +272,13 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::get('/app/incentive/template', [App\Http\Controllers\IncentiveController::class, 'template'])->name('app.incentive.template');
     Route::post('/app/incentive/calculate', [App\Http\Controllers\IncentiveController::class, 'calculate'])->name('app.incentive.calc');
     Route::post('/app/incentive/commit', [App\Http\Controllers\IncentiveController::class, 'commit'])->name('app.incentive.commit');
+    // rev181 — BANK / NBFC PAYOUT & BILLING PACK: payout register + TDS 194H
+    // annexure + GST service invoice, per bank per month (collection-industry USP).
+    // rev181b — the Salary Calculation Guide: the engine's rules + demo FAQs,
+    // documented INSIDE the app (all logged-in roles; read-only).
+    Route::get('/app/calc-guide', [App\Http\Controllers\CalcGuideController::class, 'show'])->name('app.calcguide');
+    Route::get('/app/bank-pack/data', [App\Http\Controllers\BankPackController::class, 'data'])->name('app.bankpack.data');
+    Route::post('/app/bank-pack/invoice', [App\Http\Controllers\BankPackController::class, 'invoiceSave'])->name('app.bankpack.invoice');
     // Financial Year (set active FY + per-FY summary).
     Route::get('/app/fin-year', [App\Http\Controllers\FinYearController::class, 'index'])->name('app.finyear');
     Route::post('/app/fin-year/set', [App\Http\Controllers\FinYearController::class, 'setActive'])->name('app.finyear.set');
@@ -366,10 +373,15 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/requests/commissions/{id}/accounts', [App\Http\Controllers\RequestController::class, 'accountsDecide'])->name('app.requests.comm.accounts');
     Route::post('/app/requests/commissions/{id}/update', [App\Http\Controllers\RequestController::class, 'updateCommission'])->name('app.requests.comm.update');
     Route::post('/app/requests/commissions/{id}/lock', [App\Http\Controllers\RequestController::class, 'lockCommission'])->name('app.requests.comm.lock');
+    // rev181 — BOUNCE: cheque returned / settlement cancelled — auto-clawback
+    // when money was already paid; auto-reject when it wasn't.
+    Route::post('/app/requests/commissions/{id}/bounce', [App\Http\Controllers\RequestController::class, 'bounce'])->name('app.requests.comm.bounce');
     Route::get('/app/requests/commissions/{id}/history', [App\Http\Controllers\RequestController::class, 'commissionHistory'])->name('app.requests.comm.history');
     // rev 85 (Ejaz): disbursement — partial payments + per-employee ledger.
     Route::get('/app/requests/commissions/ledger', [App\Http\Controllers\RequestController::class, 'commissionLedger'])->name('app.requests.comm.ledger');
     Route::post('/app/requests/commissions/{id}/pay', [App\Http\Controllers\RequestController::class, 'payCommission'])->name('app.requests.comm.pay');
+    // rev181c — printable payment voucher for each recorded separate payout.
+    Route::get('/app/requests/commissions/payments/{pid}/voucher', [App\Http\Controllers\RequestController::class, 'commissionPaymentVoucher'])->whereNumber('pid')->name('app.requests.comm.voucher');
     Route::post('/app/requests/commissions/clean-orphans', [App\Http\Controllers\RequestController::class, 'cleanOrphanCommissions'])->name('app.requests.comm.orphans');
     // rev 87 (Ejaz): salary disbursements (partial, per employee+month) for the ledger.
     Route::post('/app/requests/salary-pay', [App\Http\Controllers\RequestController::class, 'salaryPay'])->name('app.requests.salary.pay');
@@ -403,6 +415,8 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::get('/app/payroll/preview', [App\Http\Controllers\PayrollGenController::class, 'preview'])->name('app.payroll.preview');
     // LIVE SALARY — one employee's running-month earnings till today (strict hierarchy).
     Route::get('/app/live-salary/data', [App\Http\Controllers\PayrollGenController::class, 'liveSalary'])->name('app.livesalary');
+    // rev178 — SALARY SIMULATOR: what-if payslip with every variable, computed by the real engine (all roles, read-only).
+    Route::post('/app/salary-simulate', [App\Http\Controllers\PayrollGenController::class, 'simulate'])->name('app.salary.simulate');
     Route::post('/app/payroll/generate', [App\Http\Controllers\PayrollGenController::class, 'generate'])->name('app.payroll.generate');
     // Reports — preview + CSV export over existing data (employees/payslips/leaves/attendance).
     Route::get('/app/reports/preview', [App\Http\Controllers\ReportController::class, 'preview'])->name('app.reports.preview');

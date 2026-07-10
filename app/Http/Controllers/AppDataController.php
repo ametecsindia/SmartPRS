@@ -753,8 +753,62 @@ class AppDataController extends Controller
             'grouped' => $grouped,
             'dedLines' => $dedLines,
             'ytd' => $ytd,
+            'showYtd' => (int) ($rates['payslip_show_ytd'] ?? 1) !== 0, // rev179 — YTD column toggle (Payslip Policy)
             'netWords' => self::amountInWords((float) ($s['net'] ?? 0)),
+            'payDate' => self::payDateFor($e->tenant_id ?? null, (string) ($company->name ?? ''), $month), // rev181b
         ];
+    }
+
+    /**
+     * rev181b — resolve the PAY DATE for a company + run month from the Pay Cycle
+     * / Salary Schedule masters. With a CUT-OFF day the attendance period ends
+     * INSIDE the run month, so salary pays that SAME month on the pay day; a plain
+     * calendar cycle only completes next month, so it pays the pay day of the
+     * FOLLOWING month. Company-specific row beats an all/blank one. Fallback = the
+     * run month's last day.
+     */
+    public static function payDateFor($tid, string $companyName, string $month): string
+    {
+        $cn = strtolower(trim($companyName));
+        try {
+            $payDay = 0; $cutoff = 0; $bestGeneric = 0; $bestGenericCut = 0;
+            foreach (['salary_schedules', 'pay_cycles'] as $table) {
+                if (! Schema::hasTable($table) || ! Schema::hasColumn($table, 'pay_day')) {
+                    continue;
+                }
+                $rows = DB::table($table)
+                    ->when($tid && Schema::hasColumn($table, 'tenant_id'), fn ($q) => $q->where('tenant_id', $tid))
+                    ->when(Schema::hasColumn($table, 'status'), fn ($q) => $q->where(fn ($x) => $x->where('status', 'active')->orWhereNull('status')))
+                    ->orderByDesc('id')->limit(50)->get();
+                foreach ($rows as $row) {
+                    $rcn = strtolower(trim((string) ($row->company_name ?? '')));
+                    if ($rcn !== '' && $rcn !== 'all' && $rcn !== $cn) {
+                        continue;
+                    }
+                    $pd = (int) ($row->pay_day ?? 0);
+                    if ($pd < 1 || $pd > 28) {
+                        continue;
+                    }
+                    $co = Schema::hasColumn($table, 'cutoff_day') ? (int) ($row->cutoff_day ?? 0) : 0;
+                    if ($rcn !== '' && $rcn !== 'all') {
+                        $payDay = $pd; $cutoff = $co;
+                        break 2;
+                    }
+                    if ($bestGeneric === 0) { $bestGeneric = $pd; $bestGenericCut = $co; }
+                }
+            }
+            if ($payDay === 0 && $bestGeneric > 0) { $payDay = $bestGeneric; $cutoff = $bestGenericCut; }
+            if ($payDay >= 1 && $payDay <= 28) {
+                $base = \Illuminate\Support\Carbon::createFromFormat('Y-m-d', $month.'-01');
+                $d = ($cutoff >= 2 && $cutoff <= 28)
+                    ? $base->day($payDay)                          // cut-off cycle -> pay this run month
+                    : $base->addMonthNoOverflow()->day($payDay);   // calendar cycle -> pay next month
+                return $d->toDateString();
+            }
+        } catch (\Throwable $e) {
+        }
+
+        return \Illuminate\Support\Carbon::createFromFormat('Y-m-d', $month.'-01')->endOfMonth()->toDateString();
     }
 
     /** "Rupees Twenty Thousand One Hundred One Only" (Indian numbering, incl. paise). */
@@ -1176,12 +1230,68 @@ class AppDataController extends Controller
     }
 
     /**
-     * Professional Tax — statutory MONTHLY slab on gross (not a flat amount).
-     * Default = Telangana: up to ₹15,000 → Nil; ₹15,001–20,000 → ₹150; above ₹20,000 → ₹200.
-     * A company can override with $rates['pt_slabs'] = [['upto'=>15000,'amt'=>0], ...].
+     * rev180 — built-in STATE-WISE Professional Tax monthly slab tables, keyed by
+     * a normalised fragment of the state name. Indicative defaults (verify against
+     * current state law before filing); the tenant's own pt_slabs override still
+     * applies when the employee has NO pt_state set. States with no PT at all are
+     * listed in PT_FREE_STATES.
      */
-    public static function ptForGross(float $gross, array $r): float
+    private const PT_FREE_STATES = ['delhi', 'uttar pradesh', 'haryana', 'rajasthan', 'himachal', 'uttarakhand', 'chandigarh', 'jammu', 'ladakh', 'arunachal'];
+
+    private const PT_STATE_SLABS = [
+        'telangana' => [[15000, 0], [20000, 150], [0, 200]],
+        'andhra' => [[15000, 0], [20000, 150], [0, 200]],
+        'maharashtra' => [[7500, 0], [10000, 175], [0, 200]],   // + ₹300 in February (handled below)
+        'karnataka' => [[24999, 0], [0, 200]],
+        'west bengal' => [[10000, 0], [15000, 110], [25000, 130], [40000, 150], [0, 200]],
+        'tamil nadu' => [[3500, 0], [5000, 23], [7500, 53], [10000, 115], [12500, 171], [0, 208]],  // half-yearly slabs shown as monthly equivalents
+        'gujarat' => [[12000, 0], [0, 200]],
+        'madhya pradesh' => [[18750, 0], [25000, 125], [33333, 167], [0, 208]],  // annual ₹2,500 cap spread monthly
+        'kerala' => [[1999, 0], [2999, 20], [4999, 30], [7499, 50], [9999, 75], [12499, 100], [16666, 125], [20833, 166], [0, 208]],  // half-yearly slabs as monthly equivalents
+        'bihar' => [[25000, 0], [41666, 83], [83333, 167], [0, 208]],
+        'odisha' => [[13304, 0], [25000, 125], [0, 200]],
+        'assam' => [[10000, 0], [15000, 150], [25000, 180], [0, 208]],
+        'jharkhand' => [[25000, 0], [41666, 100], [66666, 150], [83333, 175], [0, 208]],
+        'chhattisgarh' => [[13333, 0], [16666, 150], [20833, 180], [25000, 190], [0, 200]],
+        'punjab' => [[20833, 0], [0, 200]],   // PSDT — ₹200/month for income-tax-payers
+        'goa' => [[15000, 0], [25000, 150], [0, 200]],
+    ];
+
+    /**
+     * Professional Tax — statutory MONTHLY slab on gross (not a flat amount).
+     * rev180: STATE-AWARE. Resolution order:
+     *   1. Employee's pt_state matches a built-in state table (incl. PT-free states → ₹0;
+     *      Maharashtra February = ₹300 for the top slab).
+     *   2. No/unknown state → the tenant's pt_slabs override, else the Telangana default.
+     */
+    public static function ptForGross(float $gross, array $r, ?string $state = null, ?string $month = null): float
     {
+        $st = strtolower(trim((string) $state));
+        if ($st !== '') {
+            foreach (self::PT_FREE_STATES as $free) {
+                if (str_contains($st, $free)) {
+                    return 0.0;
+                }
+            }
+            foreach (self::PT_STATE_SLABS as $key => $rows) {
+                if (str_contains($st, $key)) {
+                    $amt = 0.0;
+                    foreach ($rows as $row) {
+                        $upto = (float) $row[0];
+                        if ($upto <= 0 || $gross <= $upto) {
+                            $amt = (float) $row[1];
+                            break;
+                        }
+                    }
+                    // Maharashtra: February collects ₹300 from the top slab so the
+                    // year totals ₹2,500 (11 × 200 + 300).
+                    if ($key === 'maharashtra' && $amt >= 200 && $month && substr($month, 5, 2) === '02') {
+                        $amt = 300.0;
+                    }
+                    return round($amt, 2);
+                }
+            }
+        }
         $slabs = $r['pt_slabs'] ?? null;
         if (! is_array($slabs) || ! $slabs) {
             $slabs = [
@@ -1199,6 +1309,52 @@ class AppDataController extends Controller
     }
 
     /**
+     * rev180 — ESI CONTRIBUTION-PERIOD RULE. Under the ESI Act, eligibility is
+     * fixed at the start of each contribution period (April–September and
+     * October–March): an employee contributing at the period start KEEPS
+     * contributing until the period ends even if wages cross the ₹21,000
+     * ceiling mid-period. This helper answers "was ESI already being deducted
+     * for this employee earlier in the CURRENT period?" from stored payslips.
+     * Fail-soft: any problem returns false (plain threshold rule applies).
+     */
+    public static function esiPeriodLock(int $empId, string $month, array $r): bool
+    {
+        try {
+            if ($empId <= 0 || ! Schema::hasTable('payslips')) {
+                return false;
+            }
+            $y = (int) substr($month, 0, 4);
+            $m = (int) substr($month, 5, 2);
+            if ($m >= 4 && $m <= 9) {
+                $periodStart = sprintf('%04d-04', $y);
+            } elseif ($m >= 10) {
+                $periodStart = sprintf('%04d-10', $y);
+            } else {
+                $periodStart = sprintf('%04d-10', $y - 1);
+            }
+            if ($month <= $periodStart) {
+                return false;   // first month of the period → fresh determination
+            }
+            $rows = DB::table('payslips')->where('employee_id', $empId)
+                ->where('month', '>=', $periodStart)
+                ->where('month', '<', $month)
+                ->orderByDesc('month')->limit(24)->get(['deductions']); // ≤5 months × possible lots/regenerated slips
+            foreach ($rows as $row) {
+                $ded = json_decode((string) ($row->deductions ?? ''), true) ?: [];
+                foreach ($ded as $k => $v) {
+                    if (stripos((string) $k, 'esi') !== false && (float) $v > 0) {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
      * Statutory PF/ESI/PT per government rules. Returns employee deductions
      * (pf, esi, pt) PLUS employer contributions for the ECR/challan (which are
      * NOT payslip deductions, so callers must not add them to total_ded).
@@ -1209,8 +1365,11 @@ class AppDataController extends Controller
      *        each rounded UP to the next rupee (ESIC rule).
      *  - PT: monthly slab via ptForGross().
      */
-    public static function statutory(float $gross, float $pfWage, array $r): array
+    public static function statutory(float $gross, float $pfWage, array $r, array $ctx = []): array
     {
+        // rev180 — optional context: pt_state (state-wise PT), month (Maharashtra
+        // February PT), esi_lock (ESI contribution-period rule: keep deducting
+        // past the ceiling until the Apr–Sep / Oct–Mar period ends).
         $pfCap = (float) ($r['pf_wage_cap'] ?? 15000);
         $pfRate = (float) ($r['pf_rate'] ?? 12);
         $pfBase = min(max($pfWage, 0.0), $pfCap);
@@ -1223,7 +1382,7 @@ class AppDataController extends Controller
         $edli = round($epsBase * 0.5 / 100, 2);
 
         $esiThr = (float) ($r['esi_threshold'] ?? 21000);
-        $esiEligible = $gross > 0 && $gross <= $esiThr;
+        $esiEligible = ($gross > 0 && $gross <= $esiThr) || (! empty($ctx['esi_lock']) && $gross > 0);
         $esiEmployee = $esiEligible ? (float) ceil($gross * ((float) ($r['esi_employee_rate'] ?? 0.75)) / 100) : 0.0;
         $esiEmployer = $esiEligible ? (float) ceil($gross * ((float) ($r['esi_employer_rate'] ?? 3.25)) / 100) : 0.0;
 
@@ -1233,7 +1392,7 @@ class AppDataController extends Controller
         $conveyance = (! empty($r['conveyance_enabled']) && $convRate > 0) ? round($pfBase * $convRate / 100, 2) : 0.0;
 
         return [
-            'pf' => $pfEmployee, 'esi' => $esiEmployee, 'pt' => self::ptForGross($gross, $r),
+            'pf' => $pfEmployee, 'esi' => $esiEmployee, 'pt' => self::ptForGross($gross, $r, $ctx['pt_state'] ?? null, $ctx['month'] ?? null),
             'conveyance' => $conveyance,
             'pf_wage' => round($pfBase, 2),
             'pf_employer' => $pfEmployer, 'pf_eps' => $eps, 'pf_epf_employer' => $epfEmployer, 'pf_edli' => $edli,
@@ -1241,7 +1400,7 @@ class AppDataController extends Controller
         ];
     }
 
-    public static function computeSlip(float $ctc, ?array $rates = null, string $stage = ''): array
+    public static function computeSlip(float $ctc, ?array $rates = null, string $stage = '', array $ctx = []): array
     {
         $r = $rates ?: SettingsController::defaults();
         $gross = round($ctc / 12, 2);
@@ -1249,7 +1408,7 @@ class AppDataController extends Controller
         $hra = round($basic * 0.4, 2);
         $special = round($gross - $basic - $hra, 2);
         // No salary components defined → PF wage falls back to the assumed Basic (50% of gross).
-        $st = self::statutory($gross, $basic, $r);
+        $st = self::statutory($gross, $basic, $r, $ctx); // rev180 — pt_state / month / esi_lock context
         $pf = $st['pf'];
         $esi = $st['esi'];
         $pt = $st['pt'];
@@ -1287,7 +1446,7 @@ class AppDataController extends Controller
      * Each component: ctype (earning|deduction), base (fixed | pct_gross |
      * pct_basic | balance), calc_value (amount or percent), seq (order).
      */
-    public static function computeSlipFromComponents(float $ctc, $components, ?array $rates = null, string $stage = ''): ?array
+    public static function computeSlipFromComponents(float $ctc, $components, ?array $rates = null, string $stage = '', array $ctx = []): ?array
     {
         $comps = [];
         foreach ($components as $c) {
@@ -1410,11 +1569,15 @@ class AppDataController extends Controller
                 $da += (float) $ea;
             }
         }
-        $st = self::statutory($wageGross, $basic + $da, $r);
+        $st = self::statutory($wageGross, $basic + $da, $r, $ctx); // rev180 — pt_state / month / esi_lock context
         $pf = $st['pf'];
         $esi = $st['esi'];
         $pt = $st['pt'];
-        $tds = self::salaryTdsMonthly($ctc, $r);
+        // rev180 — TDS on TAXABLE pay: reimbursement components are bills-based
+        // and non-taxable, so the annualised WAGE gross (gross − reimbursements)
+        // is the TDS base, not the full CTC. With no reimbursements this is
+        // byte-identical to before (wageGross × 12 = ctc).
+        $tds = self::salaryTdsMonthly(round($wageGross * 12, 2), $r);
         // rev174 — Probation / Internship: no statutory PF, PT or TDS (ESI, LWF,
         // Conveyance and attendance loss-of-pay still apply). Deduction section is nil.
         if (in_array(strtolower(trim($stage)), ['probation', 'internship'], true)) {
@@ -1486,7 +1649,8 @@ class AppDataController extends Controller
             if ($exists) {
                 continue;
             }
-            $payDate = \Illuminate\Support\Carbon::createFromFormat('Y-m-d', $month.'-01')->endOfMonth()->toDateString();
+            $__cn = DB::table('companies')->where('id', $companyId)->value('name');
+            $payDate = self::payDateFor($tenantId, (string) ($__cn ?? ''), $month);
             // Only write columns that exist in THIS deployment's schema — the
             // deployed payroll_runs table has no generated_at, and payslips has no
             // uuid; including them throws "Unknown column" and 500s /app/data.

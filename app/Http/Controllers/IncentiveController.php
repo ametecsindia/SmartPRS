@@ -88,6 +88,80 @@ class IncentiveController extends Controller
             $skipped = [];
             FinYearController::stamp('commissions', $tid);     // ensure fin_year column
             $fy = FinYearController::fyOf($month);
+            // rev176 — ensure the gross/TDS columns exist (mirrors the single-entry
+            // path in RequestController) so the 194H/26Q registers — which read
+            // gross_amount/tds_amount — see bulk-committed entries too, instead of
+            // safeRow silently dropping them on an older schema.
+            try {
+                $ensure = [
+                    'gross_amount' => fn ($t) => $t->decimal('gross_amount', 14, 2)->nullable(),
+                    'tds_rate' => fn ($t) => $t->decimal('tds_rate', 6, 2)->nullable(),
+                    'tds_amount' => fn ($t) => $t->decimal('tds_amount', 14, 2)->nullable(),
+                ];
+                foreach ($ensure as $cname => $add) {
+                    if (! Schema::hasColumn('commissions', $cname)) {
+                        try {
+                            Schema::table('commissions', $add);
+                        } catch (\Throwable $e) {
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+            }
+            // rev176 (BUGFIX) — TDS 194H on bulk-committed entries too. The
+            // single-entry and scheme-claim paths always deducted it, but bulk
+            // commit wrote the full payout with NO TDS — inconsistent tax
+            // treatment. gross − TDS = net; the NET is what folds into payroll.
+            // Rate: request 'tds_rate' override → Statutory Settings
+            // comm_tds_rate → 5% default. Clamped 0–100.
+            $tdsRate = 5.0;
+            $ratesCfg = [];
+            try {
+                $ratesCfg = SettingsController::rates($tid);
+                $tdsRate = (float) ($ratesCfg['comm_tds_rate'] ?? 5);
+            } catch (\Throwable $e) {
+                // settings unavailable → statutory default 5%
+            }
+            // rev181 — eligibility gates, resolved ONCE for the whole batch:
+            // DRA gate (off|warn|block) + monthly points threshold (0 = off).
+            $draGate = in_array(($ratesCfg['dra_gate'] ?? 'warn'), ['off', 'warn', 'block'], true) ? $ratesCfg['dra_gate'] : 'warn';
+            $ptsMin = max(0, (int) ($ratesCfg['points_gate_min'] ?? 0));
+            $hasPoints = $ptsMin > 0 && Schema::hasTable('points_ledger');
+            // rev181c (D3b + D4) — payout controls for the WHOLE batch: method
+            // (with_salary default | separate) and an optional payout date that
+            // decides which month's payslip pays. When no date is given and the
+            // tenant's incentive_payout_lag is N > 0, the date auto-fills to the
+            // 1st of (earned month + N) — the retention-guard lag, hands-free.
+            $payMethod = $request->input('payout_method') === 'separate' ? 'separate' : 'with_salary';
+            $payDate = null;
+            if ($request->filled('payout_date')) {
+                try {
+                    $payDate = \Illuminate\Support\Carbon::parse((string) $request->input('payout_date'))->toDateString();
+                } catch (\Throwable $e) {
+                    $payDate = null;
+                }
+            }
+            $lagNote = '';
+            if ($payDate === null) {
+                $lag = max(0, min(12, (int) ($ratesCfg['incentive_payout_lag'] ?? 0)));
+                if ($lag > 0) {
+                    try {
+                        $payDate = \Illuminate\Support\Carbon::parse($month.'-01')->addMonthsNoOverflow($lag)->toDateString();
+                        $lagNote = ' Payout date auto-set to '.$payDate.' by the tenant payout lag ('.$lag.' month'.($lag === 1 ? '' : 's').').';
+                    } catch (\Throwable $e) {
+                        $payDate = null;
+                    }
+                }
+            }
+            $draChecked = [];      // employee_id => ['ok'=>bool,'note'=>string]
+            $draBlockedList = []; // block mode — skipped rows
+            $draWarnList = [];    // warn mode — paid but flagged
+            $ptsSkipList = [];    // below the points threshold — skipped rows
+            if ($request->filled('tds_rate') && is_numeric($request->input('tds_rate'))) {
+                $tdsRate = (float) $request->input('tds_rate');
+            }
+            $tdsRate = max(0.0, min(100.0, $tdsRate));
+            $tdsTotal = 0.0;
             foreach ($rows as $r) {
                 $r = (array) $r;
                 [$payout] = $this->payoutFor($r, $cfg);
@@ -99,12 +173,56 @@ class IncentiveController extends Controller
                     $skipped[] = ($r['employee'] ?? $r['emp_code'] ?? '?');
                     continue;
                 }
+                $who = trim((string) ($r['employee'] ?? $r['emp_code'] ?? ('#'.$emp->id)));
+                // rev181 — DRA gate: block = skip the row entirely; warn = pay but list it.
+                if ($draGate !== 'off') {
+                    if (! array_key_exists($emp->id, $draChecked)) {
+                        $draChecked[$emp->id] = ComplianceController::draValid((int) $emp->id);
+                    }
+                    if (! $draChecked[$emp->id]['ok']) {
+                        if ($draGate === 'block') {
+                            $draBlockedList[] = $who.' ('.$draChecked[$emp->id]['note'].')';
+                            continue;
+                        }
+                        $draWarnList[$emp->id] = $who.' ('.$draChecked[$emp->id]['note'].')';
+                    }
+                }
+                // rev181 — points-eligibility gate: points earned IN THE INCENTIVE
+                // MONTH must reach the configured minimum. Points never convert to
+                // money — they only decide WHO qualifies for the incentive run.
+                if ($hasPoints) {
+                    try {
+                        $mFrom = $month.'-01';
+                        $mTo = \Illuminate\Support\Carbon::parse($mFrom)->addMonthNoOverflow()->format('Y-m-d');
+                        $pts = (int) DB::table('points_ledger')->where('employee_id', $emp->id)
+                            ->when($tid && Schema::hasColumn('points_ledger', 'tenant_id'), fn ($x) => $x->where('tenant_id', $tid))
+                            ->where('date', '>=', $mFrom)->where('date', '<', $mTo)
+                            ->sum('points');
+                        if ($pts < $ptsMin) {
+                            $ptsSkipList[] = $who.' ('.$pts.'/'.$ptsMin.' pts)';
+                            continue;
+                        }
+                    } catch (\Throwable $e) {
+                        // points data unreadable → never block the payout on it
+                    }
+                }
+                $tds = round($payout * $tdsRate / 100, 2);
+                $net = round($payout - $tds, 2);
+                if ($net <= 0) {
+                    continue;   // fully consumed by TDS — nothing to pay
+                }
+                $tdsTotal = round($tdsTotal + $tds, 2);
                 $row = ApprovalService::safeRow('commissions', [
                     'tenant_id' => $tid,
                     'company_id' => $emp->company_id,
                     'employee_id' => $emp->id,
                     'portfolio' => $r['portfolio'] ?? null,
-                    'amount' => $payout,
+                    'gross_amount' => $payout,
+                    'tds_rate' => $tdsRate,
+                    'tds_amount' => $tds,
+                    'amount' => $net,
+                    'payout_method' => $payMethod,      // rev181c — batch payout method
+                    'payout_date' => $payDate,          // rev181c — explicit or lag-derived
                     'cycle_month' => $month,
                     'month' => $month,
                     'fin_year' => $fy,
@@ -117,7 +235,14 @@ class IncentiveController extends Controller
             }
 
             $msg = "Created {$created} commission entr".($created === 1 ? 'y' : 'ies')." for {$month} (status: {$status}).";
-            if ($status === 'approved') {
+            if ($tdsRate > 0 && $created > 0) {
+                $msg .= ' TDS 194H @ '.rtrim(rtrim(number_format($tdsRate, 2), '0'), '.').'% deducted (₹'.number_format($tdsTotal, 2).' in total) — the NET amounts will pay.';
+            }
+            if ($payMethod === 'separate') {
+                $msg .= ' Payout method: SEPARATE — these entries never fold into a payslip; pay them via Record Payment (printable vouchers in the ledger).';
+            } elseif ($payDate) {
+                $msg .= ' Payout date '.$payDate.' — they fold into THAT month\'s payslip once approved.'.$lagNote;
+            } elseif ($status === 'approved') {
                 $msg .= ' They will fold into that month\'s payroll.';
             } else {
                 $msg .= ' Approve them to reflect in payroll.';
@@ -125,8 +250,23 @@ class IncentiveController extends Controller
             if ($skipped) {
                 $msg .= ' Skipped (no matching employee): '.implode(', ', array_slice($skipped, 0, 10)).(count($skipped) > 10 ? '…' : '').'.';
             }
+            // rev181 — gate outcomes, spelled out so nobody wonders where a row went.
+            if ($draBlockedList) {
+                $msg .= ' DRA GATE — skipped '.count($draBlockedList).' row(s), certification expired/missing: '
+                    .implode(', ', array_slice($draBlockedList, 0, 8)).(count($draBlockedList) > 8 ? '…' : '')
+                    .'. Renew in Field Force -> DRA Certifications, or set the gate to Warn in Statutory Rates.';
+            }
+            if ($draWarnList) {
+                $msg .= ' DRA WARNING — paid, but the certification is expired/missing for: '
+                    .implode(', ', array_slice(array_values($draWarnList), 0, 8)).(count($draWarnList) > 8 ? '…' : '').'.';
+            }
+            if ($ptsSkipList) {
+                $msg .= ' POINTS GATE — skipped '.count($ptsSkipList).' row(s) below the '.$ptsMin.'-point monthly minimum: '
+                    .implode(', ', array_slice($ptsSkipList, 0, 8)).(count($ptsSkipList) > 8 ? '…' : '').'.';
+            }
 
-            return response()->json(['ok' => true, 'created' => $created, 'skipped' => $skipped, 'message' => $msg]);
+            return response()->json(['ok' => true, 'created' => $created, 'skipped' => $skipped, 'message' => $msg,
+                'draBlocked' => count($draBlockedList), 'draWarned' => count($draWarnList), 'pointsSkipped' => count($ptsSkipList)]);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
         }

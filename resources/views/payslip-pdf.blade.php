@@ -75,6 +75,8 @@
         $reimbC = $sub['reimbursement'] ?? 0;
         $dedLines = $dedLines ?? [];
         $ytd = $ytd ?? ['ded_total' => 0, 'net' => 0];
+        // rev179 — YTD column toggle (Settings → Payslip Policy). Default ON.
+        $sy = $showYtd ?? true;
     @endphp
 
     <table class="head" style="width:100%;">
@@ -124,7 +126,7 @@
         <tr>
             <td><div class="label">Employee Type</div><div class="val">{{ $emp['type'] ?: '—' }}</div></td>
             <td><div class="label">Annual CTC</div><div class="val">{{ $m($e->ctc) }}</div></td>
-            <td><div class="label">Pay Date</div><div class="val">{{ \Illuminate\Support\Carbon::parse($month.'-01')->endOfMonth()->format('d M Y') }}</div></td>
+            <td><div class="label">Pay Date</div><div class="val">{{ isset($payDate) ? \Illuminate\Support\Carbon::parse($payDate)->format('d M Y') : \Illuminate\Support\Carbon::parse($month.'-01')->endOfMonth()->format('d M Y') }}</div></td>
         </tr>
     </table>
 
@@ -133,39 +135,39 @@
             <td style="width:52%;vertical-align:top;padding-right:6px;">
                 <h2>Earnings</h2>
                 <table class="grid" style="width:100%;">
-                    <tr><th>Component</th><th class="amt">Month</th><th class="amt">YTD</th></tr>
+                    <tr><th>Component</th><th class="amt">Month</th>@if ($sy)<th class="amt">YTD</th>@endif</tr>
 
                     @if (count($g['fixed']))
-                        <tr class="grp"><td colspan="3">A &middot; Fixed (guaranteed)</td></tr>
+                        <tr class="grp"><td colspan="{{ $sy ? 3 : 2 }}">A &middot; Fixed (guaranteed)</td></tr>
                         @foreach ($g['fixed'] as $ln)
-                            <tr><td>{{ $ln['name'] }}</td><td class="amt">{{ $m($ln['amt']) }}</td><td class="amt ytd">{{ $ln['ytd'] ? $m($ln['ytd']) : '—' }}</td></tr>
+                            <tr><td>{{ $ln['name'] }}</td><td class="amt">{{ $m($ln['amt']) }}</td>@if ($sy)<td class="amt ytd">{{ $ln['ytd'] ? $m($ln['ytd']) : '—' }}</td>@endif</tr>
                         @endforeach
                     @endif
                     @if (count($g['variable']))
-                        <tr class="grp"><td colspan="3">B &middot; Variable (performance)</td></tr>
+                        <tr class="grp"><td colspan="{{ $sy ? 3 : 2 }}">B &middot; Variable (performance)</td></tr>
                         @foreach ($g['variable'] as $ln)
-                            <tr><td>{{ $ln['name'] }}</td><td class="amt">{{ $m($ln['amt']) }}</td><td class="amt ytd">{{ $ln['ytd'] ? $m($ln['ytd']) : '—' }}</td></tr>
+                            <tr><td>{{ $ln['name'] }}</td><td class="amt">{{ $m($ln['amt']) }}</td>@if ($sy)<td class="amt ytd">{{ $ln['ytd'] ? $m($ln['ytd']) : '—' }}</td>@endif</tr>
                         @endforeach
                     @endif
-                    <tr class="tot"><td>Gross Earnings (A + B)</td><td class="amt">{{ $m($grossAB) }}</td><td class="amt"></td></tr>
+                    <tr class="tot"><td>Gross Earnings (A + B)</td><td class="amt">{{ $m($grossAB) }}</td>@if ($sy)<td class="amt"></td>@endif</tr>
 
                     @if (count($g['reimbursement']))
-                        <tr class="grp"><td colspan="3">C &middot; Reimbursements (non-taxable, paid on top)</td></tr>
+                        <tr class="grp"><td colspan="{{ $sy ? 3 : 2 }}">C &middot; Reimbursements (non-taxable, paid on top)</td></tr>
                         @foreach ($g['reimbursement'] as $ln)
-                            <tr><td>{{ $ln['name'] }}</td><td class="amt">{{ $m($ln['amt']) }}</td><td class="amt ytd">{{ $ln['ytd'] ? $m($ln['ytd']) : '—' }}</td></tr>
+                            <tr><td>{{ $ln['name'] }}</td><td class="amt">{{ $m($ln['amt']) }}</td>@if ($sy)<td class="amt ytd">{{ $ln['ytd'] ? $m($ln['ytd']) : '—' }}</td>@endif</tr>
                         @endforeach
-                        <tr class="subt"><td>Reimbursements (C)</td><td class="amt">{{ $m($reimbC) }}</td><td class="amt"></td></tr>
+                        <tr class="subt"><td>Reimbursements (C)</td><td class="amt">{{ $m($reimbC) }}</td>@if ($sy)<td class="amt"></td>@endif</tr>
                     @endif
                 </table>
             </td>
             <td style="width:48%;vertical-align:top;padding-left:6px;">
                 <h2>Deductions</h2>
                 <table class="grid" style="width:100%;">
-                    <tr><th>Component</th><th class="amt">Month</th><th class="amt">YTD</th></tr>
+                    <tr><th>Component</th><th class="amt">Month</th>@if ($sy)<th class="amt">YTD</th>@endif</tr>
                     @foreach ($dedLines as $ln)
-                        <tr><td>{{ $ln['name'] }}</td><td class="amt">{{ $m($ln['amt']) }}</td><td class="amt ytd">{{ $ln['ytd'] ? $m($ln['ytd']) : '—' }}</td></tr>
+                        <tr><td>{{ $ln['name'] }}</td><td class="amt">{{ $m($ln['amt']) }}</td>@if ($sy)<td class="amt ytd">{{ $ln['ytd'] ? $m($ln['ytd']) : '—' }}</td>@endif</tr>
                     @endforeach
-                    <tr class="tot"><td>Total Deductions</td><td class="amt">{{ $m($s['total_ded']) }}</td><td class="amt ytd">{{ ($ytd['ded_total'] ?? 0) ? $m($ytd['ded_total']) : '' }}</td></tr>
+                    <tr class="tot"><td>Total Deductions</td><td class="amt">{{ $m($s['total_ded']) }}</td>@if ($sy)<td class="amt ytd">{{ ($ytd['ded_total'] ?? 0) ? $m($ytd['ded_total']) : '' }}</td>@endif</tr>
                 </table>
 
                 <table class="memo" style="width:100%;">
