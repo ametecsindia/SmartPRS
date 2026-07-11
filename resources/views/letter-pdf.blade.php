@@ -33,6 +33,7 @@
 <div class="wrap">
     <div class="head">
         <h1>{{ $brandName }}</h1>
+        @if(!empty($brand['tagline'])) <div style="font-size:11px;color:#666;font-style:italic;">{{ $brand['tagline'] }}</div> @endif
         @if(!empty($companyAddress))<div class="addr">{{ $companyAddress }}</div>@endif
     </div>
     <div class="meta">Date: {{ $date }}</div>

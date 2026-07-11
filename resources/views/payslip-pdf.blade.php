@@ -91,6 +91,7 @@
             </td>
             <td>
                 <div class="brand">{{ $brand['display_name'] ?? ($c->name ?? 'SmartPRS') }}</div>
+                @if(!empty($brand['tagline'])) <div class="cmuted" style="font-style:italic;">{{ $brand['tagline'] }}</div> @endif
                 @if (count($line1)) <div class="cmuted">{{ implode('  ·  ', $line1) }}</div> @endif
                 @if (count($line2)) <div class="cmuted">{{ implode('  ·  ', $line2) }}</div> @endif
             </td>

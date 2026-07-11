@@ -35,6 +35,7 @@
             <img src="{{ $brandLogo }}" style="max-height:34px;max-width:150px;object-fit:contain;margin-bottom:5px;">
         @endif
         <div class="co">{{ $brandName }}</div>
+        @if(!empty($brand['tagline'])) <div class="sub" style="text-transform:none;letter-spacing:0;font-style:italic;">{{ $brand['tagline'] }}</div> @endif
         <div class="sub">Employee ID Card</div>
     </div>
     <div class="photo">

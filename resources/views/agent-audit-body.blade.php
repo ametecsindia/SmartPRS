@@ -17,7 +17,7 @@
             @if(!empty($brandLogo))
                 <img src="{{ $brandLogo }}" style="max-height:38px;max-width:170px;object-fit:contain;margin-bottom:4px;"><br>
             @endif
-            <span class="co">{{ $brandName }}</span>
+            <span class="co">{{ $brandName }}</span>@if(!empty($brand['tagline'])) <span class="co" style="font-weight:normal;font-style:italic;font-size:10px;"> &middot; {{ $brand['tagline'] }}</span> @endif
             <div class="co-sub">
                 @if($addr){{ $addr }}<br>@endif
                 @if($gstin)GSTIN: {{ $gstin }}@endif

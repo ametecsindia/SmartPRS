@@ -33,6 +33,7 @@
     <div class="card">
         <div class="top">
             <h1>{{ $brandName }}</h1>
+            @if(!empty($brand['tagline'])) <div style="font-size:12px;color:#666;font-style:italic;">{{ $brand['tagline'] }}</div> @endif
             <p>Employment Offer</p>
         </div>
         <div class="body">

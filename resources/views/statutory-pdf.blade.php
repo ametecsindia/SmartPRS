@@ -29,6 +29,7 @@
                         <img src="{{ $logoSrc }}" style="max-height:34px;max-width:120px;object-fit:contain;vertical-align:middle;">
                     @endif
                     <div class="brand" style="color: {{ $brand['color'] ?? '#f97316' }};">{{ $brand['display_name'] ?? ($company->name ?? 'SmartPRS') }}</div>
+                    @if(!empty($brand['tagline'])) <div style="font-size:10px;color:#666;font-style:italic;">{{ $brand['tagline'] }}</div> @endif
                     <div class="muted">{{ $company->name ?? 'SmartPRS' }}</div>
                 </td>
                 <td style="text-align:right;"><div style="font-size:14px;font-weight:bold;">{{ $title }}</div><div class="muted">{{ $period }}</div></td>
