@@ -124,7 +124,9 @@ class AppDataController extends Controller
             // adding optional hierarchy columns is best-effort; never block bootstrap
         }
 
+        self::processDueBackups($tenantId);   // rev183d — run any elapsed 3-day backup schedules first
         $empQ = DB::table('employees')->whereNull('deleted_at');
+        if (Schema::hasColumn('employees', 'archived_at')) { $empQ->whereNull('archived_at'); }   // rev183b — hide backed-up (Old data) employees
         $compQ = DB::table('companies')->whereNull('deleted_at');
         if ($tenantId) {
             $empQ->where('tenant_id', $tenantId);
@@ -203,6 +205,7 @@ class AppDataController extends Controller
                 'bankAcc' => $col('bank_acc') ?? '',
                 'ifsc' => $col('ifsc') ?? '',
                 'status' => ucfirst((string) $col('status')),
+                'backupDueAt' => $col('backup_due_at') ? \Illuminate\Support\Carbon::parse($col('backup_due_at'))->toIso8601String() : '',   // rev183d
                 'salaryType' => self::SALARY_TYPE[$col('salary_type')] ?? 'Salary',
                 'commPct' => (float) ($col('comm_pct') ?? 0),
                 'shift' => $col('shift') ?? '',   // rev173 — default Working Shift (name)
@@ -287,8 +290,46 @@ class AppDataController extends Controller
             $shiftList = collect();
         }
 
+        // rev183b — "Backed up / Old data" tab: employees moved out of the active
+        // directory (archived_at set). Their data stays intact; surface a light
+        // list plus a download link to the stored JSON backup.
+        $archived = [];
+        try {
+            $hasArch = Schema::hasColumn('employees', 'archived_at');
+            $arQ = DB::table('employees');
+            if ($hasArch) {
+                $arQ->where(fn ($w) => $w->whereNotNull('archived_at')->orWhereNotNull('deleted_at'));
+            } else {
+                $arQ->whereNotNull('deleted_at');
+            }
+            if ($tenantId) { $arQ->where('tenant_id', $tenantId); }
+            if ($selfScope) { $arQ->where('id', $selfScope['id']); }
+            $arRows = $arQ->orderByRaw($hasArch ? 'COALESCE(archived_at, deleted_at) DESC' : 'deleted_at DESC')->limit(1000)->get();
+            $archived = $arRows->map(function ($e) use ($deptNames) {
+                $a = (array) $e;
+                $c = fn ($k) => $a[$k] ?? null;
+                $isArch = ! empty($c('archived_at'));
+                $when = $isArch ? $c('archived_at') : $c('deleted_at');
+                return [
+                    'id' => $c('emp_code'),
+                    'name' => $c('name'),
+                    'dept' => $deptNames[$c('department_id')] ?? ($c('department') ?? ''),
+                    'designation' => $c('designation') ?? '',
+                    'company' => (string) ($c('company_id') ?? ''),
+                    'reason' => $isArch ? 'Backed up' : 'Deleted',
+                    'archivedAt' => $when ? substr((string) $when, 0, 16) : '',
+                    'archivedBy' => $c('archived_by') ?? '',
+                    'detailUrl' => url('/app/employees/'.rawurlencode((string) $c('emp_code')).'/archive-detail'),
+                    'fileUrl' => url('/app/employees/'.rawurlencode((string) $c('emp_code')).'/backup-file'),
+                ];
+            })->values();
+        } catch (\Throwable $e) {
+            $archived = [];
+        }
+
         return response()->json([
             'employees' => $employees,
+            'archivedEmployees' => $archived,
             'companies' => $companies,
             'branches' => $optList('branches'),
             'departments' => $optList('departments'),
@@ -557,7 +598,7 @@ class AppDataController extends Controller
         $userTenant = $request->user()->tenant_id;
         $e = DB::table('employees')->where('emp_code', $code)
             ->when($userTenant, fn ($q) => $q->where('tenant_id', $userTenant))
-            ->whereNull('deleted_at')->first();
+            ->first();   // rev183c — include archived/deleted so Old-data payslip links work (self-scope 403 still applies)
         // rev175 — an employee may download only their OWN payslip.
         $selfScope = self::selfScope($request);
         if ($selfScope && $selfScope['code'] !== $code) {
@@ -1730,6 +1771,290 @@ class AppDataController extends Controller
     }
 
     /** Persist a new employee (from the prototype Add Employee form) into the real tables. */
+    /**
+     * rev183 — flip an employee between Active and Inactive. Inactive employees
+     * keep ALL history but drop out of payroll (PayrollGen filters status='active')
+     * and active operational lists, while staying visible in the Directory (with a
+     * red badge) so they can be reactivated. Admin / HR only.
+     */
+    /** rev183c — collect EVERY record linked to an employee (backup + detail view). */
+    public static function gatherEmployeeData($emp, $tenantId): array
+    {
+        $related = [];
+        foreach (['attendance_logs', 'commissions', 'advances', 'loans', 'expenses', 'leaves', 'transfers', 'documents'] as $tbl) {
+            try {
+                if (Schema::hasTable($tbl) && Schema::hasColumn($tbl, 'emp_code')) {
+                    $related[$tbl] = DB::table($tbl)->where('emp_code', $emp->emp_code)
+                        ->when($tenantId && Schema::hasColumn($tbl, 'tenant_id'), fn ($q) => $q->where('tenant_id', $tenantId))
+                        ->limit(2000)->get();
+                }
+            } catch (\Throwable $e) {
+            }
+        }
+        foreach (['payslips' => 'employee_id', 'employee_references' => 'employee_id'] as $tbl => $key) {
+            try {
+                if (Schema::hasTable($tbl) && Schema::hasColumn($tbl, $key)) {
+                    $related[$tbl] = DB::table($tbl)->where($key, $emp->id)->limit(2000)->get();
+                }
+            } catch (\Throwable $e) {
+            }
+        }
+
+        return $related;
+    }
+
+    /** rev183c — full profile + all linked records for the Old-data detail view
+     *  (works for backed-up AND deleted employees). Admin / HR only. */
+    public function archiveDetail(Request $request, $code)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        $tenantId = $request->user()->tenant_id ?? DB::table('tenants')->value('id');
+        $emp = DB::table('employees')
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->where('emp_code', (string) $code)
+            ->first();
+        if (! $emp) {
+            return response()->json(['ok' => false, 'error' => 'Employee not found'], 404);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'employee' => (array) $emp,
+            'companyName' => DB::table('companies')->where('id', $emp->company_id ?? 0)->value('name'),
+            'payslipBase' => url('/app/payslip'),
+            'docBase' => url('/app/documents-mgr'),
+            'related' => self::gatherEmployeeData($emp, $tenantId),
+        ]);
+    }
+
+    /**
+     * rev183b — BACK UP a single employee's entire data into the "Backed up /
+     * Old data" tab. The employee + every linked record STAY intact in the DB
+     * (keyed by emp_code / employee_id); we set employees.archived_at so they
+     * drop out of the active directory and payroll, snapshot everything into
+     * employee_archives, and return a download URL for an offline JSON backup.
+     * Admin / HR only. View-only afterwards (no in-app restore).
+     */
+    /**
+     * rev183d — SCHEDULE a backup with a 3-day grace period instead of removing
+     * immediately. Sets employees.backup_due_at = now + 3 days; the employee stays
+     * in the Directory with a live countdown + Cancel until then. When due, the
+     * bootstrap due-processor archives them to Old data. Emails the tenant admins
+     * so an accidental click can be cancelled in time. Admin / HR only.
+     */
+    public function backupEmployee(Request $request, $code)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        $tenantId = $request->user()->tenant_id ?? DB::table('tenants')->value('id');
+        $emp = DB::table('employees')
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->where('emp_code', (string) $code)
+            ->whereNull('deleted_at')
+            ->first();
+        if (! $emp) {
+            return response()->json(['ok' => false, 'error' => 'Employee not found'], 404);
+        }
+        if (! Schema::hasColumn('employees', 'backup_due_at')) {
+            return response()->json(['ok' => false, 'error' => 'Backup schedule not ready — run: php artisan migrate'], 422);
+        }
+
+        $by = (string) ($request->user()->name ?? '');
+        $due = now()->addDays(3);
+        DB::table('employees')->where('id', $emp->id)->update([
+            'backup_due_at' => $due,
+            'backup_by' => $by,
+            'updated_at' => now(),
+        ]);
+
+        // Alert the tenant admins so an accidental schedule can be cancelled in time.
+        try {
+            $company = DB::table('companies')->where('id', $emp->company_id ?? 0)->value('name');
+            foreach (self::adminRecipients((int) ($tenantId ?? 0)) as $rcpt) {
+                \App\Services\MailService::queue([
+                    'tenant_id' => (int) ($tenantId ?? 0),
+                    'company_id' => $rcpt['company_id'] ?? null,
+                    'to' => $rcpt['email'],
+                    'to_name' => $rcpt['name'] ?? '',
+                    'subject' => 'Action needed: '.$emp->name.' scheduled for backup & removal in 72 hours',
+                    'heading' => 'Employee backup scheduled',
+                    'intro' => $emp->name.' ('.$emp->emp_code.')'.($company ? ' of '.$company : '').' has been scheduled to be backed up and removed from the active directory in about 72 hours (on '.$due->format('d M Y, H:i').'). If this was NOT intentional, open the Employee Directory in SmartPRS and click Cancel on that employee before the timer ends.',
+                    'lines' => [
+                        'Employee' => $emp->name,
+                        'Employee ID' => $emp->emp_code,
+                        'Scheduled by' => $by,
+                        'Will be removed at' => $due->format('d M Y, H:i'),
+                    ],
+                    'kind' => 'employee.backup.scheduled',
+                ]);
+            }
+        } catch (\Throwable $e) {
+        }
+
+        return response()->json([
+            'ok' => true,
+            'dueAt' => $due->toIso8601String(),
+            'message' => $emp->name.' scheduled for backup in 72 hours. An email alert was sent to the admin. Cancel any time before then.',
+        ]);
+    }
+
+    /** rev183d — cancel a scheduled (not-yet-run) backup. Admin / HR only. */
+    public function cancelBackup(Request $request, $code)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        if (! Schema::hasColumn('employees', 'backup_due_at')) {
+            return response()->json(['ok' => true, 'message' => 'Nothing scheduled.']);
+        }
+        $tenantId = $request->user()->tenant_id ?? DB::table('tenants')->value('id');
+        $n = DB::table('employees')
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->where('emp_code', (string) $code)
+            ->whereNull('archived_at')
+            ->update(['backup_due_at' => null, 'backup_by' => null, 'updated_at' => now()]);
+
+        return response()->json(['ok' => true, 'message' => $n > 0 ? 'Scheduled backup cancelled.' : 'Nothing to cancel.']);
+    }
+
+    /** rev183d — tenant admin/HR recipients for backup alert emails (Spatie pivots, guarded). */
+    private static function adminRecipients(int $tenantId): array
+    {
+        try {
+            if (! Schema::hasTable('users')) {
+                return [];
+            }
+            $userIds = [];
+            if (Schema::hasTable('roles') && Schema::hasTable('model_has_roles')) {
+                $roleIds = DB::table('roles')->whereIn('name', ['super_admin', 'admin', 'hr_manager'])->pluck('id');
+                $userIds = DB::table('model_has_roles')->whereIn('role_id', $roleIds)
+                    ->where('model_type', 'App\Models\User')->pluck('model_id')->all();
+            }
+            if (empty($userIds)) {
+                return [];
+            }
+
+            return DB::table('users')->where('tenant_id', $tenantId)->whereNotNull('email')
+                ->whereIn('id', $userIds)->get(['name', 'email', 'company_id'])
+                ->map(fn ($u) => ['name' => $u->name, 'email' => $u->email, 'company_id' => $u->company_id ?? null])->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /** rev183d — run any backups whose 3-day grace has elapsed (called on /app/data load). */
+    public static function processDueBackups($tenantId): void
+    {
+        try {
+            if (! Schema::hasColumn('employees', 'backup_due_at') || ! Schema::hasColumn('employees', 'archived_at')) {
+                return;
+            }
+            $due = DB::table('employees')
+                ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+                ->whereNotNull('backup_due_at')
+                ->where('backup_due_at', '<=', now())
+                ->whereNull('archived_at')
+                ->whereNull('deleted_at')
+                ->limit(50)->get();
+            foreach ($due as $emp) {
+                self::archiveEmployeeNow($emp, $emp->tenant_id ?? $tenantId, (string) ($emp->backup_by ?? 'system'));
+            }
+        } catch (\Throwable $e) {
+        }
+    }
+
+    /** rev183d — snapshot + archive one employee to Old data (used by the due-processor). */
+    private static function archiveEmployeeNow($emp, $tenantId, string $by): void
+    {
+        try {
+            $json = json_encode([
+                'backed_up_at' => now()->toDateTimeString(),
+                'backed_up_by' => $by,
+                'employee' => (array) $emp,
+                'related' => self::gatherEmployeeData($emp, $tenantId),
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+            if (Schema::hasTable('employee_archives')) {
+                DB::table('employee_archives')->insert([
+                    'tenant_id' => $tenantId,
+                    'employee_id' => $emp->id,
+                    'emp_code' => $emp->emp_code,
+                    'name' => $emp->name,
+                    'snapshot' => $json,
+                    'archived_by' => $by,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+            DB::table('employees')->where('id', $emp->id)->update([
+                'archived_at' => now(),
+                'archived_by' => $by,
+                'backup_due_at' => null,
+                'updated_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+        }
+    }
+
+    /** rev183b — stream the stored JSON backup for a backed-up employee (admin/HR). */
+    public function employeeBackupFile(Request $request, $code)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        $tenantId = $request->user()->tenant_id ?? DB::table('tenants')->value('id');
+        $row = null;
+        try {
+            if (Schema::hasTable('employee_archives')) {
+                $row = DB::table('employee_archives')
+                    ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+                    ->where('emp_code', (string) $code)
+                    ->orderByDesc('id')->first();
+            }
+        } catch (\Throwable $e) {
+        }
+        if ($row) {
+            $json = (string) $row->snapshot;
+            $stamp = substr((string) $row->created_at, 0, 10);
+        } else {
+            $emp = DB::table('employees')->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+                ->where('emp_code', (string) $code)->first();
+            if (! $emp) {
+                return response()->json(['ok' => false, 'error' => 'No data found for '.$code], 404);
+            }
+            $json = json_encode(['employee' => (array) $emp, 'related' => self::gatherEmployeeData($emp, $tenantId)], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+            $stamp = substr((string) now()->toDateString(), 0, 10);
+        }
+        $fname = 'backup-'.preg_replace('/[^A-Za-z0-9_-]/', '', (string) $code).'-'.$stamp.'.json';
+
+        return response($json, 200, [
+            'Content-Type' => 'application/json',
+            'Content-Disposition' => 'attachment; filename="'.$fname.'"',
+        ]);
+    }
+
+    public function setEmployeeStatus(Request $request, $code)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        $tenantId = $request->user()->tenant_id ?? DB::table('tenants')->value('id');
+        $to = strtolower(trim((string) $request->input('status', ''))) === 'inactive' ? 'inactive' : 'active';
+        $n = DB::table('employees')
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->where('emp_code', (string) $code)
+            ->whereNull('deleted_at')
+            ->update(['status' => $to, 'updated_at' => now()]);
+
+        return response()->json([
+            'ok' => $n > 0,
+            'status' => $to,
+            'message' => $n > 0 ? ('Employee marked '.ucfirst($to)) : 'Employee not found',
+        ]);
+    }
+
     public function storeEmployee(Request $request)
     {
         if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
@@ -1806,6 +2131,7 @@ class AppDataController extends Controller
             'id_marks' => $e['idMarks'] ?? null,
             'gender' => $e['gender'] ?? null,
             'employment_stage' => $e['employment_stage'] ?? ($e['employmentStage'] ?? null),
+            'status' => (strtolower(trim((string) ($e['status'] ?? 'active'))) === 'inactive') ? 'inactive' : 'active',   // rev183 — Active/Inactive from the form
             'address' => $e['addr'] ?? ($e['address'] ?? null),
             'dob' => $e['dob'] ?? null,
             'updated_at' => now(),
@@ -1856,7 +2182,7 @@ class AppDataController extends Controller
                 return response()->json(['ok' => false, 'error' => $seat['error']], 422);
             }
             $payload['uuid'] = (string) Str::uuid();
-            $payload['status'] = 'active';
+            $payload['status'] = $payload['status'] ?? 'active';
             $payload['created_at'] = now();
             $empId = DB::table('employees')->insertGetId($payload);
         }

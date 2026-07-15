@@ -249,6 +249,11 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/employees', [App\Http\Controllers\AppDataController::class, 'storeEmployee'])->name('app.employees.store');
     Route::post('/app/employees/import', [App\Http\Controllers\AppDataController::class, 'importEmployees'])->name('app.employees.import');
     Route::post('/app/employees/bulk-delete', [App\Http\Controllers\AppDataController::class, 'bulkDeleteEmployees'])->name('app.employees.bulkdel');
+    Route::post('/app/employees/{code}/status', [App\Http\Controllers\AppDataController::class, 'setEmployeeStatus'])->name('app.employees.status');   // rev183 Active/Inactive toggle
+    Route::post('/app/employees/{code}/backup', [App\Http\Controllers\AppDataController::class, 'backupEmployee'])->name('app.employees.backup');   // rev183b backup to Old data
+    Route::post('/app/employees/{code}/backup-cancel', [App\Http\Controllers\AppDataController::class, 'cancelBackup'])->name('app.employees.backupcancel');   // rev183d cancel grace
+    Route::get('/app/employees/{code}/backup-file', [App\Http\Controllers\AppDataController::class, 'employeeBackupFile'])->name('app.employees.backupfile');
+    Route::get('/app/employees/{code}/archive-detail', [App\Http\Controllers\AppDataController::class, 'archiveDetail'])->name('app.employees.archivedetail');
     Route::get('/app/employees/template', [App\Http\Controllers\AppDataController::class, 'employeeTemplate'])->name('app.employees.template');
     Route::get('/app/payslip/{code}/pdf', [App\Http\Controllers\AppDataController::class, 'payslipPdf'])->name('app.payslip.pdf');
     Route::get('/app/statutory/{type}/pdf', [App\Http\Controllers\AppDataController::class, 'statutoryPdf'])->name('app.statutory.pdf');

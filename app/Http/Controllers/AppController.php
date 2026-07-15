@@ -469,6 +469,7 @@ CSS;
                 if (Array.isArray(live.tenants) && live.tenants.length) { DB.tenants = live.tenants; }
                 if (Array.isArray(live.payrollRuns) && live.payrollRuns.length) { DB.payrollRuns = live.payrollRuns; }
                 if (Array.isArray(live.payslips)) { window.__PAYSLIPS = live.payslips; }
+                DB.archivedEmployees = Array.isArray(live.archivedEmployees) ? live.archivedEmployees : [];   // rev183b — Backed up / Old data tab
                 if (Array.isArray(live.tdsReturns) && live.tdsReturns.length && (!DB.tdsReturns || !DB.tdsReturns.length)) { DB.tdsReturns = live.tdsReturns; }
                 if (live.rates) { window.__RATES = live.rates; }
                 if (live.branding) { window.__BRANDMAP = live.branding; }
@@ -605,7 +606,7 @@ CSS;
     // Map each matrix module → the nav ids it controls.
     var PERM_NAV = {
         dashboard: ['dashboard', 'platform-dashboard', 'how-it-works', 'notifications'],
-        employees: ['emp-list', 'emp-add', 'idcard', 'teams', 'onboarding-board', 'recruitment', 'bgv', 'documents', 'roster', 'offroll-agents', 'transfers'],
+        employees: ['emp-list', 'emp-archived', 'emp-add', 'idcard', 'teams', 'onboarding-board', 'recruitment', 'bgv', 'documents', 'roster', 'offroll-agents', 'transfers'],
         attendance: ['att-daily', 'att-report', 'att-manual', 'att-zkteco', 'biometric-devices', 'biometric-setup', 'geofence', 'geofence-list', 'shifts', 'late-policy', 'overtime'],
         leave: ['leave-apply', 'leave-types', 'holidays'],
         payroll: ['pay-cycle', 'salary-schedules', 'salary-setup', 'salary-gen', 'salary-approval', 'payslip', 'deductions', 'payout-recon', 'live-salary', 'pay-ledger', 'calc-logic'],
@@ -1091,7 +1092,7 @@ CSS;
     var SUB_ICONS = {
         'dashboard': 'fa-gauge-high', 'live-salary': 'fa-bolt', 'platform-dashboard': 'fa-gauge-high',
         'ai-assistant': 'fa-robot', 'how-it-works': 'fa-circle-question', 'notifications': 'fa-bell', 'approvals-inbox': 'fa-inbox',
-        'emp-list': 'fa-address-book', 'emp-add': 'fa-user-plus', 'teams': 'fa-people-group', 'idcard': 'fa-id-card',
+        'emp-list': 'fa-address-book', 'emp-archived': 'fa-box-archive', 'emp-add': 'fa-user-plus', 'teams': 'fa-people-group', 'idcard': 'fa-id-card',
         'documents': 'fa-folder-open', 'onboarding-board': 'fa-clipboard-check', 'exits': 'fa-door-open', 'transfers': 'fa-right-left',
         'recruitment': 'fa-user-tie', 'bgv': 'fa-user-shield',
         'att-daily': 'fa-calendar-check', 'att-report': 'fa-table-list', 'att-manual': 'fa-pen-to-square',
@@ -1454,6 +1455,7 @@ CSS;
         // Repurpose the placeholder "Attendance Report" card screen into a live
         // daily punch report (the nav item already exists in the prototype).
         try { if (typeof SCREENS !== 'undefined' && SCREENS['att-report']) { SCREENS['att-report'] = { title: 'Attendance Report', type: 'custom' }; } } catch (e) {}
+        try { if (typeof SCREENS !== 'undefined') { SCREENS['emp-archived'] = { title: 'Backed up / Old data', type: 'custom' }; } } catch (e) {}
         // Turn the placeholder Daily Attendance card screen into a live today view.
         try { if (typeof SCREENS !== 'undefined' && SCREENS['att-daily']) { SCREENS['att-daily'] = { title: 'Daily Attendance', type: 'custom' }; } } catch (e) {}
         // Company-wise branding editor.
@@ -1544,6 +1546,7 @@ CSS;
             if (MASTER_MAP[id]) { return masterScreen(id); }
             if (id === 'payslip') { return payslipHistoryScreen(); }
             if (id === 'kb') { return kbScreen(); }
+            if (id === 'emp-archived') { return empArchivedScreen(); }
             if (id === 'att-report') { return attReportScreen(); }
             if (id === 'att-daily') { return dailyAttendanceScreen(); }
             if (id === 'branding') { return brandingScreen(); }
@@ -1708,6 +1711,8 @@ CSS;
         var viewBtn = canView ? '<button class="btn btn-primary btn-sm" onclick="empPopView(&#39;' + safeC + '&#39;)"><i class="fas fa-user"></i> View full profile</button>' : '';
         // rev172 — RBI compliance audit report PDF (admin/HR), on the company's own letterhead.
         var auditBtn = canView ? '<a class="btn btn-outline btn-sm" href="/app/compliance/agent-audit/' + safeC + '/pdf" target="_blank" rel="noopener" title="RBI compliance audit report (PDF)"><i class="fas fa-shield-halved"></i> Audit Report</a> ' : '';
+        // rev183 — quick Deactivate / Activate (admin/HR). Inactive keeps history but leaves payroll & active lists.
+        var toggleBtn = canView ? '<button class="btn btn-outline btn-sm" onclick="empToggleStatus(&#39;' + safeC + '&#39;,&#39;' + (e.status === 'Inactive' ? 'active' : 'inactive') + '&#39;)" title="' + (e.status === 'Inactive' ? 'Reactivate this employee' : 'Mark inactive: hides from payroll and active lists, history is kept') + '" style="' + (e.status === 'Inactive' ? 'color:#16a34a;border-color:#bbf7d0' : 'color:var(--red);border-color:#fecaca') + '"><i class="fas ' + (e.status === 'Inactive' ? 'fa-user-check' : 'fa-user-slash') + '"></i> ' + (e.status === 'Inactive' ? 'Activate' : 'Deactivate') + '</button> ' : '';
         commModal('<div class="card" style="max-width:400px;width:100%;padding:0">'
             + '<div style="display:flex;gap:16px;align-items:flex-start;padding:20px 22px;border-bottom:1px solid var(--border)">' + photo
             + '<div style="flex:1"><div style="font-weight:800;font-size:17px">' + e.name + '</div>'
@@ -1720,12 +1725,142 @@ CSS;
             + (e.reporting ? '<div style="display:flex;gap:9px;align-items:center;padding:5px 0;font-size:13px;color:var(--text2)"><i class="fas fa-user-tie" style="width:16px;color:var(--text3);font-size:12px"></i><span>Reports to ' + empNameLink(e.reporting) + '</span></div>' : '')
             + row2('fa-phone', e.mobile) + row2('fa-envelope', e.email)
             + '</div>'
-            + ((viewBtn || auditBtn) ? '<div style="display:flex;justify-content:flex-end;gap:8px;padding:0 22px 18px">' + auditBtn + viewBtn + '</div>' : '<div style="padding:0 0 10px"></div>') + '</div>');
+            + ((viewBtn || auditBtn || toggleBtn) ? '<div style="display:flex;justify-content:flex-end;gap:8px;padding:0 22px 18px;flex-wrap:wrap">' + toggleBtn + auditBtn + viewBtn + '</div>' : '<div style="padding:0 0 10px"></div>') + '</div>');
     };
     window.empPopView = function (code) {
         commModalClose();
         try { go('directory'); } catch (e) {}
         setTimeout(function () { try { editEmployee(code); } catch (e2) {} }, 80);
+    };
+    // rev183 — POST Active/Inactive; server hides inactive from payroll & lists, keeps history.
+    window.empToggleStatus = function (code, to) {
+        var verb = to === 'inactive' ? 'Deactivate' : 'Activate';
+        var msg = to === 'inactive' ? ' this employee? They will be hidden from payroll and active lists. History is kept and you can reactivate any time.' : ' this employee? They will return to payroll and active lists.';
+        if (!confirm(verb + msg)) { return; }
+        fetch('/app/employees/' + encodeURIComponent(code) + '/status', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ status: to })
+        }).then(function (res) { return res.json(); }).then(function (j) {
+            if (j && j.ok) {
+                if (typeof toast === 'function') { toast(j.message || ('Employee marked ' + to)); }
+                try { commModalClose(); } catch (e) {}
+                setTimeout(function () { location.reload(); }, 300);
+            } else if (typeof toast === 'function') { toast((j && j.message) || 'Could not update status'); }
+        }).catch(function () { if (typeof toast === 'function') { toast('Network error updating status'); } });
+    };
+    // rev183b — "Backed up / Old data" tab: view-only list of archived employees + download backup.
+    function empArchivedScreen() {
+        var rows = (typeof DB !== 'undefined' && DB.archivedEmployees) || [];
+        var back = '<button class="btn btn-outline btn-sm" onclick="go(&#39;emp-list&#39;)"><i class="fas fa-arrow-left"></i> Back to Directory</button>';
+        var head = pghead('Backed up / Old data', 'Backed-up and deleted employees. Full data is kept — open View details for payroll, logs and documents, or download the whole record. ' + rows.length + ' record(s).', back);
+        if (!rows.length) {
+            return head + '<div class="card"><div class="empty"><i class="fas fa-box-archive"></i>No backed-up or deleted employees yet.</div></div>';
+        }
+        var body = rows.map(function (r) {
+            var dz = (r.dept || '') + (r.designation ? ' \u00b7 ' + r.designation : '');
+            var rsn = (r.reason === 'Deleted')
+                ? '<span style="background:#fee2e2;color:#b91c1c;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px">Deleted</span>'
+                : '<span style="background:#ede9fe;color:#6d28d9;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px">Backed up</span>';
+            var act = '<button class="btn btn-primary btn-sm" onclick="empArchiveDetail(&#39;' + r.id + '&#39;)"><i class="fas fa-eye"></i> View details</button> '
+                + '<a class="btn btn-outline btn-sm" href="' + r.fileUrl + '" target="_blank"><i class="fas fa-download"></i> Download</a>';
+            return '<tr><td style="font-weight:600">' + (r.name || '') + '</td><td>' + (r.id || '') + '</td><td>' + dz + '</td><td>' + rsn + '</td><td>' + (r.archivedAt || '') + '</td><td>' + (r.archivedBy || '') + '</td><td style="text-align:right;white-space:nowrap">' + act + '</td></tr>';
+        }).join('');
+        return head + '<div class="card"><div class="table-wrap"><table><thead><tr><th>Employee</th><th>ID</th><th>Department / Role</th><th>Reason</th><th>Removed on</th><th>By</th><th style="text-align:right">Actions</th></tr></thead><tbody>' + body + '</tbody></table></div></div>';
+    }
+    // rev183d — SCHEDULE a backup (3-day grace). Row shows a live countdown + Cancel; admin is emailed.
+    window.empBackup = function (code) {
+        if (!confirm('Schedule backup for this employee? They stay in the Directory with a 3-day countdown. When it reaches zero they are backed up and removed to the Old data tab, and dropped from payroll. An email alert is sent to the admin. You can Cancel any time before then.')) { return; }
+        fetch('/app/employees/' + encodeURIComponent(code) + '/backup', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (res) { return res.json(); }).then(function (j) {
+            if (j && j.ok) {
+                if (typeof toast === 'function') { toast(j.message || 'Backup scheduled'); }
+                setTimeout(function () { location.reload(); }, 600);
+            } else if (typeof toast === 'function') { toast((j && (j.error || j.message)) || 'Could not schedule backup'); }
+        }).catch(function () { if (typeof toast === 'function') { toast('Network error scheduling backup'); } });
+    };
+    // rev183d — cancel a scheduled backup before the timer ends.
+    window.empBackupCancel = function (code) {
+        if (!confirm('Cancel the scheduled backup for this employee? They stay active and nothing is removed.')) { return; }
+        fetch('/app/employees/' + encodeURIComponent(code) + '/backup-cancel', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (res) { return res.json(); }).then(function (j) {
+            if (typeof toast === 'function') { toast((j && j.message) || 'Cancelled'); }
+            setTimeout(function () { location.reload(); }, 500);
+        }).catch(function () { if (typeof toast === 'function') { toast('Network error'); } });
+    };
+    // rev183d — Directory row actions: schedule-backup icon (or live countdown + Cancel) + Activate/Deactivate.
+    window.empRowActions = function (r) {
+        var toggle = (r.status === 'Inactive')
+            ? '<i class="fas fa-user-check" title="Activate this employee (currently inactive)" style="color:#16a34a;cursor:pointer" onclick="empToggleStatus(&#39;' + r.id + '&#39;,&#39;active&#39;)"></i>'
+            : '<i class="fas fa-user-slash" title="Deactivate (hide from payroll and active lists; history kept)" style="color:var(--red);cursor:pointer" onclick="empToggleStatus(&#39;' + r.id + '&#39;,&#39;inactive&#39;)"></i>';
+        var due = r.backupDueAt ? Date.parse(r.backupDueAt) : 0;
+        var first;
+        if (due && due > Date.now()) {
+            var hrs = Math.max(0, Math.ceil((due - Date.now()) / 3600000));
+            first = '<span class="bk-countdown" data-due="' + due + '" title="Backup and removal scheduled — click the arrow to cancel" style="color:#b45309;font-weight:700;font-size:11px;margin-right:3px;white-space:nowrap"><i class="fas fa-hourglass-half"></i> ' + hrs + 'h</span>'
+                + '<i class="fas fa-rotate-left" title="Cancel scheduled backup" style="color:#16a34a;cursor:pointer" onclick="empBackupCancel(&#39;' + r.id + '&#39;)"></i>';
+        } else {
+            first = '<i class="fas fa-box-archive" title="Schedule backup (3-day grace, then moves to Old data)" style="color:#7c3aed;cursor:pointer" onclick="empBackup(&#39;' + r.id + '&#39;)"></i>';
+        }
+        return first + toggle;
+    };
+    // rev183d — refresh the hours-remaining on all visible countdown badges.
+    function bkTick() {
+        try {
+            var now = Date.now();
+            var els = document.querySelectorAll('.bk-countdown');
+            for (var i = 0; i < els.length; i++) {
+                var due = parseInt(els[i].getAttribute('data-due'), 10) || 0;
+                var hrs = Math.max(0, Math.ceil((due - now) / 3600000));
+                els[i].innerHTML = '<i class="fas fa-hourglass-half"></i> ' + hrs + 'h';
+            }
+        } catch (e) {}
+    }
+    try { if (!window.__bkTimer) { window.__bkTimer = setInterval(bkTick, 60000); } } catch (e) {}
+    // rev183c — one related-record table for the Old-data detail modal (hyperlink col optional).
+    function oldDataTable(title, arr, linkFn) {
+        if (!arr || !arr.length) { return ''; }
+        var keys = Object.keys(arr[0]).filter(function (k) { return k !== 'snapshot' && k !== 'updated_at'; }).slice(0, 8);
+        var th = keys.map(function (k) { return '<th style="text-align:left;padding:5px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text3)">' + k + '</th>'; }).join('') + (linkFn ? '<th></th>' : '');
+        var tb = arr.slice(0, 200).map(function (r) {
+            return '<tr>' + keys.map(function (k) { var v = r[k]; return '<td style="padding:5px 8px;border-bottom:1px solid #f1f5f9;font-size:11.5px">' + (v == null ? '' : String(v)) + '</td>'; }).join('') + (linkFn ? ('<td style="padding:5px 8px;border-bottom:1px solid #f1f5f9">' + linkFn(r) + '</td>') : '') + '</tr>';
+        }).join('');
+        return '<div style="margin-top:16px"><div style="font-weight:700;font-size:13px;margin-bottom:6px">' + title + ' <span style="color:var(--text3);font-weight:500">(' + arr.length + ')</span></div><div style="overflow:auto;max-height:240px;border:1px solid var(--border);border-radius:8px"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>' + tb + '</tbody></table></div></div>';
+    }
+    // rev183c — full hyperlinked detail for a backed-up / deleted employee.
+    window.empArchiveDetail = function (code) {
+        fetch('/app/employees/' + encodeURIComponent(code) + '/archive-detail', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (res) { return res.json(); }).then(function (j) {
+                if (!j || !j.ok) { if (typeof toast === 'function') { toast((j && j.error) || 'Could not load details'); } return; }
+                var e = j.employee || {}; var rel = j.related || {};
+                var f = function (l, v) { return v ? ('<div style="display:flex;gap:8px;padding:3px 0;font-size:12.5px"><span style="color:var(--text3);min-width:120px">' + l + '</span><span style="font-weight:600">' + v + '</span></div>') : ''; };
+                var prof = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 24px">'
+                    + f('Employee ID', e.emp_code) + f('Name', e.name) + f('Company', j.companyName) + f('Designation', e.designation)
+                    + f('Department', e.department) + f('Mobile', e.mobile) + f('Email', e.email) + f('Date of joining', e.doj)
+                    + f('CTC', e.ctc) + f('Status', e.status) + f('Backed up at', e.archived_at) + f('Deleted at', e.deleted_at) + '</div>';
+                var paylink = function (r) { return '<a href="' + j.payslipBase + '/' + encodeURIComponent(code) + '/pdf' + (r.month ? ('?month=' + encodeURIComponent(r.month)) : '') + '" target="_blank" style="color:var(--accent);font-weight:600"><i class="fas fa-file-pdf"></i> PDF</a>'; };
+                var doclink = function (r) { return r.id ? ('<a href="' + j.docBase + '/' + r.id + '/download" target="_blank" style="color:var(--accent);font-weight:600"><i class="fas fa-download"></i> Open</a>') : ''; };
+                var sections = oldDataTable('Payslips / Payroll', rel.payslips, paylink)
+                    + oldDataTable('Attendance logs', rel.attendance_logs)
+                    + oldDataTable('Commissions', rel.commissions)
+                    + oldDataTable('Advances', rel.advances)
+                    + oldDataTable('Loans', rel.loans)
+                    + oldDataTable('Expenses', rel.expenses)
+                    + oldDataTable('Leaves', rel.leaves)
+                    + oldDataTable('Transfers', rel.transfers)
+                    + oldDataTable('Documents', rel.documents, doclink)
+                    + oldDataTable('References', rel.employee_references);
+                if (!sections) { sections = '<div style="margin-top:14px;color:var(--text3);font-size:12.5px">No linked records found for this employee.</div>'; }
+                var dlBtn = '<a class="btn btn-outline btn-sm" href="/app/employees/' + encodeURIComponent(code) + '/backup-file" target="_blank"><i class="fas fa-download"></i> Download full backup (JSON)</a>';
+                commModal('<div class="card" style="max-width:940px;width:100%;padding:0;max-height:90vh;display:flex;flex-direction:column">'
+                    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:16px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:17px"><i class="fas fa-box-archive" style="color:#7c3aed"></i> ' + (e.name || 'Employee') + ' \u2014 full record</h3><button class="btn btn-outline btn-sm" onclick="commModalClose()"><i class="fas fa-xmark"></i></button></div>'
+                    + '<div style="padding:16px 22px;overflow:auto">' + prof + sections + '</div>'
+                    + '<div style="padding:12px 22px;border-top:1px solid var(--border);text-align:right">' + dlBtn + '</div></div>');
+            }).catch(function () { if (typeof toast === 'function') { toast('Network error loading details'); } });
     };
     // ---- rev173b: Statutory & Compliance → AUDIT REPORTS (single + bulk) -------
     // Filter employees by company / department / team, tick one or many, and

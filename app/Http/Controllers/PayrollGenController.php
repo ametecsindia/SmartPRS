@@ -1142,6 +1142,7 @@ class PayrollGenController extends Controller
             ->where('company_id', $company->id)
             ->where('status', 'active')
             ->whereNull('deleted_at')
+            ->when(Schema::hasColumn('employees', 'archived_at'), fn ($q) => $q->whereNull('archived_at'))   // rev183b — exclude backed-up
             ->orderBy('emp_code')
             ->get($empSel);
 
