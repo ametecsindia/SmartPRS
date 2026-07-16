@@ -74,6 +74,11 @@ class AppController extends Controller
 
     public function show(Request $request, ?string $screen = null)
     {
+        // rev185: a passkey-gated demo session whose window ended (or was revoked)
+        // is logged out here and sent back to its entry page for a fresh request.
+        if ($demoBack = DemoAccessController::expiredRedirect($request)) {
+            return redirect($demoBack);
+        }
         // rev 170: a freshly provisioned admin must CREATE their password before
         // the app opens (fixes the silent-email lock-out after paid signup).
         if (AuthController::mustSetPassword($request->user())) {
@@ -116,6 +121,7 @@ class AppController extends Controller
             'brandingSaveUrl' => route('app.branding.save'),
             'brandingLogoUrl' => route('app.branding.logo.upload'),
             'appLogoUrl' => route('app.branding.applogo'),
+            'appLogo' => \App\Http\Controllers\ConfigController::appLogoUrlFor($user->tenant_id ?? null),   // rev184 — per-client sidebar logo (fallback: default product logo)
             'empImportUrl' => route('app.employees.import'),
             'empTemplateUrl' => route('app.employees.template'),
             'stateUrl' => route('app.state'),
@@ -178,6 +184,9 @@ class AppController extends Controller
             'usersBase' => url('/app/users'),                       // + /{id}/invite, /{id}/status
             'changePasswordUrl' => url('/app/change-password'),
             'saasTenantsUrl' => url('/app/saas/tenants'),    // SaaS platform: tenant provisioning
+            'demoReqUrl' => url('/app/saas/demo-requests'),  // rev185: passkey-gated demo register (Super Admin)
+            'demoExp' => (int) (($request->session()->get('demo_pass') ?: [])['exp'] ?? 0),   // rev185: passkey expiry (epoch s; 0 = not a passkey demo)
+            'demoBack' => (string) (($request->session()->get('demo_pass') ?: [])['back'] ?? ''),
             'saasPlansUrl' => url('/app/saas/plans'),
             'saasPlanDeleteUrl' => url('/app/saas/plans/delete'),
             'screen' => $screen,
@@ -430,6 +439,15 @@ CSS;
 <script>
 (function () {
     var cfg = window.__SMARTPRS || {};
+    // rev185 — passkey-gated demo: hard stop when the window ends (the server
+    // enforces it on every page load too; this catches an idle open tab).
+    try {
+        if (cfg.demoExp) {
+            setInterval(function () {
+                if ((Date.now() / 1000) > cfg.demoExp) { location.replace((cfg.demoBack || '/demo') + '?expired=1'); }
+            }, 30000);
+        }
+    } catch (e0) {}
     async function boot() {
         if (typeof gotoApp !== 'function' || typeof go !== 'function' || typeof DB === 'undefined') { return setTimeout(boot, 40); }
         try { window._role = cfg.role; } catch (e) {}
@@ -616,11 +634,11 @@ CSS;
         statutory: ['pf-esic', 'tds', 'pt', 'gratuity', 'bonus', 'tds-returns', 'min-wages', 'audit-reports'],
         performance: ['performance', 'increments', 'exits', 'awards', 'points-scores', 'points-ledger', 'points-rules', 'tests', 'test-results', 'test-reports', 'attrition'],
         field: ['escalations', 'agent-auth', 'dra-certs', 'complaints', 'compliance-alerts'],
-        kb: ['kb', 'faqs', 'training-programs', 'training-records', 'training-content', 'code-of-conduct', 'policies', 'helpdesk', 'letters-offer', 'letters-increment', 'letters-warning', 'letters-relieving', 'letters-nda', 'letters-templates', 'notice', 'messages', 'send-message'],
+        kb: ['kb', 'faqs', 'training-programs', 'training-records', 'training-content', 'code-of-conduct', 'policies', 'helpdesk', 'posh', 'letters-offer', 'letters-increment', 'letters-warning', 'letters-relieving', 'letters-nda', 'letters-templates', 'notice', 'messages', 'send-message'],
         reports: ['reports', 'activity-logs'],
         assets: ['assets'],
         settings: ['companies', 'departments', 'designations', 'branches', 'banks', 'users', 'roles', 'settings', 'fin-year', 'my-subscription', 'branding', 'company-emails', 'wa-settings', 'wa-templates', 'sms-settings', 'sms-templates', 'approvals-inbox', 'mobile-devices'],
-        saas: ['tenants', 'plans', 'subscriptions', 'invoices', 'payments', 'gateways', 'feature-flags']
+        saas: ['tenants', 'plans', 'subscriptions', 'invoices', 'payments', 'gateways', 'feature-flags', 'demo-requests']
     };
     // Resolve the current login's saved perms object from DB.roles (match by the
     // role label the server injected). Returns null when none defined.
@@ -1115,13 +1133,13 @@ CSS;
         'letters-relieving': 'fa-file-export', 'letters-nda': 'fa-user-shield', 'letters-templates': 'fa-file-lines',
         'offroll-agents': 'fa-user-shield', 'agent-auth': 'fa-id-badge', 'dra-certs': 'fa-certificate', 'compliance-alerts': 'fa-triangle-exclamation', 'min-wages': 'fa-indian-rupee-sign', 'overtime': 'fa-business-time', 'policies': 'fa-scale-balanced',
         'escalations': 'fa-headset', 'roster': 'fa-route', 'complaints': 'fa-comment-dots',
-        'notice': 'fa-bullhorn', 'messages': 'fa-comments', 'send-message': 'fa-paper-plane', 'helpdesk': 'fa-headset',
+        'notice': 'fa-bullhorn', 'messages': 'fa-comments', 'send-message': 'fa-paper-plane', 'helpdesk': 'fa-headset', 'posh': 'fa-shield-heart',
         'sms-settings': 'fa-comment-sms', 'sms-templates': 'fa-comment-dots', 'wa-settings': 'fa-comment-dots', 'wa-templates': 'fa-comment-medical',
         'reports': 'fa-chart-pie', 'attrition': 'fa-user-minus', 'activity-logs': 'fa-clock-rotate-left',
         'users': 'fa-user-gear', 'roles': 'fa-user-lock', 'settings': 'fa-gear', 'fin-year': 'fa-calendar-days',
         'branding': 'fa-palette', 'company-emails': 'fa-envelope', 'assets': 'fa-box-archive', 'my-subscription': 'fa-receipt', 'sys-updates': 'fa-cloud-arrow-down',
         'companies': 'fa-building', 'departments': 'fa-diagram-project', 'designations': 'fa-id-card-clip', 'branches': 'fa-code-branch', 'banks': 'fa-building-columns',
-        'tenants': 'fa-building-user', 'plans': 'fa-tags', 'subscriptions': 'fa-arrows-rotate', 'invoices': 'fa-file-invoice', 'payments': 'fa-indian-rupee-sign', 'gateways': 'fa-credit-card'
+        'tenants': 'fa-building-user', 'plans': 'fa-tags', 'subscriptions': 'fa-arrows-rotate', 'invoices': 'fa-file-invoice', 'payments': 'fa-indian-rupee-sign', 'gateways': 'fa-credit-card', 'demo-requests': 'fa-key'
     };
     function decorateSubmenuIcons() {
         if (!document.getElementById('sp-subic-css')) {
@@ -1156,7 +1174,7 @@ CSS;
         var txt = host.querySelector('.brand-text');
         if (txt) { txt.style.display = 'none'; }
         var img = document.createElement('img');
-        img.src = '/images/logo.png';
+        img.src = (cfg && cfg.appLogo) ? cfg.appLogo : '/images/logo.png';   // rev184 — per-client logo when set
         img.alt = 'SmartPRS - Reputation | Relationships | Results';
         img.style.cssText = 'height:38px;width:auto;display:block;max-width:200px;object-fit:contain';
         host.appendChild(img);
@@ -1205,7 +1223,8 @@ CSS;
         // rev 88 (Ejaz live check): the platform owner is not an employee — the
         // Super Admin login gets NO Live Salary item (it was listing tenant /
         // demo employees in the SaaS panel). Punch In stays (his choice).
-        if (cfg && cfg.role === 'Super Admin') {
+        // rev184 (Ejaz): the plain Employee login gets NO Live Salary either.
+        if (cfg && (cfg.role === 'Super Admin' || cfg.role === 'Employee')) {
             document.querySelectorAll('.nav-item[data-id="live-salary"]').forEach(function (nv) { nv.style.display = 'none'; });
             return;
         }
@@ -1488,6 +1507,7 @@ CSS;
         try { if (typeof SCREENS !== 'undefined' && SCREENS['users']) { SCREENS['users'] = { title: 'User Access', type: 'custom' }; } } catch (e) {}
         // SaaS Platform (super admin) → real tenant provisioning + plans.
         try { if (typeof SCREENS !== 'undefined' && SCREENS['tenants']) { SCREENS['tenants'] = { title: 'Tenants', type: 'custom' }; } } catch (e) {}
+        try { if (typeof SCREENS !== 'undefined') { SCREENS['demo-requests'] = { title: 'Demo Requests', type: 'custom' }; } } catch (e) {}
         try { if (typeof SCREENS !== 'undefined' && SCREENS['plans']) { SCREENS['plans'] = { title: 'Plans', type: 'custom' }; } } catch (e) {}
         // SaaS billing (super admin) → subscriptions / invoices / payments / gateways.
         try { if (typeof SCREENS !== 'undefined') { var BL = { 'subscriptions': 'Subscriptions', 'invoices': 'Invoices', 'payments': 'Payments', 'gateways': 'Payment Gateways' }; for (var bk in BL) { if (SCREENS[bk]) { SCREENS[bk] = { title: BL[bk], type: 'custom' }; } } } } catch (e) {}
@@ -1516,7 +1536,7 @@ CSS;
             var MM = { 'departments': 'Departments', 'branches': 'Branches', 'banks': 'Banks', 'designations': 'Designations', 'holidays': 'Holidays', 'leave-types': 'Leave Types', 'biometric-devices': 'Biometric Devices', 'assets': 'Assets', 'complaints': 'Complaints', 'helpdesk': 'HR Helpdesk', 'deductions': 'Deductions Ledger', 'payout-recon': 'Payout Reconciliation', 'salary-schedules': 'Salary Schedules', 'tds-returns': 'TDS Returns',
                 'teams': 'Teams', 'bgv': 'Background Verification', 'documents': 'Documents', 'offroll-agents': 'Off-roll Agents', 'geofence': 'Geofence Rules', 'geofence-list': 'Geofence Rules', 'late-policy': 'Late Policy', 'salary-setup': 'Salary Setup', 'incentive-schemes': 'Incentive Schemes', 'points-ledger': 'Points Ledger', 'points-rules': 'Points Rules', 'tests': 'Tests', 'training-programs': 'Training Programs', 'training-records': 'Training Records', 'code-of-conduct': 'Code of Conduct', 'faqs': 'FAQs', 'escalations': 'Escalations', 'agent-auth': 'Agent Authorization', 'dra-certs': 'DRA Certifications', 'min-wages': 'Minimum Wages', 'overtime': 'Overtime Register', 'policies': 'Policy Repository', 'messages': 'Messages', 'companies': 'Companies', 'letters-offer': 'Offer Letters', 'letters-increment': 'Increment Letters', 'letters-warning': 'Warning Letters', 'letters-relieving': 'Relieving Letters', 'letters-nda': 'NDA / Confidentiality', 'letters-templates': 'Letter Templates',
                 'roster': 'Roster', 'onboarding-board': 'Onboarding', 'awards': 'Awards & Rewards', 'performance': 'Performance', 'notice-board': 'Notice Board', 'notice': 'Notice Board', 'feature-flags': 'Feature Flags', 'training-content': 'Training Content', 'test-results': 'Test Results', 'pay-cycle': 'Pay Cycle', 'wa-settings': 'WhatsApp Settings', 'sms-settings': 'SMS Settings', 'sms-templates': 'SMS Templates', 'att-manual': 'Manual Attendance', 'att-zkteco': 'ZKTeco Devices' };
-            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } SCREENS['biometric-setup'] = { title: 'Biometric Device Setup', type: 'custom' }; SCREENS['shifts'] = { title: 'Working Shifts', type: 'custom' }; SCREENS['audit-reports'] = { title: 'Audit Reports', type: 'custom' }; }
+            if (typeof SCREENS !== 'undefined') { for (var mk in MM) { if (SCREENS[mk]) { SCREENS[mk] = { title: MM[mk], type: 'custom' }; } } SCREENS['biometric-setup'] = { title: 'Biometric Device Setup', type: 'custom' }; SCREENS['shifts'] = { title: 'Working Shifts', type: 'custom' }; SCREENS['audit-reports'] = { title: 'Audit Reports', type: 'custom' }; SCREENS['posh'] = { title: 'POSH Complaints', type: 'custom' }; }
         } catch (e) {}
         if (typeof renderCustom !== 'function' || renderCustom.__wrapped) { return; }
         var _rc = renderCustom;
@@ -1568,6 +1588,7 @@ CSS;
             if (id === 'users') { return usersScreen(); }
             if (id === 'account-settings') { return changePasswordScreen(); }
             if (id === 'tenants') { return tenantsScreen(); }
+            if (id === 'demo-requests') { return demoReqScreen(); }
             if (id === 'plans') { return plansScreen(); }
             if (id === 'subscriptions' || id === 'invoices' || id === 'payments' || id === 'gateways') { return billingScreen(id); }
             if (RQ_MAP[id]) { return requestScreen(id); }
@@ -1794,9 +1815,10 @@ CSS;
     };
     // rev183d — Directory row actions: schedule-backup icon (or live countdown + Cancel) + Activate/Deactivate.
     window.empRowActions = function (r) {
+        // rev184 (Ejaz) — the icon colour shows the CURRENT status: green = active, red = inactive.
         var toggle = (r.status === 'Inactive')
-            ? '<i class="fas fa-user-check" title="Activate this employee (currently inactive)" style="color:#16a34a;cursor:pointer" onclick="empToggleStatus(&#39;' + r.id + '&#39;,&#39;active&#39;)"></i>'
-            : '<i class="fas fa-user-slash" title="Deactivate (hide from payroll and active lists; history kept)" style="color:var(--red);cursor:pointer" onclick="empToggleStatus(&#39;' + r.id + '&#39;,&#39;inactive&#39;)"></i>';
+            ? '<i class="fas fa-user-slash" title="INACTIVE — click to activate this employee" style="color:var(--red);cursor:pointer" onclick="empToggleStatus(&#39;' + r.id + '&#39;,&#39;active&#39;)"></i>'
+            : '<i class="fas fa-user-check" title="ACTIVE — click to deactivate (hides from payroll and active lists; history kept)" style="color:#16a34a;cursor:pointer" onclick="empToggleStatus(&#39;' + r.id + '&#39;,&#39;inactive&#39;)"></i>';
         var due = r.backupDueAt ? Date.parse(r.backupDueAt) : 0;
         var first;
         if (due && due > Date.now()) {
@@ -1989,11 +2011,22 @@ CSS;
         // display name broke on names with double/trailing spaces (HTML collapses
         // whitespace, so the posted name no longer matched the DB → "Employee not
         // found"). Codes are clean and matched exactly by the backend.
-        var empOpts = '<option value="">Select employee…</option>' + (((typeof DB !== 'undefined' && DB.employees) || []).map(function (e) {
-            var code = String(e.id || '').replace(/"/g, '&quot;');
-            var nm = String(e.name || '').replace(/</g, '&lt;');
-            return '<option value="' + code + '">' + nm + (code ? ' (' + code + ')' : '') + '</option>';
-        }).join(''));
+        // rev184b (Ejaz) — an Employee login applies for THEMSELVES: the field is
+        // locked to their own name. (The blank "Select employee…" default made the
+        // submit fail — employee posted empty.)
+        var lvSelf = cfg && cfg.role === 'Employee' && ((typeof DB !== 'undefined' && DB.employees) || []).length >= 1;
+        var empOpts;
+        if (lvSelf) {
+            var lvMe = DB.employees[0];
+            var lvMeCode = String(lvMe.id || '').replace(/"/g, '&quot;');
+            empOpts = '<option value="' + lvMeCode + '" selected>' + String(lvMe.name || '').replace(/</g, '&lt;') + (lvMeCode ? ' (' + lvMeCode + ')' : '') + '</option>';
+        } else {
+            empOpts = '<option value="">Select employee…</option>' + (((typeof DB !== 'undefined' && DB.employees) || []).map(function (e) {
+                var code = String(e.id || '').replace(/"/g, '&quot;');
+                var nm = String(e.name || '').replace(/</g, '&lt;');
+                return '<option value="' + code + '">' + nm + (code ? ' (' + code + ')' : '') + '</option>';
+            }).join(''));
+        }
         // rev173f — the tenant's OWN configured leave types (from the leaves feed),
         // falling back to the standard five. Previously hardcoded, so a client
         // with custom type names could never apply against their real types.
@@ -2007,7 +2040,7 @@ CSS;
         m.innerHTML = '<div class="card" style="max-width:640px;width:100%;padding:0">'
             + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:18px">Apply Leave</h3><button class="btn btn-outline btn-sm" onclick="leaveApplyClose()"><i class="fas fa-xmark"></i></button></div>'
             + '<div style="padding:22px;display:grid;grid-template-columns:1fr 1fr;gap:14px">'
-            + '<div><label style="' + lbl + '">Employee</label><select id="lv_emp" onchange="leaveBalLoad()" style="' + inp + '">' + empOpts + '</select></div>'
+            + '<div><label style="' + lbl + '">Employee</label><select id="lv_emp" onchange="leaveBalLoad()"' + (lvSelf ? ' disabled' : '') + ' style="' + inp + (lvSelf ? ';opacity:.75;cursor:not-allowed' : '') + '">' + empOpts + '</select></div>'
             + '<div><label style="' + lbl + '">Leave Type</label><select id="lv_type" onchange="leaveBalHighlight()" style="' + inp + '">' + typeOpts + '</select></div>'
             + '<div><label style="' + lbl + '">From</label><input id="lv_from" type="date" style="' + inp + '"></div>'
             + '<div><label style="' + lbl + '">To</label><input id="lv_to" type="date" style="' + inp + '"></div>'
@@ -2019,6 +2052,7 @@ CSS;
             + '</div>';
         m.style.display = 'flex';
         m.onclick = function (e) { if (e.target === m) { leaveApplyClose(); } };
+        if (lvSelf) { try { leaveBalLoad(); } catch (e) {} }
     };
     window.leaveApplyClose = function () { var m = document.getElementById('leave-modal'); if (m) { m.style.display = 'none'; } };
     // Load + show this employee's leave balances inside the apply modal.
@@ -4206,6 +4240,74 @@ CSS;
             .then(function (r) { return r.json(); })
             .then(function (j) { window.__TENANTS = j; if (typeof render === 'function') { render(); } })
             .catch(function () { window.__TENANTS = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    // rev185 — Super Admin: Demo Requests register (passkey-gated live demo).
+    function demoReqLoad() {
+        fetch(cfg.demoReqUrl, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function (r) { return r.json(); })
+            .then(function (d) { window.__DEMOREQ = d || { rows: [] }; if (typeof render === 'function') { render(); } })
+            .catch(function () { window.__DEMOREQ = { rows: [], error: 'Could not load' }; if (typeof render === 'function') { render(); } });
+    }
+    window.demoReqHours = function () {
+        var el = document.getElementById('dr_hours'); var h = el ? parseInt(el.value, 10) : 0;
+        if (!h || h < 1 || h > 72) { if (typeof toast === 'function') { toast('Validity must be 1-72 hours'); } return; }
+        fetch(cfg.demoReqUrl + '/hours', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ hours: h }) })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (j && j.ok) { if (typeof toast === 'function') { toast('New passkeys will be valid for ' + j.hours + ' hour(s)'); } window.__DEMOREQ = null; demoReqLoad(); }
+                else if (typeof toast === 'function') { toast((j && j.error) || 'Save failed'); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Save failed'); } });
+    };
+    window.demoReqAct = function (id, act) {
+        if (act === 'revoke' && !confirm('Revoke this passkey now? The visitor is signed out on their next page load and the workspace resets on the next sweep.')) { return; }
+        fetch(cfg.demoReqUrl + '/' + id + '/' + act, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: '{}' })
+            .then(function (r) { return r.json(); }).then(function (j) {
+                if (typeof toast === 'function') { toast((j && (j.message || j.error)) || 'Done'); }
+                if (j && j.ok) { window.__DEMOREQ = null; demoReqLoad(); }
+            }).catch(function () { if (typeof toast === 'function') { toast('Network error'); } });
+    };
+    function demoReqScreen() {
+        var d = window.__DEMOREQ;
+        if (!d) { setTimeout(function () { if (!window.__DEMOREQ) { demoReqLoad(); } }, 10); }
+        var sub = 'Every live-demo request: passkeys are generated and sent automatically (email + WhatsApp); the workspace resets after each visitor&#39;s window ends';
+        if (!d) { return pghead('Demo Requests', sub, '') + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
+        var setCard = '<div class="card" style="padding:14px 18px;margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
+            + '<i class="fas fa-hourglass-half" style="color:#f97316"></i>'
+            + '<span style="font-size:13.5px;font-weight:700">Passkey validity</span>'
+            + '<input id="dr_hours" type="number" min="1" max="72" value="' + (d.hours || 2) + '" style="width:80px;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;text-align:center">'
+            + '<span style="font-size:13px;color:var(--text3)">hours — when the time completes the visitor is logged out, asked to request a new passkey, and their test data is erased.</span>'
+            + '<button class="btn btn-primary btn-sm" onclick="demoReqHours()"><i class="fas fa-check"></i> Save</button>'
+            + '<button class="btn btn-outline btn-sm" onclick="window.__DEMOREQ=null;demoReqLoad()"><i class="fas fa-rotate"></i> Refresh</button>'
+            + '</div>';
+        var rows = d.rows || [];
+        var th = ['Requested', 'Name', 'Phone', 'Email', 'Page', 'Passkey', 'Status', 'Expires', 'First login', 'Data erased', 'Action']
+            .map(function (h) { return '<th style="padding:9px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);white-space:nowrap">' + h + '</th>'; }).join('');
+        var dash = '<span style="color:var(--text3)">&mdash;</span>';
+        var chipC = { active: 'background:#dcfce7;color:#166534', expired: 'background:#f1f5f9;color:#64748b', revoked: 'background:#fee2e2;color:#991b1b' };
+        var body = rows.map(function (r) {
+            var c = 'padding:8px 10px;font-size:12.5px;border-top:1px solid var(--border);white-space:nowrap';
+            var chip = '<span style="' + (chipC[r.status] || chipC.expired) + ';font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;text-transform:uppercase">' + r.status + '</span>';
+            var act = r.status === 'active'
+                ? '<a onclick="demoReqAct(' + r.id + ',&#39;resend&#39;)" style="cursor:pointer;color:#0891b2;font-weight:600;margin-right:12px"><i class="fas fa-paper-plane"></i> Resend</a>'
+                  + '<a onclick="demoReqAct(' + r.id + ',&#39;revoke&#39;)" style="cursor:pointer;color:var(--red);font-weight:600"><i class="fas fa-ban"></i> Revoke</a>'
+                : dash;
+            return '<tr>'
+                + '<td style="' + c + '">' + (r.requested || dash) + '</td>'
+                + '<td style="' + c + ';font-weight:600">' + (r.name || dash) + (r.company ? ' <span style="color:var(--text3);font-weight:400">(' + r.company + ')</span>' : '') + '</td>'
+                + '<td style="' + c + '">' + (r.phone || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.email || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.entry || dash) + '</td>'
+                + '<td style="' + c + ';font-weight:800;letter-spacing:2px">' + (r.pin || dash) + '</td>'
+                + '<td style="' + c + '">' + chip + '</td>'
+                + '<td style="' + c + '">' + (r.expires || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.lastLogin || dash) + '</td>'
+                + '<td style="' + c + '">' + (r.wiped || dash) + '</td>'
+                + '<td style="' + c + '">' + act + '</td>'
+                + '</tr>';
+        }).join('');
+        return pghead('Demo Requests', rows.length + ' request(s) &middot; ' + sub, '') + setCard
+            + '<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + th + '</tr></thead><tbody>'
+            + (rows.length ? body : '<tr><td colspan="11" style="padding:36px;text-align:center;color:var(--text3)">No demo requests yet. They appear here the moment a visitor submits the form on /demo, /app1-3 or /teamdemo.</td></tr>')
+            + '</tbody></table></div>';
     }
     function tenantsScreen() {
         var d = window.__TENANTS;
@@ -8542,8 +8644,10 @@ CSS;
             { k: 'asset_id', l: 'Asset Tag / ID' }, { k: 'asset_type', l: 'Type (Laptop / Phone / SIM…)' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'employee', l: 'Issued To', src: 'emp' }, { k: 'issue_date', l: 'Issue Date', type: 'date' }, { k: 'status', l: 'Status', type: 'select', opts: ['issued', 'returned', 'damaged', 'lost'], optLabels: ['Issued', 'Returned', 'Damaged', 'Lost'] }] },
         'complaints': { type: 'complaints', title: 'Complaints', sub: 'Complaints register with severity + status', fields: [
             { k: 'employee', l: 'Employee (optional)', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'severity', l: 'Severity', type: 'select', opts: ['low', 'medium', 'high'], optLabels: ['Low', 'Medium', 'High'] }, { k: 'channel', l: 'Channel (Email / Call / Walk-in)' }, { k: 'description', l: 'Description' }, { k: 'status', l: 'Status', type: 'select', opts: ['open', 'in_progress', 'resolved', 'closed'], optLabels: ['Open', 'In progress', 'Resolved', 'Closed'] }, { k: 'date', l: 'Date', type: 'date' }] },
-        'helpdesk': { type: 'helpdesk', title: 'HR Helpdesk', sub: 'Employee helpdesk tickets with priority + status', fields: [
-            { k: 'subject', l: 'Subject' }, { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'category', l: 'Category (Payroll / Leave / IT…)' }, { k: 'priority', l: 'Priority', type: 'select', opts: ['low', 'medium', 'high', 'urgent'], optLabels: ['Low', 'Medium', 'High', 'Urgent'] }, { k: 'status', l: 'Status', type: 'select', opts: ['open', 'in_progress', 'resolved', 'closed'], optLabels: ['Open', 'In progress', 'Resolved', 'Closed'] }] },
+        'helpdesk': { type: 'helpdesk', title: 'HR Helpdesk', sub: 'Employee helpdesk tickets with priority + status — employees raise their own and see only their own', fields: [
+            { k: 'subject', l: 'Subject' }, { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'category', l: 'Category (Payroll / Leave / IT…)' }, { k: 'priority', l: 'Priority', type: 'select', opts: ['low', 'medium', 'high', 'urgent'], optLabels: ['Low', 'Medium', 'High', 'Urgent'], mgrOnly: 1 }, { k: 'description', l: 'Description — explain the issue in your own words', type: 'textarea', noList: 1 }, { k: 'status', l: 'Status', type: 'select', opts: ['open', 'in_progress', 'resolved', 'closed'], optLabels: ['Open', 'In progress', 'Resolved', 'Closed'], mgrOnly: 1 }, { k: 'hr_comment', l: 'HR Comment — reply shown to the employee', type: 'textarea', mgrOnly: 1 }] },
+        'posh': { type: 'posh', title: 'POSH Complaints', sub: 'Confidential POSH complaints to the Internal Committee — the complainant and Admin/HR alone can see them', fields: [
+            { k: 'subject', l: 'Subject' }, { k: 'employee', l: 'Complainant', src: 'emp' }, { k: 'company_name', l: 'Company', src: 'company' }, { k: 'respondent', l: 'Complaint against (name / role)' }, { k: 'incident_date', l: 'Incident date', type: 'date' }, { k: 'description', l: 'Description — what happened, where, any witnesses', type: 'textarea', noList: 1 }, { k: 'status', l: 'Status', type: 'select', opts: ['open', 'inquiry', 'resolved', 'closed'], optLabels: ['Open', 'Inquiry in progress', 'Resolved', 'Closed'], mgrOnly: 1 }, { k: 'hr_comment', l: 'IC Comment — reply shown to the complainant', type: 'textarea', mgrOnly: 1 }] },
         'deductions': { type: 'deductions', title: 'Deductions Ledger', sub: 'Ad-hoc deductions applied in payroll', fields: [
             { k: 'employee', l: 'Employee', src: 'emp' }, { k: 'type', l: 'Type', type: 'select', opts: ['late', 'pcc', 'advance_emi', 'escalation', 'lop', 'other'], optLabels: ['Late', 'PCC', 'Advance EMI', 'Escalation', 'Loss of Pay', 'Other'] }, { k: 'amount', l: 'Amount (₹)', type: 'number' }, { k: 'month', l: 'Month (YYYY-MM)' }, { k: 'source_ref', l: 'Reference' }, { k: 'status', l: 'Status', type: 'select', opts: ['pending', 'applied', 'waived'], optLabels: ['Pending', 'Applied', 'Waived'] }] },
         'payout-recon': { type: 'payout-recon', title: 'Payout Reconciliation', sub: 'Bank payout vs expected, per portfolio/month', fields: [
@@ -8703,7 +8807,8 @@ CSS;
         var d = window.__MASTER[type];
         if (!d) { setTimeout(function () { if (!window.__MASTER[type]) { masterLoad(type); } }, 10); }
         var canManage = !d || d.canManage !== false;
-        var addBtn = canManage ? '<button class="btn btn-primary" onclick="masterEdit(\'' + type + '\',null)"><i class="fas fa-plus"></i> Add ' + mc.title.replace(/s$/, '') + '</button>' : '';
+        var canCreate = canManage || !!(d && d.canCreate);   // rev184 — employees may RAISE helpdesk/POSH entries of their own
+        var addBtn = canCreate ? '<button class="btn btn-primary" onclick="masterEdit(\'' + type + '\',null)"><i class="fas fa-plus"></i> Add ' + mc.title.replace(/s$/, '') + '</button>' : '';
         if (type === 'points-rules' && canManage) { addBtn = '<button class="btn btn-outline" onclick="pointsAutoApply()"><i class="fas fa-wand-magic-sparkles"></i> Auto-apply for a month</button> ' + addBtn; }
         if (!d) { return pghead(mc.title, mc.sub, addBtn) + '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">Loading…</div></div>'; }
         if (d.error) { return pghead(mc.title, mc.sub, addBtn) + '<div class="card"><div style="padding:30px;color:var(--red)"><b>Could not load.</b><br><span style="font-size:12px;color:var(--text2)">' + String(d.error) + '</span></div></div>'; }
@@ -8746,8 +8851,14 @@ CSS;
         var rec = id ? (d.rows || []).find(function (x) { return x.id === id; }) : null;
         var inp = 'width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;background:#f8fafc;font-family:var(--font2)';
         var lbl = 'font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:4px';
-        var f = mc.fields.map(function (fl) {
+        // rev184b (Ejaz) — Priority / Status / HR-comment belong to Admin-HR AFTER the
+        // ticket is raised: hide them on a non-manager's form (the LIST still shows them,
+        // so the employee sees HR's status and reply later).
+        var mgrForm = !(d && d.canManage === false);
+        var f = mc.fields.filter(function (fl) { return mgrForm || !fl.mgrOnly; }).map(function (fl) {
             var val = rec ? (rec[fl.k] != null ? rec[fl.k] : '') : '';
+            // rev184 — an Employee login raising their own entry: employee = themselves.
+            if (!rec && fl.src === 'emp' && cfg && cfg.role === 'Employee' && typeof DB !== 'undefined' && (DB.employees || []).length === 1) { val = DB.employees[0].name || ''; }
             var ctrl;
             if (fl.type === 'textarea') {
                 ctrl = '<textarea id="ms_' + fl.k + '" rows="9" style="' + inp + ';resize:vertical;line-height:1.5">' + String(val).replace(/</g, '&lt;') + '</textarea>';
@@ -9604,17 +9715,20 @@ CSS;
                 + '</div>';
         }).join('');
         if (!(d.companies || []).length) { cards = '<div class="card"><div style="padding:40px;text-align:center;color:var(--text3)">No companies found for this tenant.</div></div>'; }
+        // rev184 (Ejaz) — the app logo is PER CLIENT now: a client admin's upload
+        // changes only their own account; other clients keep their own / default.
+        var canSetAppLogo = d.canManage && cfg.role !== 'Super Admin';
         var appLogoCard = ''
             + '<div class="card" style="padding:18px;margin-bottom:18px;border:1.5px solid var(--accent)">'
             + '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
-            + '<img src="/images/logo.png?t=' + Date.now() + '" alt="SmartPRS" style="height:40px;max-width:200px;object-fit:contain;background:#0c1929;padding:6px 10px;border-radius:8px">'
-            + '<div style="flex:1;min-width:220px"><h3 style="margin:0 0 3px;font-size:16px">Global SmartPRS Logo</h3>'
-            + '<div style="font-size:12px;color:var(--text3)">Shown in the sidebar, login, activation and every PDF. Replacing it applies to ALL companies on this install.</div></div>'
-            + (d.canManage ? '<label class="btn btn-primary btn-sm" style="cursor:pointer;margin:0"><i class="fas fa-upload"></i> Change logo (all companies)<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="appLogoUpload(this)"></label>' : '<span style="font-size:12px;color:var(--text3)">Admin only</span>')
+            + '<img src="' + ((cfg && cfg.appLogo) ? cfg.appLogo : '/images/logo.png') + '" alt="SmartPRS" style="height:40px;max-width:200px;object-fit:contain;background:#0c1929;padding:6px 10px;border-radius:8px">'
+            + '<div style="flex:1;min-width:220px"><h3 style="margin:0 0 3px;font-size:16px">Your SmartPRS Logo (this account only)</h3>'
+            + '<div style="font-size:12px;color:var(--text3)">Shown in the sidebar for YOUR account only. Other clients on SmartPRS are never affected; accounts without their own logo keep the default SmartPRS logo.</div></div>'
+            + (canSetAppLogo ? '<label class="btn btn-primary btn-sm" style="cursor:pointer;margin:0"><i class="fas fa-upload"></i> Change logo (this account)<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="appLogoUpload(this)"></label>' : '<span style="font-size:12px;color:var(--text3)">' + (cfg.role === 'Super Admin' ? 'Per client — sign in as that client to set theirs' : 'Admin only') + '</span>')
             + '</div>'
-            + '<div style="font-size:11.5px;color:var(--text3);margin-top:8px">PNG / JPG / WebP, up to 2&nbsp;MB. A backup of the current logo is kept automatically.</div>'
+            + '<div style="font-size:11.5px;color:var(--text3);margin-top:8px">PNG / JPG / WebP, up to 2&nbsp;MB. Applies to this account alone the moment it uploads.</div>'
             + '</div>';
-        return pghead('Company Branding', 'The global SmartPRS logo for all companies, plus each company logo, colour and display name', '') + appLogoCard + cards;
+        return pghead('Company Branding', 'Your SmartPRS logo for this account, plus each company logo, colour and display name', '') + appLogoCard + cards;
     }
     // rev 131: upload a company logo file (stored locally; used by app + every PDF).
     window.brandingUploadLogo = function (cid, input) {
@@ -9636,7 +9750,7 @@ CSS;
         if (typeof toast === 'function') { toast('Uploading logo…'); }
         fetch(cfg.appLogoUrl, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-TOKEN': cfg.csrf, 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
             .then(function (r) { return r.json(); }).then(function (d) {
-                if (d && d.ok) { if (typeof toast === 'function') { toast('Logo updated for all companies — reloading…'); } setTimeout(function () { location.reload(); }, 800); }
+                if (d && d.ok) { if (typeof toast === 'function') { toast('Logo updated for your account — reloading…'); } setTimeout(function () { location.reload(); }, 800); }
                 else if (typeof toast === 'function') { toast((d && d.error) || 'Upload failed — admin only'); }
             }).catch(function () { if (typeof toast === 'function') { toast('Upload failed'); } });
     };
@@ -9760,17 +9874,20 @@ CSS;
                 + '<td style="' + td + '">' + bt + '</td></tr>';
         }).join('');
         var rv = d.rating || 5;
-        var inner = '<div class="card" style="max-width:740px;width:100%;padding:0">'
-            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:18px">Attendance Logs — ' + d.emp_name + ' <span style="color:var(--text3);font-weight:400;font-size:14px">(' + d.date + ')</span></h3><button class="btn btn-outline btn-sm" onclick="attLogClose()"><i class="fas fa-xmark"></i></button></div>'
-            + '<div style="padding:22px">'
-            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">'
+        // rev184 — the rating/remarks card is a MANAGER tool; self-service logins
+        // (Employee / Field Agent) see their punches without it (server denies the save anyway).
+        var canRate = cfg.role === 'Admin' || cfg.role === 'Super Admin' || String(cfg.role || '').indexOf('HR') >= 0;
+        var rateCard = ''
             + '<div><label style="font-size:12px;font-weight:700;color:var(--text2)">Employee Rating</label>'
             + '<input type="range" min="1" max="10" value="' + rv + '" id="att_rate" oninput="attRateLbl()" style="width:100%;margin-top:14px">'
             + '<div style="text-align:center;margin-top:6px"><span id="att_rate_v" style="font-size:26px;font-weight:800">' + rv + '</span><span style="color:var(--text3)">/10</span><div id="att_rate_t" style="font-weight:700;margin-top:2px"></div></div></div>'
             + '<div><label style="font-size:12px;font-weight:700;color:var(--text2)">Remarks</label>'
             + '<textarea id="att_remarks" rows="4" placeholder="Stand-up note (e.g. too many breaks today)" style="width:100%;margin-top:8px;padding:10px;border:1.5px solid var(--border);border-radius:9px;font-family:var(--font2)">' + (d.remarks || '') + '</textarea>'
-            + '<button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="attRateSave(\'' + d.emp_code + '\',\'' + d.date + '\')"><i class="fas fa-check"></i> Save Rating</button></div>'
-            + '</div>'
+            + '<button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="attRateSave(\'' + d.emp_code + '\',\'' + d.date + '\')"><i class="fas fa-check"></i> Save Rating</button></div>';
+        var inner = '<div class="card" style="max-width:740px;width:100%;padding:0">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:18px">Attendance Logs — ' + d.emp_name + ' <span style="color:var(--text3);font-weight:400;font-size:14px">(' + d.date + ')</span></h3><button class="btn btn-outline btn-sm" onclick="attLogClose()"><i class="fas fa-xmark"></i></button></div>'
+            + '<div style="padding:22px">'
+            + (canRate ? ('<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">' + rateCard + '</div>') : '')
             + '<div style="display:flex;gap:10px;margin-bottom:14px">'
             + attChip('Total Worked', d.total_work_h, 'var(--green)')
             + attChip('Total Break', d.total_break_h, 'var(--red)')

@@ -119,9 +119,23 @@ class MasterController extends Controller
             'helpdesk' => [
                 'table' => 'helpdesk',
                 'cols' => ['subject' => 'string', 'employee' => 'string', 'company_name' => 'string',
-                    'category' => 'string', 'priority' => 'string', 'status' => 'string'],
-                'fields' => ['subject', 'employee', 'company_name', 'category', 'priority', 'status'],
+                    'category' => 'string', 'priority' => 'string', 'description' => 'text', 'status' => 'string', 'hr_comment' => 'text'],
+                'fields' => ['subject', 'employee', 'company_name', 'category', 'priority', 'description', 'status', 'hr_comment'],
                 'label' => 'Ticket',
+                'order' => 'id',
+                'required' => ['subject', 'company_name', 'employee'],
+                'emp_map' => ['employee' => 'employee_id'],
+            ],
+            // rev184 (Ejaz) — POSH complaints: a separate CONFIDENTIAL register for
+            // the Internal Committee. Employees raise their own (create-only, forced
+            // to self by save()); list() shows a non-manager only their own rows.
+            // employee_id sits in cols so the self-created table gets the column.
+            'posh' => [
+                'table' => 'posh_complaints',
+                'cols' => ['subject' => 'string', 'employee' => 'string', 'employee_id' => 'int', 'company_name' => 'string',
+                    'respondent' => 'string', 'incident_date' => 'date', 'description' => 'text', 'status' => 'string', 'hr_comment' => 'text'],
+                'fields' => ['subject', 'employee', 'company_name', 'respondent', 'incident_date', 'description', 'status', 'hr_comment'],
+                'label' => 'POSH Complaint',
                 'order' => 'id',
                 'required' => ['subject', 'company_name', 'employee'],
                 'emp_map' => ['employee' => 'employee_id'],
@@ -568,6 +582,29 @@ class MasterController extends Controller
         return $request->user()->hasAnyRole(['super_admin', 'admin', 'hr_manager']);
     }
 
+    /** rev184 — masters a NON-manager may raise for themselves: helpdesk tickets + POSH complaints. */
+    private function selfServe(string $type): bool
+    {
+        return in_array($type, ['helpdesk', 'posh'], true);
+    }
+
+    /** rev184 — the logged-in user's own employee row (works for employee AND field-agent logins). */
+    private function selfEmployee(Request $request): ?object
+    {
+        $user = $request->user();
+        if (! empty($user->employee_id)) {
+            $e = DB::table('employees')->where('id', $user->employee_id)->whereNull('deleted_at')->first();
+            if ($e) {
+                return $e;
+            }
+        }
+
+        return DB::table('employees')->whereNull('deleted_at')
+            ->when($user->tenant_id, fn ($q) => $q->where('tenant_id', $user->tenant_id))
+            ->where(fn ($q) => $q->where('email', $user->email)->orWhere('name', $user->name))
+            ->first();
+    }
+
     public function list(Request $request, string $type)
     {
         try {
@@ -601,6 +638,14 @@ class MasterController extends Controller
             }
             foreach ($def['fixed'] ?? [] as $fk => $fv) {
                 $q->where($fk, $fv);   // screen pins a constant column (e.g. letter_type)
+            }
+            // rev184 — CONFIDENTIALITY on self-serve masters (helpdesk / POSH):
+            // a non-manager sees ONLY the rows they raised themselves.
+            $canManage = $this->canManage($request);
+            $selfEmp = null;
+            if ($this->selfServe($type) && ! $canManage) {
+                $selfEmp = $this->selfEmployee($request);
+                $q->where('employee_id', (int) ($selfEmp->id ?? -1));
             }
             $rows = $q->orderBy($def['order'] ?? 'name')->get();
 
@@ -640,7 +685,8 @@ class MasterController extends Controller
                 'rows' => $out,
                 'fields' => $def['fields'],
                 'label' => $def['label'],
-                'canManage' => $this->canManage($request),
+                'canManage' => $canManage,
+                'canCreate' => $canManage || ($this->selfServe($type) && $selfEmp !== null),
                 'templates' => $templates,
                 'candidates' => $candidates,
                 'companies' => DB::table('companies')->when($tid, fn ($x) => $x->where('tenant_id', $tid))->whereNull('deleted_at')->orderBy('name')->pluck('name')->values(),
@@ -653,7 +699,14 @@ class MasterController extends Controller
     public function save(Request $request, string $type)
     {
         try {
-            abort_unless($this->canManage($request), 403);
+            // rev184 — self-serve CREATE: an employee/agent may raise their own
+            // helpdesk ticket or POSH complaint (never edit, never someone else's).
+            $selfServeEmp = null;
+            if (! $this->canManage($request)) {
+                abort_unless($this->selfServe($type) && empty($request->input('item.id')), 403);
+                $selfServeEmp = $this->selfEmployee($request);
+                abort_unless($selfServeEmp !== null, 403);
+            }
             $def = $this->def($type);
             if (! $def) {
                 return response()->json(['ok' => false, 'error' => 'Unknown master'], 422);
@@ -673,6 +726,16 @@ class MasterController extends Controller
             // Build the row from the allowed fields only (schema-safe), coercing
             // each value to its declared column type (bool/decimal/int/date).
             $row = $this->buildRow($def, $table, $tid, $input);
+
+            // rev184 — self-serve rows are ALWAYS the raiser's own, and start open.
+            // rev184b — Priority / Status / HR-comment are Admin-HR's to set AFTER
+            // the ticket is raised; whatever a non-manager posted is discarded.
+            if ($selfServeEmp !== null) {
+                $row['employee'] = $selfServeEmp->name;
+                $row['employee_id'] = (int) $selfServeEmp->id;
+                $row['status'] = 'open';
+                unset($row['priority'], $row['hr_comment']);
+            }
 
             // C3 — BGV re-verification scheduler: derive the next-due date from the
             // verification date + the configured periodicity (months).

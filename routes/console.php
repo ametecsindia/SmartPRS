@@ -74,8 +74,16 @@ Schedule::command('transfers:apply')
 | 3 hours so website visitors always land in a clean, populated demo
 | (Ejaz: "it helps reduce stress on our staff"). Runs at 00:00/03:00/06:00…
 */
+// rev185: the demo is passkey-gated — reset WHEN a visitor's window has ended
+// (and nobody with a live passkey is inside), checked every 15 minutes, so the
+// customer's test data is erased right after their hours finish. A daily 03:30
+// full reset backstops installs where no passkey activity happens.
+Schedule::command('demo:reset --if-due')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping()
+    ->onOneServer();
 Schedule::command('demo:reset')
-    ->cron('0 */3 * * *')
+    ->dailyAt('03:30')
     ->withoutOverlapping()
     ->onOneServer();
 

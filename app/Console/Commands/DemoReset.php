@@ -32,12 +32,21 @@ use Illuminate\Support\Str;
  */
 class DemoReset extends Command
 {
-    protected $signature = 'demo:reset {--password=smartprs-demo : Password for the demo logins}';
+    protected $signature = 'demo:reset {--password=smartprs-demo : Password for the demo logins} {--if-due : rev185 — reset only when a passkey window has ended and nobody with a live passkey is inside}';
 
     protected $description = 'Create or reset the shared sales-demo tenant (safe on a live platform)';
 
     public function handle(): int
     {
+        // rev185 — passkey-aware gate: with --if-due, wipe ONLY when some visitor's
+        // window has ended (their data must be erased) and no live passkey session
+        // could still be mid-demo. Without the flag the reset always runs (deploy
+        // script + daily backstop).
+        if ($this->option('if-due') && ! $this->resetDue()) {
+            $this->info('demo:reset --if-due: nothing due — skipped.');
+
+            return self::SUCCESS;
+        }
         $now = now();
         $password = (string) $this->option('password');
 
@@ -131,11 +140,45 @@ class DemoReset extends Command
         } catch (\Throwable $e) {
         }
 
+        // rev185 — stamp the requests whose visitor-entered data this reset erased.
+        try {
+            if (\Illuminate\Support\Facades\Schema::hasTable('demo_requests')) {
+                DB::table('demo_requests')->whereIn('status', ['expired', 'revoked'])
+                    ->whereNull('wiped_at')->update(['wiped_at' => now(), 'updated_at' => now()]);
+            }
+        } catch (\Throwable $e) {
+        }
+
         $this->info('Demo workspace ready. Logins (password: '.$password.'):');
         $this->line('  demo-admin@smartprs.in  (Admin)');
         $this->line('  demo-hr@smartprs.in     (HR Manager)');
         $this->line('  demo-field@smartprs.in  (Field Agent)');
 
         return self::SUCCESS;
+    }
+
+    /** rev185 — is a --if-due reset warranted right now? */
+    private function resetDue(): bool
+    {
+        try {
+            if (! \Illuminate\Support\Facades\Schema::hasTable('demo_requests')) {
+                return false;
+            }
+            // Flip overdue passes first, then: skip while anyone holds a live
+            // passkey they have USED (mid-demo); run when an ended/revoked pass
+            // that was actually used still awaits its wipe.
+            DB::table('demo_requests')->where('status', 'active')
+                ->where('expires_at', '<', now())->update(['status' => 'expired', 'updated_at' => now()]);
+            $someoneInside = DB::table('demo_requests')->where('status', 'active')
+                ->where('expires_at', '>', now())->whereNotNull('last_login_at')->exists();
+            if ($someoneInside) {
+                return false;
+            }
+
+            return DB::table('demo_requests')->whereIn('status', ['expired', 'revoked'])
+                ->whereNull('wiped_at')->whereNotNull('last_login_at')->exists();
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 }

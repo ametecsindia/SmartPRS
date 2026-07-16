@@ -101,7 +101,8 @@ if (! $spOnPrem) {
     // rev 97: PUBLIC LIVE DEMO — lead-capture form → auto-login to the shared demo
     // workspace with the guided tour. Demo resets every 3 hours (routes/console.php).
     Route::get('/demo', [App\Http\Controllers\DemoAccessController::class, 'show'])->name('demo.show');
-    Route::post('/demo/otp', [App\Http\Controllers\DemoAccessController::class, 'otp'])->middleware('throttle:8,1')->name('demo.otp');
+    // rev185 (Ejaz): request → auto passkey (email + WhatsApp) → timed entry.
+    Route::post('/demo/request', [App\Http\Controllers\DemoAccessController::class, 'requestPin'])->middleware('throttle:8,1')->name('demo.request');
     Route::post('/demo/start', [App\Http\Controllers\DemoAccessController::class, 'start'])->middleware('throttle:15,1')->name('demo.start');
 
     // rev 104: EDITION DEMONSTRATIONS — /app1 (L1) /app2 (L2) /app3 (L3).
@@ -335,6 +336,11 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/saas/tenants/{id}', [App\Http\Controllers\SaasController::class, 'updateTenant'])->name('app.saas.tenants.update');
     Route::post('/app/saas/tenants/{id}/status', [App\Http\Controllers\SaasController::class, 'tenantStatus'])->name('app.saas.tenants.status');
     Route::post('/app/saas/tenants/{id}/plan', [App\Http\Controllers\SaasController::class, 'tenantPlan'])->name('app.saas.tenants.plan');
+    // rev185: Demo Requests register (passkey-gated live demo) — Super Admin only.
+    Route::get('/app/saas/demo-requests', [App\Http\Controllers\DemoAccessController::class, 'saasList'])->name('app.saas.demoreq');
+    Route::post('/app/saas/demo-requests/hours', [App\Http\Controllers\DemoAccessController::class, 'saasHours'])->name('app.saas.demoreq.hours');
+    Route::post('/app/saas/demo-requests/{id}/resend', [App\Http\Controllers\DemoAccessController::class, 'saasResend'])->name('app.saas.demoreq.resend');
+    Route::post('/app/saas/demo-requests/{id}/revoke', [App\Http\Controllers\DemoAccessController::class, 'saasRevoke'])->name('app.saas.demoreq.revoke');
     Route::get('/app/saas/plans', [App\Http\Controllers\SaasController::class, 'plans'])->name('app.saas.plans');
     Route::post('/app/saas/plans', [App\Http\Controllers\SaasController::class, 'savePlan'])->name('app.saas.plans.save');
     Route::post('/app/saas/plans/delete', [App\Http\Controllers\SaasController::class, 'deletePlan'])->name('app.saas.plans.delete');

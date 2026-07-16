@@ -286,11 +286,11 @@ class ConfigController extends Controller
     }
 
     /**
-     * POST /app/branding/app-logo — rev169. Replace the GLOBAL SmartPRS product
-     * logo (public/images/logo.png) shown in the sidebar, login, activation and
-     * every PDF. One file, so it applies to ALL companies on this install (SaaS
-     * or on-prem, all editions). Any admin may set it; the current logo is backed
-     * up automatically before replacement.
+     * POST /app/branding/app-logo — rev169, RESCOPED rev184 (Ejaz): a client
+     * admin's upload now changes the app logo ONLY for their own account
+     * (images/tenants/{tenant_id}/applogo.png). The default SmartPRS logo
+     * (images/logo.png) is never replaced from the UI any more, so one client
+     * can no longer rebrand every other client on the install.
      */
     public function appLogoUpload(Request $request)
     {
@@ -298,13 +298,12 @@ class ConfigController extends Controller
         $request->validate([
             'logo' => ['required', 'file', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
         ]);
-        $dest = public_path('images/logo.png');
-        try {
-            if (is_file($dest)) {
-                @copy($dest, public_path('images/logo-backup-'.date('YmdHis').'.png'));
-            }
-        } catch (\Throwable $e) {
+        $tid = $request->user()->tenant_id;
+        if (! $tid) {
+            return response()->json(['ok' => false, 'error' => 'The platform login has no client scope. Sign in as that client\'s admin to set their logo.'], 422);
         }
+        @mkdir(public_path('images/tenants/'.$tid), 0775, true);
+        $dest = public_path('images/tenants/'.$tid.'/applogo.png');
         $file = $request->file('logo');
         $done = false;
         // Normalise to a real PNG at images/logo.png so every asset('images/logo.png') updates.
@@ -321,11 +320,26 @@ class ConfigController extends Controller
             }
         }
         if (! $done) {
-            $file->move(public_path('images'), 'logo.png');
+            $file->move(public_path('images/tenants/'.$tid), 'applogo.png');
         }
         @clearstatcache();
 
-        return response()->json(['ok' => true, 'logo' => url('/images/logo.png').'?t='.time()]);
+        return response()->json(['ok' => true, 'logo' => self::appLogoUrlFor($tid)]);
+    }
+
+    /**
+     * rev184 — the app (sidebar) logo URL for a tenant: their own uploaded
+     * per-client logo when present, else the default SmartPRS product logo.
+     */
+    public static function appLogoUrlFor($tenantId): string
+    {
+        if ($tenantId) {
+            $p = public_path('images/tenants/'.$tenantId.'/applogo.png');
+            if (is_file($p)) {
+                return url('/images/tenants/'.$tenantId.'/applogo.png').'?t='.(int) @filemtime($p);
+            }
+        }
+        return url('/images/logo.png');
     }
 
     /** GET /app/branding/logo/{companyId} — serve the uploaded company logo. */

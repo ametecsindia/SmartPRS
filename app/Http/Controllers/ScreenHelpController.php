@@ -153,6 +153,14 @@ class ScreenHelpController extends Controller
             'bonus' => [
                 ['Declaring the register values without verifying the law', 'The wage cap and rate carry state amendments and periodic revisions — filing stale values invites notices', 'Treat the register as the working; verify the cap and % against current law before declaring'],
             ],
+            'helpdesk' => [
+                ['Raising a ticket with only a subject line', 'HR replies asking "what exactly happened?" and the ticket takes two round-trips instead of one', 'Use the Description box — one clear paragraph gets one clear answer'],
+                ['Marking tickets resolved without telling the employee what was done', 'The same person raises the same ticket next month', 'Write the outcome before closing; the employee sees the status change'],
+            ],
+            'posh' => [
+                ['Discussing a POSH complaint outside this screen', 'Confidentiality is a legal requirement of the POSH Act — corridor talk exposes the company and the complainant', 'Keep every detail inside the register; only the Internal Committee and the complainant can see it'],
+                ['Sitting on an open complaint', 'The POSH Act expects the inquiry to complete within 90 days — delay itself becomes a violation', 'Move the status to Inquiry immediately and record the outcome when decided'],
+            ],
             'incentive-schemes' => [
                 ['Publishing a scheme with no expiry and no caps', 'An "open offer" runs forever — claims keep coming long after the campaign died', 'Always set valid-till; add per-person caps when the budget is fixed'],
                 ['Withdrawing a scheme to fix a typo in the rate', 'Agents who saw the announcement feel cheated when it vanishes', 'Withdraw + republish FAST with a clear new title; tell the team why in the announcement'],
@@ -855,6 +863,16 @@ class ScreenHelpController extends Controller
                 'why' => 'Statutory bonus is a legal obligation with personal penalties for default — and a morale moment when handled well. A live register turns a year-end scramble into a number you always know.',
                 'uc' => 'Picture this: Diwali planning in October. The register already shows every eligible person and the provision total at your configured rate — finance budgets it in one meeting.',
                 'adv' => ['Liability visible all year, not discovered in March', 'Eligibility and caps applied consistently', 'Pays through Bonus & Encashment with full records'],
+            ],
+            'helpdesk' => [
+                'why' => 'Payroll doubts, ID card requests, leave confusions — unanswered, they become corridor complaints. A ticket desk turns them into a queue HR can actually clear.',
+                'uc' => 'Picture this: an agent doubts a deduction on his payslip. He raises a ticket with the details in the Description box; HR answers once, in writing, and the record stays.',
+                'adv' => ['Every request tracked to closure', 'Employees raise their own tickets from their login', 'Priorities keep urgent items on top'],
+            ],
+            'posh' => [
+                'why' => 'The POSH Act 2013 requires every workplace with 10+ people to have a confidential complaint channel to an Internal Committee. A register that only the complainant and Admin/HR can see IS that channel — and your proof it exists.',
+                'uc' => 'Picture this: an employee faces harassment but dreads walking into a cabin to say it. From her own login she files the complaint with date and description — it reaches the IC alone, and the inquiry trail is recorded from day one.',
+                'adv' => ['Legally required channel, built in', 'Complainant and Admin/HR alone can see complaints', 'Status trail evidences a timely inquiry'],
             ],
             'sys-updates' => [
                 'why' => 'Your AMC pays for SmartPRS to keep getting better — this screen is where you collect that value. Two clicks, automatic safety backup, and your HR system stays as current as the day you bought it.',
@@ -1653,6 +1671,24 @@ class ScreenHelpController extends Controller
                 'tip' => 'Rejected entries stay on the register (the story is complete) but are excluded from totals. Off-roll agent earnings carry no bank tag yet — a v1 limit. Make sure your company\'s GSTIN, PAN and address are filled on the Companies screen; they are the seller block on the invoice.',
                 'r' => ['Admin, HR & Accounts'],
                 'rel' => 'Also see: Commission Entries, TDS, Payout Reconciliation',
+            ],
+            'helpdesk' => [
+                'm' => 'People', 't' => 'HR Helpdesk', 'g' => 'Employee tickets to HR',
+                'w' => 'The internal ticket desk: employees raise requests and problems (payroll doubts, documents, IT, leave questions) with a subject, category, priority and a free-text description; HR works the queue by status. Employees see only their own tickets; HR and Admin see all of them.',
+                'f' => [['fa-headset', 'Tickets with priority + status'], ['fa-pen', 'Free-text description'], ['fa-user-lock', 'Employees see only their own'], ['fa-list-check', 'HR works one queue']],
+                's' => ['Employee: click Add Ticket, describe the issue in the Description box, submit — it starts as Open.', 'HR: triage by priority, update the status as you work it, close with the outcome noted.', 'Watch categories that repeat — each repeat is an FAQ or a policy fix waiting.'],
+                'tip' => 'Ask employees to put WHAT + WHEN + WHERE in the description — one complete paragraph closes tickets in one reply.',
+                'r' => ['Everyone — raise & track their own', 'Admin & HR — manage all'],
+                'rel' => 'Also see: FAQs, POSH Complaints',
+            ],
+            'posh' => [
+                'm' => 'Statutory & Compliance', 't' => 'POSH Complaints', 'g' => 'Confidential channel to the Internal Committee',
+                'w' => 'The confidential register required by the POSH Act 2013: any employee can file a sexual-harassment complaint from their own login — subject, who it is against, incident date and a full free-text description. Only the complainant and Admin/HR (the Internal Committee) can see a complaint; managers and colleagues cannot. Status tracks the inquiry from Open to Resolved.',
+                'f' => [['fa-shield-heart', 'File from your own login'], ['fa-user-lock', 'Visible ONLY to you and Admin/HR'], ['fa-calendar-day', 'Incident date + full description'], ['fa-list-check', 'Inquiry status trail']],
+                's' => ['Employee: Add POSH Complaint, state what happened in the Description, submit — it reaches the Internal Committee alone.', 'IC (Admin/HR): acknowledge fast, move the status to Inquiry, record the outcome as Resolved/Closed.', 'Keep every communication inside the record — confidentiality is the law, not a courtesy.'],
+                'tip' => 'The POSH Act expects the inquiry to complete within 90 days of the complaint — the Open date on the row is your clock.',
+                'r' => ['Everyone — file & track their own', 'Admin & HR (IC) — full register'],
+                'rel' => 'Also see: Code of Conduct, Complaints',
             ],
             'bonus-enc' => [
                 'm' => 'Compensation & Claims', 't' => 'Bonus & Encashment', 'g' => 'Festival bonus & leave encashment',

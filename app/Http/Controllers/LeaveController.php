@@ -125,6 +125,9 @@ class LeaveController extends Controller
             $me = $this->currentEmployee($request);
             $myId = $me->id ?? null;
             $manager = $this->isManagerRole($request);
+            // rev184 (Ejaz) — an Employee login NEVER gets approve/reject, even if
+            // some record names them as approver; they see only their own leaves.
+            $plainEmp = $request->user()->hasRole('employee');
 
             $rows = DB::table('leaves as l')
                 ->leftJoin('employees as e', 'e.id', '=', 'l.employee_id')
@@ -134,9 +137,9 @@ class LeaveController extends Controller
                 ->orderByDesc('l.id')
                 ->get(['l.*', 'e.name as emp_name', 'e.emp_code', 'c.name as company_name']);
 
-            $out = $rows->map(function ($r) use ($myId, $manager) {
+            $out = $rows->map(function ($r) use ($myId, $manager, $plainEmp) {
                 $pending = $r->status === 'pending';
-                $canDecide = $pending && ($manager || ($myId && (int) $r->approver_id === (int) $myId));
+                $canDecide = $pending && ! $plainEmp && ($manager || ($myId && (int) $r->approver_id === (int) $myId));
 
                 return [
                     'id' => $r->id,
@@ -269,7 +272,7 @@ class LeaveController extends Controller
             $tenantId = $user->tenant_id ?? DB::table('tenants')->value('id');
 
             $v = $request->validate([
-                'employee' => ['required', 'string'],
+                'employee' => ['nullable', 'string'],   // rev184b — employee logins are forced to self below; a stale client posting blank must not die in validation
                 'type' => ['nullable', 'string', 'max:60'],
                 'from' => ['required', 'string'],
                 'to' => ['required', 'string'],
@@ -283,6 +286,18 @@ class LeaveController extends Controller
             // while employee rows carry NULL. Scope like the /app/data feed does
             // (only the USER's tenant, no fallback), try exact code/name, then a
             // whitespace/case-normalised name comparison.
+            // rev184b (Ejaz) — an Employee login always applies for THEMSELVES,
+            // whatever the client posted (the UI locks the field; this makes the
+            // server safe too and fixes the blank-dropdown submit failure).
+            if ($user->hasRole('employee')) {
+                $selfRow = $this->currentEmployee($request);
+                if ($selfRow) {
+                    $v['employee'] = (string) (($selfRow->emp_code ?? '') !== '' ? $selfRow->emp_code : $selfRow->name);
+                }
+            }
+            if (trim((string) ($v['employee'] ?? '')) === '') {
+                return response()->json(['ok' => false, 'error' => 'Pick the employee this leave is for.'], 422);
+            }
             $needle = trim((string) $v['employee']);
             $userTid = $user->tenant_id;
             $empBase = fn () => DB::table('employees')
@@ -384,6 +399,10 @@ class LeaveController extends Controller
                 return response()->json(['ok' => false, 'error' => 'Leave not found'], 404);
             }
 
+            // rev184 (Ejaz) — Employee logins can never decide leaves.
+            if ($request->user()->hasRole('employee')) {
+                return response()->json(['ok' => false, 'error' => 'Leave approvals are not available on an employee login.'], 403);
+            }
             $me = $this->currentEmployee($request);
             $myId = $me->id ?? null;
             $allowed = $this->isManagerRole($request) || ($myId && (int) $leave->approver_id === (int) $myId);

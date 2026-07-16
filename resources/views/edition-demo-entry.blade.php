@@ -40,20 +40,52 @@
         <div class="err"><i class="fas fa-circle-exclamation"></i> {{ session('demo_err') }}</div>
     @endif
 
-    <div class="note"><i class="fas fa-flask"></i> A fully loaded sample workspace — every screen is live and clickable, nothing restricted. {{ $edition ? 'Only the modules licensed in '.$title.' are shown.' : 'All sixteen modules are shown.' }} The data refreshes itself every few hours, so demonstrate boldly.</div>
+    <div class="note"><i class="fas fa-flask"></i> A fully loaded sample workspace — every screen is live and clickable, nothing restricted. {{ $edition ? 'Only the modules licensed in '.$title.' are shown.' : 'All sixteen modules are shown.' }} Your passkey is valid for {{ $hours }} hour{{ $hours == 1 ? '' : 's' }}; the workspace then resets itself, so demonstrate boldly.</div>
+
+    @if (request('expired'))
+        <div class="err"><i class="fas fa-hourglass-end"></i> Your passkey window has ended and the workspace was reset. Request a fresh passkey below.</div>
+    @endif
 
     @if ($ready)
-        <form method="POST" action="{{ $action }}">
+        {{-- rev185: Team PIN removed — request a passkey (sent to email + WhatsApp), then enter it below. --}}
+        <div style="margin-bottom:20px;">
+            <div style="font-size:13px; font-weight:700; color:#0c1929; margin-bottom:8px;"><i class="fas fa-paper-plane" style="color:#f97316;"></i> Step 1 — request your passkey</div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                <input type="text" id="rq_name" maxlength="120" placeholder="Name*" style="padding:11px 14px; border:1.5px solid #cbd5e1; border-radius:10px; font-size:14px;">
+                <input type="text" id="rq_mobile" maxlength="20" inputmode="tel" placeholder="Phone number (WhatsApp)*" style="padding:11px 14px; border:1.5px solid #cbd5e1; border-radius:10px; font-size:14px;">
+                <input type="email" id="rq_email" maxlength="160" placeholder="Email ID*" style="grid-column:1 / -1; padding:11px 14px; border:1.5px solid #cbd5e1; border-radius:10px; font-size:14px;">
+            </div>
+            <button class="btn btn-primary" type="button" id="rq_btn" onclick="requestPin()" style="margin-top:12px;"><i class="fas fa-paper-plane"></i> Submit request</button>
+            <div id="rq_msg" style="display:none; background:#f0fdf4; border:1px solid #bbf7d0; color:#166534; border-radius:10px; padding:10px 13px; font-size:13px; margin-top:12px;"></div>
+            <div id="rq_err" style="display:none; background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; border-radius:10px; padding:10px 13px; font-size:13px; margin-top:12px;"></div>
+        </div>
+        <form method="POST" action="{{ $action }}" style="border-top:1.5px dashed #e2e8f0; padding-top:18px;">
             @csrf
+            <div style="font-size:13px; font-weight:700; color:#0c1929; margin-bottom:8px;"><i class="fas fa-key" style="color:#f97316;"></i> Step 2 — enter the passkey you received</div>
             <div style="margin-bottom: 16px;">
-                <label style="display:block; font-size:12px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.6px; margin-bottom:6px;">Team PIN</label>
-                <input type="password" name="pin" autocomplete="off" placeholder="Ametecs team PIN" style="width:220px; padding:11px 14px; border:1.5px solid #cbd5e1; border-radius:10px; font-size:15px;" required>
+                <input type="text" name="pin" autocomplete="off" inputmode="numeric" maxlength="10" placeholder="Passkey" style="width:220px; padding:11px 14px; border:1.5px solid #cbd5e1; border-radius:10px; font-size:16px; letter-spacing:4px; font-weight:700;" required>
             </div>
             <div class="row">
                 <button class="btn btn-primary" type="submit"><i class="fas fa-rocket"></i> Start the {{ $title }} demo</button>
                 <button class="btn btn-outline" type="submit" name="tour" value="1"><i class="fas fa-wand-magic-sparkles"></i> Start with guided tour</button>
             </div>
         </form>
+        <script>
+        function requestPin(){
+            var b=document.getElementById('rq_btn'); b.disabled=true;
+            var m=document.getElementById('rq_msg'), e=document.getElementById('rq_err');
+            m.style.display='none'; e.style.display='none';
+            fetch('{{ $requestAction }}', { method:'POST', credentials:'same-origin',
+                headers:{ 'Content-Type':'application/json', 'X-CSRF-TOKEN':'{{ csrf_token() }}', 'X-Requested-With':'XMLHttpRequest', 'Accept':'application/json' },
+                body: JSON.stringify({ name:document.getElementById('rq_name').value.trim(), mobile:document.getElementById('rq_mobile').value.trim(), email:document.getElementById('rq_email').value.trim(), entry:'{{ $n }}' })
+            }).then(function(r){ return r.json(); }).then(function(j){
+                b.disabled=false;
+                if(!j.ok){ e.textContent=j.error || 'Could not send the passkey — please retry.'; e.style.display='block'; return; }
+                m.innerHTML='<i class="fas fa-circle-check"></i> ' + (j.message || 'Passkey sent — enter it in Step 2.');
+                m.style.display='block';
+            }).catch(function(){ b.disabled=false; e.textContent='Network error — please retry.'; e.style.display='block'; });
+        }
+        </script>
     @else
         <div class="err"><i class="fas fa-clock"></i> The demonstration workspace is being prepared — please try again in a couple of minutes.</div>
     @endif
