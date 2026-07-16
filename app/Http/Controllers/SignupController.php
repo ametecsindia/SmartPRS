@@ -700,6 +700,26 @@ class SignupController extends Controller
         return DB::table('signups')->where('quote_token', $token)->first();
     }
 
+    /**
+     * rev 186: the FIRST invoice of a quote's tenant (the signup invoice) plus
+     * how much of it has actually been received. Partial state is always
+     * COMPUTED from the payments ledger — never stored as a status.
+     */
+    private function quoteBalance(object $s): ?array
+    {
+        if (empty($s->tenant_id)) {
+            return null;
+        }
+        $inv = DB::table('invoices')->where('tenant_id', $s->tenant_id)->orderBy('id')->first();
+        if (! $inv) {
+            return null;
+        }
+        $total = round((float) $inv->amount + (float) $inv->tax, 2);
+        $paid = BillingController::invoicePaidSum((int) $inv->id);
+
+        return ['inv' => $inv, 'total' => $total, 'paid' => $paid, 'balance' => max(0, round($total - $paid, 2))];
+    }
+
     /** GET /quote/{token} — public quotation + pay page. */
     public function showQuote(string $token)
     {
@@ -711,8 +731,22 @@ class SignupController extends Controller
         $price = self::quoteLockedPrice($s, $plan);   // rev 113: coupon locked into the quote
         $expired = $s->quoted_at ? \Illuminate\Support\Carbon::parse($s->quoted_at)->addDays(self::QUOTE_VALID_DAYS)->isPast() : false;
 
+        // rev 186: credit-provisioned workspace → the page becomes a BALANCE
+        // payment page (validity no longer matters; the workspace is live).
+        $balance = null;
+        if ($s->status === 'provisioned') {
+            $b = $this->quoteBalance($s);
+            if ($b && $b['balance'] > 0.01) {
+                $balance = [
+                    'total' => $b['total'], 'paid' => $b['paid'], 'balance' => $b['balance'],
+                    'dueOn' => ! empty($b['inv']->due_on) ? \Illuminate\Support\Carbon::parse($b['inv']->due_on)->format('d M Y') : null,
+                ];
+            }
+        }
+
         return view('quote-public', [
             's' => $s, 'plan' => $plan, 'price' => $price, 'token' => $token,
+            'balance' => $balance,
             'expired' => $expired, 'paid' => $s->status === 'provisioned',
             'validUntil' => $s->quoted_at ? \Illuminate\Support\Carbon::parse($s->quoted_at)->addDays(self::QUOTE_VALID_DAYS)->format('d M Y') : '',
             'razorpayKey' => optional(BillingController::razorpayCreds())['key'] ?? null,
@@ -740,7 +774,30 @@ class SignupController extends Controller
                 return response()->json(['ok' => false, 'error' => 'Quotation not found.'], 404);
             }
             if ($s->status === 'provisioned') {
-                return response()->json(['ok' => false, 'error' => 'This quotation has already been paid.'], 422);
+                // rev 186 (Ejaz): a workspace provisioned ON CREDIT (admin payment
+                // entry: partial / due) keeps this link alive so the client's
+                // finance team can pay the remaining BALANCE online.
+                $b = $this->quoteBalance($s);
+                if (! $b || $b['balance'] <= 0.01) {
+                    return response()->json(['ok' => false, 'error' => 'This quotation has already been paid.'], 422);
+                }
+                $creds = BillingController::razorpayCreds();
+                if (! $creds) {
+                    return response()->json(['ok' => false, 'error' => 'Online payment is not configured yet. Please write to sales@ametecsindia.com.'], 422);
+                }
+                $paise = (int) round($b['balance'] * 100);
+                $resp = Http::withBasicAuth($creds['key'], $creds['secret'])->asForm()
+                    ->post('https://api.razorpay.com/v1/orders', [
+                        'amount' => $paise, 'currency' => 'INR', 'receipt' => 'QUOTE-'.$s->id.'-BAL',
+                        'notes' => ['quote' => $s->quote_no, 'company' => $s->company, 'balance' => 'yes'],
+                    ]);
+                if (! $resp->successful()) {
+                    return response()->json(['ok' => false, 'error' => 'Could not start the payment: '.$resp->body()], 422);
+                }
+                $orderId = $resp->json()['id'] ?? null;
+                DB::table('signups')->where('id', $s->id)->update(['gateway_order_id' => $orderId, 'updated_at' => now()]);
+
+                return response()->json(['ok' => true, 'orderId' => $orderId, 'keyId' => $creds['key'], 'amountPaise' => $paise, 'balance' => true]);
             }
             $plan = DB::table('plans')->where('id', $s->plan_id)->first();
             $price = self::quoteLockedPrice($s, $plan);   // rev 113: pay link honours the quoted (discounted) figure
@@ -773,6 +830,53 @@ class SignupController extends Controller
             $s = $this->findQuote($token);
             if (! $s) {
                 return response()->json(['ok' => false, 'error' => 'Quotation not found.'], 404);
+            }
+            if ($s->status === 'provisioned' && ($b = $this->quoteBalance($s)) && $b['balance'] > 0.01) {
+                // rev 186: BALANCE payment on a credit-provisioned workspace —
+                // verify the signature, then credit the invoice partial-aware.
+                $v = $request->validate([
+                    'razorpay_order_id' => ['required', 'string'],
+                    'razorpay_payment_id' => ['required', 'string'],
+                    'razorpay_signature' => ['required', 'string'],
+                ]);
+                if (! $s->gateway_order_id || $s->gateway_order_id !== $v['razorpay_order_id']) {
+                    return response()->json(['ok' => false, 'error' => 'Payment/order mismatch.'], 422);
+                }
+                $creds = BillingController::razorpayCreds();
+                if (! $creds) {
+                    return response()->json(['ok' => false, 'error' => 'Payment gateway not configured.'], 422);
+                }
+                $expected = hash_hmac('sha256', $v['razorpay_order_id'].'|'.$v['razorpay_payment_id'], $creds['secret']);
+                if (! hash_equals($expected, $v['razorpay_signature'])) {
+                    return response()->json(['ok' => false, 'error' => 'Payment signature verification failed.'], 422);
+                }
+                // The amount actually charged = the Razorpay ORDER's amount (authoritative
+                // even if an offline entry was recorded between order and completion).
+                $amt = 0.0;
+                try {
+                    $ord = Http::withBasicAuth($creds['key'], $creds['secret'])
+                        ->get('https://api.razorpay.com/v1/orders/'.$v['razorpay_order_id']);
+                    if ($ord->successful()) {
+                        $amt = round(((int) ($ord->json()['amount'] ?? 0)) / 100, 2);
+                    }
+                } catch (\Throwable $e) {
+                }
+                if ($amt <= 0) {
+                    $amt = $b['balance'];
+                }
+                $res = BillingController::applyPayment($b['inv'], $amt, 'razorpay', 'razorpay', $v['razorpay_payment_id']);
+                if ($res['settled']) {
+                    try {
+                        (new BillingController())->emailInvoice($b['inv']->id, 'invoice.receipt');
+                    } catch (\Throwable $e) {
+                    }
+                }
+
+                return response()->json(['ok' => true,
+                    'message' => $res['settled']
+                        ? 'Balance received — your subscription is now fully paid. Thank you! A receipt with the tax invoice has been emailed.'
+                        : 'Payment received. Remaining balance: ₹'.number_format($res['balance'], 2).'.',
+                    'redirect' => url('/login')]);
             }
             if ($s->status === 'provisioned') {
                 return response()->json(['ok' => true, 'message' => 'Your workspace is ready — check your email for the set-password link.', 'redirect' => url('/login')]);
@@ -829,6 +933,262 @@ class SignupController extends Controller
             ->orderByDesc('id')->limit(300)->get();
         $planNames = DB::table('plans')->pluck('name', 'id');
 
-        return view('admin.quotations', ['rows' => $rows, 'planNames' => $planNames, 'validDays' => self::QUOTE_VALID_DAYS]);
+        // rev 186: workspaces created ON CREDIT (admin payment entry) whose
+        // balance is still outstanding — the Super Admin's follow-up list.
+        $credit = [];
+        try {
+            $prov = DB::table('signups')->where('status', 'provisioned')
+                ->whereNotNull('tenant_id')->whereNotNull('quote_no')
+                ->orderByDesc('id')->limit(300)->get();
+            foreach ($prov as $c) {
+                $b = $this->quoteBalance($c);
+                if (! $b || $b['balance'] <= 0.01) {
+                    continue;
+                }
+                $c->inv_number = $b['inv']->number;
+                $c->inv_total = $b['total'];
+                $c->inv_paid = $b['paid'];
+                $c->inv_balance = $b['balance'];
+                $c->inv_due_on = $b['inv']->due_on;
+                $credit[] = $c;
+            }
+        } catch (\Throwable $e) {
+        }
+
+        return view('admin.quotations', [
+            'rows' => $rows, 'planNames' => $planNames, 'validDays' => self::QUOTE_VALID_DAYS,
+            'credit' => $credit,
+        ]);
+    }
+
+    // ======================================================================
+    // rev 186 (Ejaz) — MANUAL PAYMENT ENTRY / CREDIT-PERIOD PROVISIONING.
+    // Real business does not always pay online first: some clients get a
+    // credit period. Super Admin records the payment against a quotation
+    // (Paid / Partial / Due) and the workspace is created IMMEDIATELY —
+    // same tenant + subscription + invoice + payments chain as the online
+    // flow. The quote's public pay link stays alive for the balance.
+    // ======================================================================
+
+    /** POST /admin/quotations/{id}/payment — record payment (+ provision). */
+    public function adminPayment(Request $request, int $id)
+    {
+        abort_unless($request->user()?->hasRole('super_admin'), 403, 'Super Admin only.');
+        try {
+            $this->ensure();
+            $s = DB::table('signups')->where('id', $id)->first();
+            if (! $s) {
+                return response()->json(['ok' => false, 'error' => 'Quotation not found.'], 404);
+            }
+
+            // ---- BALANCE instalment on an already-created credit workspace ----
+            if ($s->status === 'provisioned') {
+                $v = $request->validate([
+                    'amount' => ['required', 'numeric', 'min:0.01'],
+                    'method' => ['required', 'string', 'max:40'],
+                    'reference' => ['nullable', 'string', 'max:100'],
+                ]);
+                $b = $this->quoteBalance($s);
+                if (! $b || $b['balance'] <= 0.01) {
+                    return response()->json(['ok' => false, 'error' => 'Nothing due — this client is already fully paid.'], 422);
+                }
+                if ((float) $v['amount'] > $b['balance'] + 0.01) {
+                    return response()->json(['ok' => false, 'error' => 'That is more than the outstanding balance of ₹'.number_format($b['balance'], 2).'.'], 422);
+                }
+                $txn = trim((string) ($v['reference'] ?? '')) ?: 'MAN-'.strtoupper(Str::random(10));
+                $res = BillingController::applyPayment($b['inv'], (float) $v['amount'], 'manual', $v['method'], $txn);
+                if ($res['settled']) {
+                    try {
+                        (new BillingController())->emailInvoice($b['inv']->id, 'invoice.receipt');
+                    } catch (\Throwable $e) {
+                    }
+                }
+
+                return response()->json(['ok' => true, 'settled' => $res['settled'], 'balance' => $res['balance'],
+                    'message' => $res['settled']
+                        ? 'Balance cleared — invoice '.$b['inv']->number.' is now fully PAID and the receipt was emailed.'
+                        : 'Payment recorded against '.$b['inv']->number.'. Balance remaining: ₹'.number_format($res['balance'], 2).'.']);
+            }
+
+            if (! in_array($s->status, ['quoted', 'pending'], true)) {
+                return response()->json(['ok' => false, 'error' => 'This signup is not open (status: '.$s->status.').'], 422);
+            }
+
+            // ---- FIRST payment entry → provision the workspace ----------------
+            $v = $request->validate([
+                'pay_status' => ['required', 'in:paid,partial,due'],
+                'amount' => ['nullable', 'numeric', 'min:0'],
+                'method' => ['required_unless:pay_status,due', 'nullable', 'string', 'max:40'],
+                'reference' => ['nullable', 'string', 'max:100'],
+                'due_date' => ['required_unless:pay_status,paid', 'nullable', 'date'],
+            ], [
+                'due_date.required_unless' => 'Please give the credit due date — when should the balance be paid by?',
+                'method.required_unless' => 'Please pick how the money was received.',
+            ]);
+            $plan = DB::table('plans')->where('id', $s->plan_id)->first();
+            if (! $plan) {
+                return response()->json(['ok' => false, 'error' => 'Plan not found.'], 422);
+            }
+            $price = self::quoteLockedPrice($s, $plan);
+            $total = round((float) $price['total'], 2);
+            $received = $v['pay_status'] === 'paid' ? $total
+                : ($v['pay_status'] === 'partial' ? round((float) ($v['amount'] ?? 0), 2) : 0.0);
+            if ($v['pay_status'] === 'partial' && ($received <= 0 || $received >= $total)) {
+                return response()->json(['ok' => false, 'error' => 'A partial payment must be above ₹0 and below the total ₹'.number_format($total, 2).' — use Paid (full) or Due otherwise.'], 422);
+            }
+            $dueDate = $v['pay_status'] === 'paid' ? null : \Illuminate\Support\Carbon::parse($v['due_date'])->toDateString();
+            $reference = trim((string) ($v['reference'] ?? '')) ?: null;
+
+            return $this->provisionOfflineSignup($s, $plan, $price, $v['pay_status'], $received, $v['method'] ?? 'credit', $reference, $dueDate);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['ok' => false, 'error' => implode(' ', collect($e->errors())->flatten()->all())], 422);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * rev 186: provisioning for an ADMIN-recorded offline payment (paid /
+     * partial / due-credit) — mirrors provisionPaidSignup minus Razorpay and
+     * minus the browser auto-sign-in (the admin records it, not the client).
+     */
+    private function provisionOfflineSignup(object $s, object $plan, array $price, string $payStatus, float $received, string $method, ?string $reference, ?string $dueDate)
+    {
+        $sCompanies = max(1, (int) ($s->companies ?? 1));
+        // Subscription keeps the FULL rate — a coupon only discounts the first
+        // invoice (same rule as the online flow, rev 112).
+        $full = BillingController::priceFor($plan, (int) $s->seats, $s->cycle, $sCompanies);
+        $end = now()->addMonths($full['months']);
+        $cycleLabel = ['quarterly' => 'Quarterly (3 months)', 'halfyear' => 'Half-yearly (6 months)', 'annual' => 'Annual (12 months)'][$s->cycle] ?? $s->cycle;
+        $fmt = fn ($n) => '₹'.number_format((float) $n, 2);
+        $total = round((float) $price['total'], 2);
+        $balance = max(0, round($total - $received, 2));
+        $couponDisc = (float) ($s->coupon_discount ?? 0);
+        $dueLabel = $dueDate ? \Illuminate\Support\Carbon::parse($dueDate)->format('d M Y') : null;
+
+        $paymentLines = [
+            'Plan' => ($plan->name ?? 'Plan').' — includes up to '.($plan->seat_max ?? '—').' employees',
+            'Employees' => $s->seats.' (total across all your companies)',
+            'Companies' => $sCompanies.($sCompanies > 1 ? ' (1 included + '.($sCompanies - 1).' × ₹1,000/mo)' : ' (included)'),
+            'Billing period' => $cycleLabel.($full['discount'] > 0 ? ' · '.($full['discount'] * 100).'% advance discount applied' : ''),
+        ];
+        if ($couponDisc > 0) {
+            $paymentLines['Coupon ('.$s->coupon_code.')'] = '− '.$fmt($couponDisc);
+        }
+        $paymentLines += [
+            'Subscription amount' => $fmt($price['amount']),
+            'GST (18%)' => $fmt($price['tax']),
+            'Total' => $fmt($total),
+            'Amount received' => $fmt($received).($received > 0 ? ' ('.$method.($reference ? ' · '.$reference : '').')' : ''),
+        ];
+        if ($balance > 0) {
+            $paymentLines['Balance payable'] = $fmt($balance).($dueLabel ? ' — by '.$dueLabel : '');
+        }
+        $paymentLines['Active until'] = $end->format('d M Y');
+
+        // 1) Tenant + first company + admin (welcome email with credentials).
+        $res = SaasController::provisionTenantRecord([
+            'name' => $s->company, 'company_name' => $s->company,
+            'admin_name' => $s->admin_name, 'admin_email' => $s->admin_email,
+            'plan_id' => $s->plan_id, 'seats_licensed' => $s->seats,
+            'gstin' => $s->gstin ?? null, 'state' => $s->state ?? null,
+            'subdomain' => $s->subdomain ?? null,
+            'email_credentials' => true,
+            'extra_lines' => $paymentLines,
+        ]);
+        if (! $res['ok']) {
+            return response()->json(['ok' => false, 'error' => $res['error']], 422);
+        }
+        $tid = (int) $res['tenant_id'];
+
+        // 2) Subscription at the full rate + tenant MRR (same as online flow).
+        DB::table('subscriptions')->insert(ApprovalService::safeRow('subscriptions', [
+            'tenant_id' => $tid, 'plan_id' => $s->plan_id, 'seats' => $s->seats,
+            'companies' => $sCompanies,
+            'cycle' => $s->cycle, 'amount' => $full['amount'], 'status' => 'active',
+            'current_period_end' => $end->toDateString(), 'next_renewal' => $end->toDateString(),
+            'created_at' => now(), 'updated_at' => now(),
+        ]));
+        DB::table('tenants')->where('id', $tid)->update(ApprovalService::safeRow('tenants', [
+            'mrr' => round($full['amount'] / max(1, $full['months']), 2), 'updated_at' => now(),
+        ]));
+
+        // 3) Invoice at the QUOTED (possibly coupon-discounted) figure; the
+        //    credit due date becomes the invoice's due date.
+        $inv = BillingController::createInvoiceForTenant($tid);
+        $invPatch = ['updated_at' => now()];
+        if ($couponDisc > 0) {
+            $invPatch['amount'] = (float) $s->amount;
+            $invPatch['tax'] = (float) $s->tax;
+        }
+        if ($dueDate) {
+            $invPatch['due_on'] = $dueDate;
+        }
+        DB::table('invoices')->where('id', $inv->id)->update(ApprovalService::safeRow('invoices', $invPatch));
+        $inv = DB::table('invoices')->where('id', $inv->id)->first();
+
+        // 4) The payment entry (if any money came in) — partial-aware.
+        if ($received > 0) {
+            $txn = $reference ?: 'MAN-'.strtoupper(Str::random(10));
+            BillingController::applyPayment($inv, $received, 'manual', $method, $txn);
+            $inv = DB::table('invoices')->where('id', $inv->id)->first();
+        }
+
+        // Coupon redemption — the quote locked it in; honour it now.
+        if ($couponDisc > 0 && ! empty($s->coupon_code)) {
+            try {
+                $cpn = DB::table('coupons')->where('code', $s->coupon_code)->first();
+                if ($cpn) {
+                    \App\Services\CouponService::redeem($cpn, 'signup', $couponDisc, $s->admin_email, $tid, $s->company);
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('offline signup coupon redeem: '.$e->getMessage());
+            }
+        }
+
+        // Invoice email: fully paid → receipt; credit → issued invoice w/ due date.
+        try {
+            (new BillingController())->emailInvoice($inv->id, $inv->status === 'paid' ? 'invoice.receipt' : 'invoice.issued');
+        } catch (\Throwable $e) {
+            // best-effort — the workspace is already live
+        }
+
+        DB::table('signups')->where('id', $s->id)->update([
+            'status' => 'provisioned', 'tenant_id' => $tid, 'updated_at' => now(),
+        ]);
+
+        // rev 171 (Ejaz): sign-in pointers use the BRANDED company page.
+        $slug = DB::table('tenants')->where('id', $tid)->value('subdomain');
+        $loginUrl = $slug ? url('/c/'.$slug) : url('/login');
+
+        // WhatsApp welcome via Interakt (best-effort; never blocks provisioning).
+        try {
+            if (! empty($s->mobile)) {
+                $sendPw = filter_var(env('SMARTPRS_WA_SEND_PASSWORD', true), FILTER_VALIDATE_BOOLEAN);
+                \App\Services\WaService::sendTemplate([
+                    'tenant_id' => $tid,
+                    'mobile' => $s->mobile,
+                    'kind' => 'signup.welcome',
+                    'template' => \App\Services\WaService::templateNameFor('welcome'),
+                    'bodyValues' => [
+                        $s->admin_name, $s->company, $loginUrl, $s->admin_email,
+                        $sendPw ? (string) ($res['temp_password'] ?? '') : 'sent to your email',
+                    ],
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // WhatsApp is best-effort
+        }
+
+        $label = $payStatus === 'paid'
+            ? 'fully PAID'
+            : ($payStatus === 'partial'
+                ? 'PARTIALLY paid — balance '.$fmt($balance).($dueLabel ? ' due by '.$dueLabel : '')
+                : 'on CREDIT — '.$fmt($balance).($dueLabel ? ' due by '.$dueLabel : ''));
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Workspace created for '.$s->company.' ('.$label.'). Invoice '.$inv->number.' recorded; welcome email with sign-in details sent to '.$s->admin_email.'.',
+        ]);
     }
 }

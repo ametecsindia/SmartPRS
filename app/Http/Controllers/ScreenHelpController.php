@@ -279,6 +279,8 @@ class ScreenHelpController extends Controller
             ],
             'admin-quotations' => [
                 ['Letting quotes expire silently', 'The prospect\'s approval finally lands — on a dead link', 'Nudge at day 10; a fresh quote takes the client two minutes on the signup page'],
+                ['Recording a credit (Due/Partial) entry without a real commitment', 'The workspace goes live, the client uses it, and the money conversation gets harder every week', 'Record credit only after an agreed due date in writing; watch the Credit-clients table weekly — overdue turns red'],
+                ['Typing the received amount without the bank reference', 'Two months later nobody can match the ledger entry to the bank statement', 'Always paste the UTR / cheque number in the Reference box — it lands in the payments ledger'],
             ],
             'admin-coupons' => [
                 ['Creating a coupon with no expiry and no use limit', 'The code leaks to a WhatsApp group and every signup forever arrives pre-discounted', 'Always set valid-till AND max uses — scarcity is the point of a coupon'],
@@ -825,9 +827,9 @@ class ScreenHelpController extends Controller
                 'adv' => ['No enquiry ever evaporates', 'Verified numbers — no fake leads', 'A funnel your team works, not a list they forget'],
             ],
             'admin-quotations' => [
-                'why' => 'B2B deals stall in finance approvals — the quotation with a public pay link keeps YOUR deal alive inside THEIR process, payable the moment approval lands.',
-                'uc' => 'Picture this: a quote sits 9 days. You re-share the link with a "valid till Friday" nudge; their accounts head pays Thursday evening — workspace live before you wake up.',
-                'adv' => ['Deals survive approval delays', 'Anyone with the link can pay', 'Validity creates honest urgency'],
+                'why' => 'B2B deals stall in finance approvals — the quotation with a public pay link keeps YOUR deal alive inside THEIR process, payable the moment approval lands. And when a trusted client asks for a credit period, YOU record the payment (paid / partial / due) and the workspace goes live the same minute — the deal never waits for the gateway.',
+                'uc' => 'Picture this: a Hyderabad agency\'s director agrees on the phone — "start us today, our accounts will transfer 50% Friday and the rest next month." You open the quote, record Partial with the due date, and their HR is importing employees within the hour. Friday\'s UTR goes in as a balance entry; the last instalment they pay themselves on the same quote link.',
+                'adv' => ['Deals survive approval delays', 'Credit-period clients onboard the same day', 'Every rupee — online or offline — in one ledger'],
             ],
             'admin-coupons' => [
                 'why' => 'A discount with no deadline is just a lower price — a COUPON is a reason to buy now. Codes create urgency ("first 50 signups"), reward annual commitment, arm channel partners, and tell you with hard numbers which marketing actually works.',
@@ -941,13 +943,13 @@ class ScreenHelpController extends Controller
                 'rel' => '',
             ],
             'admin-quotations' => [
-                'm' => 'SaaS Platform', 't' => 'Quotations', 'g' => 'Quotes sent, awaiting payment',
-                'w' => 'Every quotation generated from the signup page — company, plan, total, validity — each with its public pay link and PDF. When the client (or their finance team) pays through the link, the workspace creates itself and the quote disappears from this list.',
-                'f' => [['fa-file-invoice', 'Open quotes with validity'], ['fa-link', 'Public pay-page link'], ['fa-file-pdf', 'Quotation PDF'], ['fa-hourglass-half', 'Expiry highlighting']],
-                's' => ['Scan for quotes nearing their 15-day validity.', 'Follow up by sharing the pay link again — anyone with it can complete payment.', 'Expired? Ask the client to generate a fresh quote from the signup page.'],
-                'tip' => 'A paid quotation provisions the workspace INSTANTLY — no manual step; your job here is only the follow-up nudge.',
+                'm' => 'SaaS Platform', 't' => 'Quotations', 'g' => 'Quotes, offline payments & credit clients',
+                'w' => 'Every quotation from the signup page — with its public pay link and PDF. The client pays online through the link, OR you press Record payment and enter what actually happened: Paid (full amount received offline), Partial (part now, balance on credit), or Due (whole amount on a credit period). Either way the workspace is created immediately. Credit clients stay in the second table until their balance is cleared.',
+                'f' => [['fa-cash-register', 'Record offline payment (paid/partial/due)'], ['fa-hand-holding-dollar', 'Balance instalment entries'], ['fa-link', 'Public pay link — works for the balance too'], ['fa-hourglass-half', 'Expiry + overdue highlighting']],
+                's' => ['Client paid by bank transfer / UPI / cheque / cash, or asked for credit? Open Record payment on the quote.', 'Pick Paid, Partial or Due; enter the amount received, how it came, the UTR/cheque reference, and the credit due date.', 'Save — tenant, subscription, GST invoice and payment entry are all created; the welcome email with sign-in details goes out.', 'Watch the Credit clients table: record balance instalments as they arrive, or let the client pay the balance on the same quote link. Overdue turns red — follow up personally.'],
+                'tip' => 'Nothing locks automatically on an overdue balance — credit is YOUR commercial call, the red highlight is your reminder. The invoice flips to PAID by itself the moment received money covers the total.',
                 'r' => ['Super Admin / platform staff'],
-                'rel' => 'Also see: Subscriptions, Invoices',
+                'rel' => 'Also see: Subscriptions, Invoices, Payments',
             ],
             'admin-coupons' => [
                 'm' => 'SaaS Platform', 't' => 'Discount Coupons', 'g' => 'Campaign codes that sell and track themselves',

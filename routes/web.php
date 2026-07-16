@@ -232,6 +232,9 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/wa-templates/{id}/test', [App\Http\Controllers\WaTemplateController::class, 'testSend']);
 
     Route::get('/admin/quotations', [App\Http\Controllers\SignupController::class, 'quotations'])->name('admin.quotations');
+    // rev 186 (Ejaz): manual payment entry (paid / partial / due-credit) →
+    // workspace provisioned immediately; also records balance instalments.
+    Route::post('/admin/quotations/{id}/payment', [App\Http\Controllers\SignupController::class, 'adminPayment'])->whereNumber('id')->name('admin.quotations.pay');
     Route::get('/admin/leads', [App\Http\Controllers\LeadController::class, 'index'])->name('admin.leads');
     Route::post('/admin/leads/{id}', [App\Http\Controllers\LeadController::class, 'update'])->name('admin.leads.update');
     // rev 112: discount coupons (marketing campaigns).

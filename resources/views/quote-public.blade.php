@@ -40,7 +40,18 @@
             <h1>Your SmartPRS workspace</h1>
             <div class="sub">Prepared for <b>{{ $s->company }}</b> · all 16 modules included</div>
 
-            @if($paid)
+            @if($paid && ($balance ?? null))
+                {{-- rev 186: workspace created ON CREDIT — this page now collects the BALANCE. --}}
+                <div class="err" style="display:block;background:#fff7ed;color:#9a3412;border-color:#fed7aa;">
+                    <i class="fas fa-circle-info"></i> Your workspace is already <b>live</b>. A balance of <b>₹{{ number_format($balance['balance'], 2) }}</b> remains on this subscription{{ $balance['dueOn'] ? ' — payable by '.$balance['dueOn'] : '' }}.
+                </div>
+                <div class="row"><span>Total (incl. GST)</span><b>₹{{ number_format($balance['total'], 2) }}</b></div>
+                <div class="row" style="color:#16a34a;"><span>Received so far</span><b>₹{{ number_format($balance['paid'], 2) }}</b></div>
+                <div class="total"><span>Balance payable</span><span>₹{{ number_format($balance['balance'], 2) }}</span></div>
+                <button class="btn" id="paybtn" onclick="payNow()"><i class="fas fa-lock"></i> Pay balance ₹{{ number_format($balance['balance'], 2) }}</button>
+                <div class="err" id="err"></div>
+                <div class="fine">Payment by Razorpay · The receipt with your GST tax invoice is emailed when fully paid · <a href="{{ url('/login') }}" style="color:var(--accent);">Sign in to your workspace</a></div>
+            @elseif($paid)
                 <div class="err" style="display:block;background:#dcfce7;color:#166534;border-color:#bbf7d0;">
                     <i class="fas fa-circle-check"></i> This quotation has already been paid and the workspace is live. Please <a href="{{ url('/login') }}" style="color:#166534;font-weight:700;">sign in</a>.
                 </div>
@@ -83,7 +94,7 @@
         </div>
     </div>
 
-    @if(!$paid && !$expired)
+    @if((!$paid && !$expired) || ($balance ?? null))
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <script>
     function showErr(m){ var e=document.getElementById('err'); e.textContent=m; e.style.display='block'; }
@@ -107,6 +118,7 @@
                         razorpay_order_id:resp.razorpay_order_id, razorpay_payment_id:resp.razorpay_payment_id, razorpay_signature:resp.razorpay_signature
                     }).then(function(c){
                         if(c.ok){
+                            if(j.balance){ document.querySelector('#okpane h1').textContent='Payment received — thank you!'; }
                             document.getElementById('quotecard').style.display='none';
                             document.getElementById('okmsg').textContent=c.message||'Payment received. Your workspace is being set up.';
                             var lk=document.getElementById('oklink'); if(c.redirect){ lk.href=c.redirect; lk.textContent=c.autoIn?'Open my workspace →':'Go to sign-in →'; }

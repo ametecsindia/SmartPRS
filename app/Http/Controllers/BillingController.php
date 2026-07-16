@@ -350,6 +350,58 @@ class BillingController extends Controller
         return true;
     }
 
+    /** rev 186: total successfully received against an invoice (all gateways). */
+    public static function invoicePaidSum(int $invoiceId): float
+    {
+        return (float) DB::table('payments')->where('invoice_id', $invoiceId)
+            ->where('status', 'success')->sum('amount');
+    }
+
+    /**
+     * rev 186 (Ejaz): PARTIAL-aware payment recording — for credit-period
+     * clients whose money arrives offline (bank transfer / UPI / cheque / cash)
+     * or in instalments. Writes a success payment of the GIVEN amount and flips
+     * the invoice to 'paid' only when the received total covers amount+tax
+     * (the invoices.status ENUM has no 'partial' value — partial state is
+     * always COMPUTED from the payments sum, never stored as a status).
+     * Idempotent on the txn reference. Returns
+     * ['recorded','paid','total','balance','settled'].
+     */
+    public static function applyPayment($inv, float $amount, string $gateway, string $method, ?string $txn): array
+    {
+        $total = round((float) $inv->amount + (float) $inv->tax, 2);
+        if ($txn) {
+            $already = DB::table('payments')->where('gateway_txn_id', $txn)->where('status', 'success')->exists();
+            if ($already) {
+                $paid = self::invoicePaidSum((int) $inv->id);
+
+                return ['recorded' => false, 'paid' => $paid, 'total' => $total,
+                    'balance' => max(0, round($total - $paid, 2)), 'settled' => $paid >= $total - 0.01];
+            }
+        }
+        DB::table('payments')->insert(ApprovalService::safeRow('payments', [
+            'uuid' => (string) Str::uuid(), 'tenant_id' => $inv->tenant_id, 'invoice_id' => $inv->id,
+            'amount' => round($amount, 2), 'gateway' => $gateway, 'method' => $method,
+            'gateway_txn_id' => $txn, 'status' => 'success', 'paid_at' => now(),
+            'created_at' => now(), 'updated_at' => now(),
+        ]));
+        $paid = self::invoicePaidSum((int) $inv->id);
+        $settled = $paid >= $total - 0.01;
+        if ($settled) {
+            DB::table('invoices')->where('id', $inv->id)->update(ApprovalService::safeRow('invoices', [
+                'status' => 'paid', 'gateway' => $gateway, 'paid_on' => now()->toDateString(), 'updated_at' => now(),
+            ]));
+        } else {
+            // Balance still open — status stays 'due'; the screens show the balance.
+            DB::table('invoices')->where('id', $inv->id)->update(ApprovalService::safeRow('invoices', [
+                'gateway' => $gateway, 'updated_at' => now(),
+            ]));
+        }
+
+        return ['recorded' => true, 'paid' => $paid, 'total' => $total,
+            'balance' => max(0, round($total - $paid, 2)), 'settled' => $settled];
+    }
+
     // ---- Payments ----------------------------------------------------------
 
     public function payments(Request $request)
