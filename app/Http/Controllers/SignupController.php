@@ -611,7 +611,17 @@ class SignupController extends Controller
 
             $uuid = (string) Str::uuid();
             $token = Str::random(48);
-            $quoteNo = 'QUO-'.now()->format('Ym').'-'.str_pad((string) (DB::table('signups')->count() + 1), 4, '0', STR_PAD_LEFT);
+            // rev 187 (Ejaz): quotation numbers follow the PRS format with a Q
+            // marker — PRS-Q-<FY>-<MM>-<count>, consecutive through the FY
+            // (own series; quotes are not tax documents).
+            $qPrefix = 'PRS-Q-'.BillingController::finYear().'-';
+            $qMax = 0;
+            foreach (DB::table('signups')->where('quote_no', 'like', $qPrefix.'%')->pluck('quote_no') as $qn) {
+                if (preg_match('/-(\d+)$/', (string) $qn, $qm)) {
+                    $qMax = max($qMax, (int) $qm[1]);
+                }
+            }
+            $quoteNo = $qPrefix.now()->format('m').'-'.str_pad((string) ($qMax + 1), 4, '0', STR_PAD_LEFT);
             $signupId = DB::table('signups')->insertGetId(ApprovalService::safeRow('signups', [
                 'uuid' => $uuid, 'company' => $v['company'], 'admin_name' => $v['admin_name'],
                 'admin_email' => $email, 'mobile' => $v['mobile'] ?? null,

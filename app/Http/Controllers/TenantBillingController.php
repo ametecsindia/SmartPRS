@@ -461,10 +461,10 @@ class TenantBillingController extends Controller
 
         if ($isUpgrade) {
             // Invoice for exactly the pro-rata difference held on the renewals row.
-            $seq = DB::table('invoices')->whereYear('created_at', now()->year)->whereMonth('created_at', now()->month)->count() + 1;
+            // rev 187 (Ejaz): PRS-<FY>-<MM>-<count> — consecutive through the FY.
             $invId = DB::table('invoices')->insertGetId(ApprovalService::safeRow('invoices', [
                 'uuid' => (string) Str::uuid(), 'tenant_id' => $tid,
-                'number' => 'INV-'.now()->format('Ym').'-'.str_pad((string) $seq, 4, '0', STR_PAD_LEFT),
+                'number' => BillingController::nextInvoiceNumber(),
                 'amount' => (float) $r->amount, 'tax' => (float) $r->tax, 'status' => 'due',
                 'issued_on' => now()->toDateString(), 'due_on' => now()->toDateString(),
                 'created_at' => now(), 'updated_at' => now(),

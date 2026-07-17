@@ -332,8 +332,9 @@ class OnpremClientController extends Controller
         }
         $upd = [];
         if (! $c->invoice_no) {
-            $n = (int) DB::table('onprem_clients')->whereNotNull('invoice_no')->count() + 1;
-            $upd['invoice_no'] = 'LIC-'.now()->format('Ym').'-'.str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+            // rev 187 (Ejaz): PRS-<FY>-<MM>-<count> — one consecutive series
+            // through the financial year, SHARED with the SaaS invoices.
+            $upd['invoice_no'] = BillingController::nextInvoiceNumber();
         }
         if (! $c->invoice_token) {
             $upd['invoice_token'] = Str::random(40);

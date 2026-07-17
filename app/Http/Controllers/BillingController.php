@@ -56,6 +56,49 @@ class BillingController extends Controller
     public const COMPANY_FEE = 1000.0;
 
     /**
+     * rev 187 (Ejaz): Indian FINANCIAL-year label (Apr–Mar) for a date —
+     * Jul 2026 → '2026-27', Feb 2027 → '2026-27', Apr 2027 → '2027-28'.
+     */
+    public static function finYear($date = null): string
+    {
+        $d = $date ? Carbon::parse($date) : now();
+        $y = $d->month >= 4 ? $d->year : $d->year - 1;
+
+        return $y.'-'.substr((string) ($y + 1), -2);
+    }
+
+    /**
+     * rev 187 (Ejaz): STANDING invoice-number format —
+     *     PRS-<financial year>-<month>-<count>   e.g. PRS-2026-27-07-0001
+     * The count runs CONSECUTIVELY through the financial year (GST style,
+     * resets on 1 April) and is ONE shared series across SaaS subscription
+     * invoices (`invoices.number`) AND on-prem licence invoices
+     * (`onprem_clients.invoice_no`). MAX(existing)+1 — deletions can never
+     * cause a duplicate (invoices.number is UNIQUE).
+     */
+    public static function nextInvoiceNumber(): string
+    {
+        $prefix = 'PRS-'.self::finYear().'-';
+        $max = 0;
+        foreach ([['invoices', 'number'], ['onprem_clients', 'invoice_no']] as [$table, $col]) {
+            try {
+                if (! Schema::hasTable($table)) {
+                    continue;
+                }
+                foreach (DB::table($table)->where($col, 'like', $prefix.'%')->pluck($col) as $n) {
+                    if (preg_match('/-(\d+)$/', (string) $n, $m)) {
+                        $max = max($max, (int) $m[1]);
+                    }
+                }
+            } catch (\Throwable $e) {
+                // fail-soft: a missing table never blocks invoicing
+            }
+        }
+
+        return $prefix.now()->format('m').'-'.str_pad((string) ($max + 1), 4, '0', STR_PAD_LEFT);
+    }
+
+    /**
      * Full price breakdown for a plan + headcount + cycle (+ companies). The
      * single source of pricing truth — used by subscriptions here AND the
      * public self-serve signup (SignupController) AND tenant self-renewal
@@ -270,8 +313,8 @@ class BillingController extends Controller
         }
         $amount = (float) $sub->amount;
         $tax = round($amount * self::GST / 100, 2);
-        $seq = DB::table('invoices')->whereYear('created_at', now()->year)->whereMonth('created_at', now()->month)->count() + 1;
-        $number = 'INV-'.now()->format('Ym').'-'.str_pad((string) $seq, 4, '0', STR_PAD_LEFT);
+        // rev 187 (Ejaz): PRS-<FY>-<MM>-<count> — consecutive through the FY.
+        $number = self::nextInvoiceNumber();
         $id = DB::table('invoices')->insertGetId(ApprovalService::safeRow('invoices', [
             'uuid' => (string) Str::uuid(), 'tenant_id' => $tenantId, 'number' => $number,
             'amount' => $amount, 'tax' => $tax, 'status' => 'due',
