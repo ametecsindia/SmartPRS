@@ -293,6 +293,10 @@ class DemoAccessController extends Controller
                 'heading' => 'Your SmartPRS live-demo passkey',
                 'intro' => 'Enter this passkey on the demo page to start. It is valid for '.$hours.' hour'.($hours === 1 ? '' : 's').' — after that the demo signs out and the workspace resets.',
                 'lines' => ['Passkey' => $row->pin, 'Demo page' => url(self::backUrlFor($row->entry))],
+                // rev 187b (Ejaz): the visitor is WAITING for this PIN — send it
+                // INLINE like login credentials (rev 170), never via the queue.
+                // On a server with no queue worker, queued PINs silently never left.
+                'sync' => true,
             ]);
             if ($id) {
                 $channels[] = 'email';
