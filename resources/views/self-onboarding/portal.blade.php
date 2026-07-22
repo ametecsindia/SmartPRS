@@ -230,7 +230,7 @@ window.SO = {
     STEPS.forEach(function(s,i){
       var ch=document.createElement('span');ch.className='chip'+(s===cur?' on':'')+(done[s]?' done':'');
       ch.textContent=s.charAt(0).toUpperCase()+s.slice(1);
-      ch.onclick=function(){ if(done[s]||s===cur||canEnter(s)) show(s); };
+      ch.onclick=function(){ show(s); };
       c.appendChild(ch);
     });
   }

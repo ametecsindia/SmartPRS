@@ -119,6 +119,7 @@ class SelfOnboardingController extends Controller
             'email' => $c['email'] ?? null,
             'mobile' => $c['mobile'] ?? null,
             'whatsapp' => $c['whatsapp'] ?? ($c['mobile'] ?? null),
+            'data' => isset($c['data']) ? json_encode($c['data']) : null,
             'status' => 'link_sent',
             'link_expires_at' => now()->addDays(14),
             'created_at' => now(),
@@ -689,6 +690,24 @@ class SelfOnboardingController extends Controller
         $tid = $rec->tenant_id ?: ($r->user()->tenant_id ?? null);
         $companyId = $rec->company_id ?: ($r->user()->company_id ?? null);
 
+        // EXISTING employee (mode=existing): patch the record in place, do not create a duplicate.
+        if ($rec->employee_id) {
+            $patch = ['email_verified' => (bool) $rec->email_verified, 'mobile_verified' => (bool) $rec->mobile_verified, 'wa_verified' => (bool) $rec->wa_verified, 'docs_status' => 'approved', 'docs_stored' => true, 'updated_at' => now()];
+            if (! empty($p['dob'])) { $patch['dob'] = $p['dob']; }
+            if (! empty($p['gender'])) { $patch['gender'] = $p['gender']; }
+            if (! empty($ct['current_address'])) { $patch['address'] = $ct['current_address']; }
+            if (! empty($st['pan'])) { $patch['pan'] = strtoupper($st['pan']); }
+            if (! empty($st['uan'])) { $patch['uan'] = $st['uan']; }
+            if (! empty($bk['bank_name'])) { $patch['bank_name'] = $bk['bank_name']; }
+            if (! empty($bk['acc_no'])) { $patch['bank_acc'] = $bk['acc_no']; }
+            if (! empty($bk['ifsc'])) { $patch['ifsc'] = strtoupper($bk['ifsc']); }
+            DB::table('employees')->where('id', $rec->employee_id)->update(ApprovalService::safeRow('employees', $patch));
+            DB::table('self_onboarding')->where('id', $id)->update(['status' => 'injected', 'approved_at' => now(), 'link_disabled_at' => now(), 'updated_at' => now()]);
+            $code = DB::table('employees')->where('id', $rec->employee_id)->value('emp_code');
+
+            return response()->json(['ok' => true, 'emp_code' => $code, 'employee_id' => $rec->employee_id, 'updated' => true]);
+        }
+
         // emp_code — same scheme as RecruitmentController::createEmployeeFromCandidate
         $n = (int) DB::table('employees')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->count() + 1;
         $code = 'EMP'.str_pad((string) $n, 4, '0', STR_PAD_LEFT);
@@ -734,5 +753,39 @@ class SelfOnboardingController extends Controller
         ]);
 
         return response()->json(['ok' => true, 'emp_code' => $code, 'employee_id' => $empId]);
+    }
+
+    /** Invite an EXISTING employee to self-verify: pre-fills from their master record. */
+    public function hrInviteExisting(Request $r)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $tid = $r->user()->tenant_id ?? null;
+        $key = trim((string) $r->input('emp'));
+        if ($key === '') {
+            return response()->json(['ok' => false, 'error' => 'Enter an employee code or name.'], 422);
+        }
+        $emp = DB::table('employees')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->whereNull('deleted_at')
+            ->where(function ($q) use ($key) { $q->where('emp_code', $key)->orWhere('name', 'like', '%'.$key.'%'); })
+            ->orderBy('id')->first();
+        if (! $emp) {
+            return response()->json(['ok' => false, 'error' => 'No employee found for "'.$key.'".'], 404);
+        }
+        $snapshot = [
+            'personal' => array_filter(['full_name' => $emp->name, 'dob' => $emp->dob, 'gender' => $emp->gender]),
+            'contact' => array_filter(['current_address' => $emp->address]),
+            'statutory' => array_filter(['pan' => $emp->pan, 'uan' => $emp->uan]),
+            'bank' => array_filter(['acc_name' => $emp->name, 'bank_name' => $emp->bank_name, 'acc_no' => $emp->bank_acc, 'ifsc' => $emp->ifsc]),
+        ];
+        $rec = self::issue([
+            'tenant_id' => $tid, 'company_id' => $emp->company_id, 'employee_id' => $emp->id, 'mode' => 'existing',
+            'name' => $emp->name, 'email' => $emp->email, 'mobile' => $emp->mobile,
+            'whatsapp' => $emp->whatsapp ?? $emp->mobile, 'data' => $snapshot,
+        ]);
+        self::sendLink($rec);
+
+        return response()->json(['ok' => true, 'name' => $emp->name, 'emp_code_existing' => $emp->emp_code,
+            'temp_emp_code' => $rec->temp_emp_code, 'link' => route('selfonboard.start', $rec->token)]);
     }
 }

@@ -587,3 +587,4 @@ Route::get('/self-onboard/{token}/selfie', [\App\Http\Controllers\SelfOnboarding
 
 Route::post('/app/self-onboarding/invite', [\App\Http\Controllers\SelfOnboardingController::class, 'hrInvite'])->middleware('auth')->name('app.selfonboard.invite');
 Route::post('/app/self-onboarding/{id}/approve', [\App\Http\Controllers\SelfOnboardingController::class, 'hrApprove'])->whereNumber('id')->middleware('auth')->name('app.selfonboard.approve');
+Route::post('/app/self-onboarding/invite-existing', [\App\Http\Controllers\SelfOnboardingController::class, 'hrInviteExisting'])->middleware('auth')->name('app.selfonboard.invite.existing');
