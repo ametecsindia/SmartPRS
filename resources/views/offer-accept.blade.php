@@ -4,6 +4,7 @@
     $name = $letter->candidate ?? 'Candidate';
     $position = $cand->position ?? '';
     $issued = $letter->issued_on ? \Illuminate\Support\Carbon::parse($letter->issued_on)->format('d M Y') : '';
+    $selfToken = $selfToken ?? null;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -25,6 +26,7 @@
         .row .v { font-weight: 600; }
         .accepted { background: #ecfdf5; color: #047857; border: 1px solid #6ee7b7; padding: 14px 16px; border-radius: 10px; font-weight: 600; margin-top: 18px; text-align: center; }
         .btn { display: inline-block; width: 100%; text-align: center; background: {{ $color }}; color: #fff; border: 0; padding: 14px; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 22px; }
+        .btn.onboard { background: linear-gradient(135deg,#f97316,#ea580c); box-shadow: 0 6px 18px rgba(249,115,22,.3); }
         .muted { color: #9ca3af; font-size: 12px; text-align: center; margin-top: 16px; }
     </style>
 </head>
@@ -49,6 +51,10 @@
 
             @if($accepted || session('justAccepted'))
                 <div class="accepted">✔ You have accepted this offer. Thank you — our team will be in touch.</div>
+                @if(!empty($selfToken))
+                    <a href="{{ route('selfonboard.start', $selfToken) }}" class="btn onboard" style="text-decoration:none;">Start Self-Onboarding →</a>
+                    <div class="muted">Complete your details, take a selfie and upload your documents before your first day. We’ve also emailed you this link.</div>
+                @endif
             @else
                 <form method="POST" action="{{ route('offer.accept', $token) }}" onsubmit="return confirm('Please confirm: do you accept this offer from {{ addslashes($company ?: $brandName) }}?');">
                     @csrf

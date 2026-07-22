@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\MailService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 /**
  * Candidate & existing-employee SELF-ONBOARDING portal.
@@ -12,9 +14,8 @@ use Illuminate\Support\Facades\Schema;
  * OTP; live selfie; document upload; HR verifies & injects into the employees
  * master; on approval the link is disabled but archived (never deleted).
  *
- * Phase 1: token landing + record scaffolding (self-healing tables, matching the
- * OnboardingController convention). OTP, the section wizard, the HR verification
- * console and injection are wired in later phases.
+ * Phase 1: token landing + self-healing tables.
+ * Phase 2: issue() a Temp-EMP ID + token against a candidate/offer and sendLink().
  */
 class SelfOnboardingController extends Controller
 {
@@ -74,6 +75,88 @@ class SelfOnboardingController extends Controller
                 $t->string('status')->default('pending');
                 $t->timestamps();
             });
+        }
+    }
+
+    /**
+     * Issue (or reuse) a self-onboarding record for a candidate/employee and
+     * return it. Generates a Temp-EMP ID (TMP-YYYY-#####) and a secure token.
+     * Idempotent: an existing, still-active record for the same candidate is reused.
+     *
+     * $c keys: tenant_id, company_id, candidate_id?, employee_id?, name, email,
+     *          mobile?, whatsapp?, mode? (new|existing|bulk)
+     */
+    public static function issue(array $c): object
+    {
+        self::ensureTables();
+
+        if (! empty($c['candidate_id'])) {
+            $existing = DB::table('self_onboarding')
+                ->where('candidate_id', $c['candidate_id'])
+                ->when(! empty($c['tenant_id']), fn ($q) => $q->where('tenant_id', $c['tenant_id']))
+                ->whereNull('deleted_at')->whereNull('link_disabled_at')
+                ->orderByDesc('id')->first();
+            if ($existing) {
+                return $existing;
+            }
+        }
+
+        $year = date('Y');
+        $prefix = 'TMP-'.$year.'-';
+        $max = DB::table('self_onboarding')->where('temp_emp_code', 'like', $prefix.'%')
+            ->orderByDesc('temp_emp_code')->value('temp_emp_code');
+        $n = $max ? ((int) substr($max, strlen($prefix))) + 1 : 1;
+        $code = $prefix.str_pad((string) $n, 5, '0', STR_PAD_LEFT);
+
+        $id = DB::table('self_onboarding')->insertGetId([
+            'uuid' => (string) Str::uuid(),
+            'token' => bin2hex(random_bytes(24)),
+            'temp_emp_code' => $code,
+            'tenant_id' => $c['tenant_id'] ?? null,
+            'company_id' => $c['company_id'] ?? null,
+            'candidate_id' => $c['candidate_id'] ?? null,
+            'employee_id' => $c['employee_id'] ?? null,
+            'mode' => $c['mode'] ?? 'new',
+            'name' => $c['name'] ?? null,
+            'email' => $c['email'] ?? null,
+            'mobile' => $c['mobile'] ?? null,
+            'whatsapp' => $c['whatsapp'] ?? ($c['mobile'] ?? null),
+            'status' => 'link_sent',
+            'link_expires_at' => now()->addDays(14),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return DB::table('self_onboarding')->where('id', $id)->first();
+    }
+
+    /** Email (and, when possible, WhatsApp) the candidate the self-onboarding link. */
+    public static function sendLink(object $rec, array $ctx = []): void
+    {
+        try {
+            $link = route('selfonboard.start', $rec->token);
+            $first = $rec->name ? explode(' ', trim($rec->name))[0] : '';
+            if (! empty($rec->email)) {
+                MailService::queue([
+                    'tenant_id' => $rec->tenant_id,
+                    'company_id' => $rec->company_id,
+                    'to' => $rec->email,
+                    'to_name' => $rec->name,
+                    'subject' => 'Complete your onboarding'.(! empty($ctx['brand']) ? ' — '.$ctx['brand'] : ''),
+                    'heading' => 'Welcome aboard'.($first ? ', '.$first : '').'!',
+                    'intro' => 'Please complete your onboarding — it only takes a few minutes, one simple step at a time.',
+                    'lines' => array_filter([
+                        'Reference' => $rec->temp_emp_code,
+                        'Position' => $ctx['position'] ?? null,
+                    ]),
+                    'cta_label' => 'Start Self-Onboarding',
+                    'cta_url' => $link,
+                    'kind' => 'onboarding.selflink',
+                    'sync' => true,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // fail-soft: link is also shown on the offer page
         }
     }
 
