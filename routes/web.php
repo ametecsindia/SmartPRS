@@ -566,3 +566,10 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
 
 // Public candidate/existing-employee SELF-ONBOARDING portal (token-secured, no login).
 Route::get('/self-onboard/{token}', [\App\Http\Controllers\SelfOnboardingController::class, 'start'])->name('selfonboard.start');
+Route::post('/self-onboard/{token}/otp/send', [\App\Http\Controllers\SelfOnboardingController::class, 'otpSend'])->name('selfonboard.otp.send');
+Route::post('/self-onboard/{token}/otp/verify', [\App\Http\Controllers\SelfOnboardingController::class, 'otpVerify'])->name('selfonboard.otp.verify');
+Route::post('/self-onboard/{token}/save', [\App\Http\Controllers\SelfOnboardingController::class, 'save'])->name('selfonboard.save');
+Route::post('/self-onboard/{token}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'selfie'])->name('selfonboard.selfie');
+Route::post('/self-onboard/{token}/document', [\App\Http\Controllers\SelfOnboardingController::class, 'document'])->name('selfonboard.document');
+Route::post('/self-onboard/{token}/submit', [\App\Http\Controllers\SelfOnboardingController::class, 'submit'])->name('selfonboard.submit');
+Route::get('/self-onboard/{token}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'selfieImg'])->name('selfonboard.selfie.img');
