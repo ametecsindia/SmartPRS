@@ -15,6 +15,9 @@ return new class extends Migration
             if (! Schema::hasColumn('employees', 'esic_no')) {
                 $t->string('esic_no')->nullable();
             }
+            if (! Schema::hasColumn('employees', 'marital_status')) {
+                $t->string('marital_status')->nullable();
+            }
             if (! Schema::hasColumn('employees', 'employment_type')) {
                 $t->string('employment_type')->nullable();
             }
@@ -24,7 +27,7 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('employees', function (Blueprint $t) {
-            foreach (['esic_no', 'employment_type'] as $c) {
+            foreach (['esic_no', 'employment_type', 'marital_status'] as $c) {
                 if (Schema::hasColumn('employees', $c)) {
                     $t->dropColumn($c);
                 }

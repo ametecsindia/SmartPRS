@@ -699,6 +699,7 @@ class SelfOnboardingController extends Controller
         $tid = $rec->tenant_id;
         $companyId = $rec->company_id;
         $hrPatch = $this->hrPatch(is_array($hr) ? $hr : [], $tid);
+        $candExtra = array_filter(['blood_group' => $p['blood_group'] ?? null, 'marital_status' => $p['marital'] ?? null, 'category' => $st['category'] ?? null, 'esic_no' => $st['esic'] ?? null]);
 
         if ($rec->employee_id) {
             $patch = ['email_verified' => (bool) $rec->email_verified, 'mobile_verified' => (bool) $rec->mobile_verified, 'wa_verified' => (bool) $rec->wa_verified, 'docs_status' => 'approved', 'updated_at' => now()];
@@ -707,7 +708,7 @@ class SelfOnboardingController extends Controller
                     $patch[$kv[0]] = $kv[1];
                 }
             }
-            $patch = array_merge($patch, $hrPatch);
+            $patch = array_merge($patch, $candExtra, $hrPatch);
             DB::table('employees')->where('id', $rec->employee_id)->update(ApprovalService::safeRow('employees', $patch));
             $code = DB::table('employees')->where('id', $rec->employee_id)->value('emp_code');
             $empId = $rec->employee_id;
@@ -720,7 +721,7 @@ class SelfOnboardingController extends Controller
                 $code = 'EMP'.str_pad((string) $n, 4, '0', STR_PAD_LEFT);
             }
             $base = ['uuid' => (string) Str::uuid(), 'tenant_id' => $tid, 'company_id' => $companyId, 'emp_code' => $code, 'name' => $p['full_name'] ?? $rec->name, 'dob' => $p['dob'] ?? null, 'gender' => $p['gender'] ?? null, 'email' => $rec->email, 'email_verified' => (bool) $rec->email_verified, 'mobile' => $rec->mobile, 'mobile_verified' => (bool) $rec->mobile_verified, 'whatsapp' => $rec->whatsapp, 'wa_verified' => (bool) $rec->wa_verified, 'address' => $ct['current_address'] ?? null, 'pan' => ! empty($st['pan']) ? strtoupper($st['pan']) : null, 'uan' => $st['uan'] ?? null, 'bank_name' => $bk['bank_name'] ?? null, 'bank_acc' => $bk['acc_no'] ?? null, 'ifsc' => ! empty($bk['ifsc']) ? strtoupper($bk['ifsc']) : null, 'docs_status' => 'approved', 'type' => 'office', 'salary_type' => 'only_salary', 'status' => 'active', 'doj' => now()->toDateString(), 'created_at' => now(), 'updated_at' => now()];
-            $empId = DB::table('employees')->insertGetId(ApprovalService::safeRow('employees', array_merge($base, $hrPatch)));
+            $empId = DB::table('employees')->insertGetId(ApprovalService::safeRow('employees', array_merge($base, $candExtra, $hrPatch)));
             try {
                 $this->ensureOnboardingTable();
                 DB::table('onboarding')->insert(ApprovalService::safeRow('onboarding', ['tenant_id' => $tid, 'company_id' => $companyId, 'employee_id' => $empId, 'employee' => $p['full_name'] ?? $rec->name, 'joined_on' => now()->toDateString(), 'status' => 'pending', 'created_at' => now(), 'updated_at' => now()]));
@@ -872,7 +873,7 @@ class SelfOnboardingController extends Controller
         if (! Schema::hasTable('employees')) {
             return;
         }
-        foreach (['esic_no', 'employment_type'] as $c) {
+        foreach (['esic_no', 'employment_type', 'marital_status'] as $c) {
             if (! Schema::hasColumn('employees', $c)) {
                 try {
                     Schema::table('employees', function (Blueprint $b) use ($c) {
