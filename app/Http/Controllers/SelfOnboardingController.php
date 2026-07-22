@@ -788,4 +788,182 @@ class SelfOnboardingController extends Controller
         return response()->json(['ok' => true, 'name' => $emp->name, 'emp_code_existing' => $emp->emp_code,
             'temp_emp_code' => $rec->temp_emp_code, 'link' => route('selfonboard.start', $rec->token)]);
     }
+
+    /* --------------------------------------------------------------- BULK import */
+
+    private function norm($s): string
+    {
+        return preg_replace('/[^a-z0-9]/', '', strtolower((string) $s));
+    }
+
+    /** Shared injection used by bulk-commit: create a new employee or update a matched one. */
+    private function injectOne(object $rec): array
+    {
+        $all = json_decode($rec->data ?: '{}', true) ?: [];
+        $p = $all['personal'] ?? [];
+        $ct = $all['contact'] ?? [];
+        $st = $all['statutory'] ?? [];
+        $bk = $all['bank'] ?? [];
+        $tid = $rec->tenant_id;
+        $companyId = $rec->company_id;
+
+        if ($rec->employee_id) {
+            $patch = ['email_verified' => (bool) $rec->email_verified, 'mobile_verified' => (bool) $rec->mobile_verified, 'wa_verified' => (bool) $rec->wa_verified, 'docs_status' => 'approved', 'updated_at' => now()];
+            foreach ([['dob', $p['dob'] ?? null], ['gender', $p['gender'] ?? null], ['address', $ct['current_address'] ?? null], ['pan', ! empty($st['pan']) ? strtoupper($st['pan']) : null], ['uan', $st['uan'] ?? null], ['bank_name', $bk['bank_name'] ?? null], ['bank_acc', $bk['acc_no'] ?? null], ['ifsc', ! empty($bk['ifsc']) ? strtoupper($bk['ifsc']) : null]] as $kv) {
+                if (! empty($kv[1])) { $patch[$kv[0]] = $kv[1]; }
+            }
+            DB::table('employees')->where('id', $rec->employee_id)->update(ApprovalService::safeRow('employees', $patch));
+            $code = DB::table('employees')->where('id', $rec->employee_id)->value('emp_code');
+            $empId = $rec->employee_id;
+            $updated = true;
+        } else {
+            $n = (int) DB::table('employees')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->count() + 1;
+            $code = 'EMP'.str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+            while (DB::table('employees')->where('emp_code', $code)->when($tid, fn ($q) => $q->where('tenant_id', $tid))->exists()) {
+                $n++;
+                $code = 'EMP'.str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+            }
+            $empId = DB::table('employees')->insertGetId(ApprovalService::safeRow('employees', [
+                'uuid' => (string) Str::uuid(), 'tenant_id' => $tid, 'company_id' => $companyId, 'emp_code' => $code,
+                'name' => $p['full_name'] ?? $rec->name, 'dob' => $p['dob'] ?? null, 'gender' => $p['gender'] ?? null,
+                'email' => $rec->email, 'email_verified' => (bool) $rec->email_verified,
+                'mobile' => $rec->mobile, 'mobile_verified' => (bool) $rec->mobile_verified,
+                'whatsapp' => $rec->whatsapp, 'wa_verified' => (bool) $rec->wa_verified,
+                'address' => $ct['current_address'] ?? null, 'pan' => ! empty($st['pan']) ? strtoupper($st['pan']) : null,
+                'uan' => $st['uan'] ?? null, 'bank_name' => $bk['bank_name'] ?? null, 'bank_acc' => $bk['acc_no'] ?? null,
+                'ifsc' => ! empty($bk['ifsc']) ? strtoupper($bk['ifsc']) : null,
+                'docs_status' => 'approved', 'type' => 'office', 'salary_type' => 'only_salary', 'status' => 'active',
+                'doj' => now()->toDateString(), 'created_at' => now(), 'updated_at' => now(),
+            ]));
+            try {
+                $this->ensureOnboardingTable();
+                DB::table('onboarding')->insert(ApprovalService::safeRow('onboarding', [
+                    'tenant_id' => $tid, 'company_id' => $companyId, 'employee_id' => $empId,
+                    'employee' => $p['full_name'] ?? $rec->name, 'joined_on' => now()->toDateString(),
+                    'status' => 'pending', 'created_at' => now(), 'updated_at' => now(),
+                ]));
+            } catch (\Throwable $e) {
+            }
+            $updated = false;
+        }
+
+        DB::table('self_onboarding')->where('id', $rec->id)->update([
+            'status' => 'injected', 'employee_id' => $empId, 'approved_at' => now(), 'link_disabled_at' => now(), 'updated_at' => now(),
+        ]);
+
+        return ['emp_code' => $code, 'updated' => $updated];
+    }
+
+    /** Download a CSV template for the bulk workforce import. */
+    public function hrBulkTemplate(Request $r)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $headers = ['Old Emp Code', 'Full Name', 'DOB (DD-MM-YYYY)', 'Gender', 'PAN', 'Aadhaar', 'Email', 'Mobile', 'WhatsApp', 'UAN', 'ESIC', 'Bank Name', 'Account No', 'IFSC', 'Blood Group', 'Marital', 'Category'];
+        $sample = ['EMP-1042', 'Ravi Kumar', '12-03-1990', 'Male', 'ABCDE1234F', 'xxxx-xxxx-1234', 'ravi@email.com', '9800000001', '9800000001', '100123456789', '41-00-123456', 'HDFC Bank', '000123456789', 'HDFC0000123', 'O+', 'Married', 'General'];
+        $csv = implode(',', $headers)."\n".implode(',', $sample)."\n";
+
+        return response($csv, 200, ['Content-Type' => 'text/csv', 'Content-Disposition' => 'attachment; filename="smartprs_bulk_import_template.csv"']);
+    }
+
+    /** Upload a CSV of existing staff: stage a Temp-EMP ID per row + auto-match to employees. */
+    public function hrBulkUpload(Request $r)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $this->ensureTables();
+        $file = $r->file('file');
+        if (! $file || ! $file->isValid()) {
+            return response()->json(['ok' => false, 'error' => 'No file received.'], 422);
+        }
+        if (! in_array(strtolower($file->getClientOriginalExtension()), ['csv', 'txt'], true)) {
+            return response()->json(['ok' => false, 'error' => 'Please upload a CSV file (export your sheet as CSV).'], 422);
+        }
+        $tid = $r->user()->tenant_id ?? null;
+        $companyId = $r->user()->company_id ?? null;
+        $h = fopen($file->getRealPath(), 'r');
+        if (! $h) {
+            return response()->json(['ok' => false, 'error' => 'Could not read the file.'], 422);
+        }
+        $header = fgetcsv($h);
+        if (! $header) {
+            fclose($h);
+
+            return response()->json(['ok' => false, 'error' => 'The file is empty.'], 422);
+        }
+        $idx = [];
+        foreach ($header as $i => $col) {
+            $idx[$this->norm($col)] = $i;
+        }
+        $get = function ($row, $keys) use ($idx) {
+            foreach ((array) $keys as $k) {
+                if (isset($idx[$k], $row[$idx[$k]])) {
+                    $v = trim((string) $row[$idx[$k]]);
+                    if ($v !== '') { return $v; }
+                }
+            }
+
+            return null;
+        };
+        $total = 0; $matched = 0; $new = 0; $errors = 0; $preview = [];
+        while (($row = fgetcsv($h)) !== false) {
+            if (count(array_filter($row, fn ($x) => trim((string) $x) !== '')) === 0) {
+                continue;
+            }
+            $name = $get($row, ['fullname', 'name', 'employeename']);
+            if (! $name) { $errors++; continue; }
+            $old = $get($row, ['oldempcode', 'empcode', 'employeecode', 'code']);
+            $pan = $get($row, ['pan']);
+            $email = $get($row, ['email']);
+            $mobile = $get($row, ['mobile', 'phone']);
+            $snap = [
+                'personal' => array_filter(['full_name' => $name, 'dob' => $get($row, ['dobddmmyyyy', 'dob', 'dateofbirth']), 'gender' => $get($row, ['gender']), 'blood_group' => $get($row, ['bloodgroup']), 'marital' => $get($row, ['marital', 'maritalstatus'])]),
+                'contact' => [],
+                'statutory' => array_filter(['pan' => $pan ? strtoupper($pan) : null, 'uan' => $get($row, ['uan']), 'aadhaar' => $get($row, ['aadhaar']), 'esic' => $get($row, ['esic']), 'category' => $get($row, ['category'])]),
+                'bank' => array_filter(['acc_name' => $name, 'bank_name' => $get($row, ['bankname']), 'acc_no' => $get($row, ['accountno', 'accno', 'accountnumber']), 'ifsc' => ($x = $get($row, ['ifsc'])) ? strtoupper($x) : null]),
+            ];
+            $match = DB::table('employees')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->whereNull('deleted_at')
+                ->where(function ($w) use ($old, $pan, $email, $mobile) {
+                    if ($old) { $w->orWhere('emp_code', $old); }
+                    if ($pan) { $w->orWhere('pan', strtoupper($pan)); }
+                    if ($email) { $w->orWhere('email', $email); }
+                    if ($mobile) { $w->orWhere('mobile', $mobile); }
+                })->first();
+            $empId = $match->id ?? null;
+            $match ? $matched++ : $new++;
+            $rec = self::issue(['tenant_id' => $tid, 'company_id' => $companyId, 'employee_id' => $empId, 'mode' => 'bulk',
+                'name' => $name, 'email' => $email, 'mobile' => $mobile, 'whatsapp' => $get($row, ['whatsapp']) ?: $mobile, 'data' => $snap]);
+            DB::table('self_onboarding')->where('id', $rec->id)->update(['status' => 'submitted', 'progress' => 100, 'submitted_at' => now(), 'updated_at' => now()]);
+            $total++;
+            if (count($preview) < 10) {
+                $preview[] = ['name' => $name, 'temp' => $rec->temp_emp_code, 'match' => $match->emp_code ?? null];
+            }
+        }
+        fclose($h);
+
+        return response()->json(['ok' => true, 'total' => $total, 'matched' => $matched, 'new' => $new, 'errors' => $errors, 'preview' => $preview]);
+    }
+
+    /** Commit staged bulk rows: create new employees / update matched ones, archive links. */
+    public function hrBulkCommit(Request $r)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $tid = $r->user()->tenant_id ?? null;
+        $rows = DB::table('self_onboarding')->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+            ->where('mode', 'bulk')->whereNull('deleted_at')->where('status', '!=', 'injected')->get();
+        $created = 0; $updated = 0;
+        foreach ($rows as $rec) {
+            try {
+                $res = $this->injectOne($rec);
+                $res['updated'] ? $updated++ : $created++;
+            } catch (\Throwable $e) {
+            }
+        }
+
+        return response()->json(['ok' => true, 'created' => $created, 'updated' => $updated]);
+    }
 }

@@ -73,6 +73,14 @@
 </div></div>
 
 <div class="toast" id="toast"></div>
+<div class="mov" id="bulkMov"><div class="modal">
+  <h2>Bulk import existing staff</h2>
+  <p class="s">Upload a CSV of your workforce. Each row gets a Temp-EMP ID and is auto-matched to an existing employee (old code / PAN / email / mobile).</p>
+  <a class="btn ghost" href="{{ route('app.selfonboard.bulk.template') }}" style="display:inline-block;text-decoration:none;margin-bottom:10px">⬇ Download CSV template</a>
+  <label>CSV file</label><input type="file" id="bulkFile" accept=".csv,.txt">
+  <div id="bulkResult"></div>
+  <div style="display:flex;gap:10px;margin-top:14px"><button class="btn primary" id="bulkUpload">Upload &amp; match</button><button class="btn green" id="bulkCommit" style="display:none">Commit → create/link</button><button class="btn ghost" id="bulkCancel">Close</button></div>
+</div></div>
 <script>
 (function(){
   var CSRF=document.querySelector('meta[name=csrf-token]').content, curId=null;
@@ -142,6 +150,29 @@
   };
 
   loadList();
+  $('#bulkBtn').onclick=function(){$('#bulkResult').innerHTML='';$('#bulkCommit').style.display='none';$('#bulkMov').classList.add('on');};
+  $('#bulkCancel').onclick=function(){$('#bulkMov').classList.remove('on');};
+  $('#bulkUpload').onclick=function(){
+    var f=$('#bulkFile').files[0];if(!f){toast('Choose a CSV file');return;}
+    var fd=new FormData();fd.append('file',f);var b=this;b.disabled=true;b.textContent='Uploading…';
+    api('{{ route('app.selfonboard.bulk.upload') }}',{method:'POST',body:fd}).then(function(r){
+      b.disabled=false;b.textContent='Upload & match';
+      if(!r.ok){toast(r.error||'Upload failed');return;}
+      var pv=(r.preview||[]).map(function(x){return '<div class="kv"><span class="k">'+esc(x.name)+' · '+esc(x.temp)+'</span><span class="v">'+(x.match?('matched '+esc(x.match)):'new')+'</span></div>';}).join('');
+      $('#bulkResult').innerHTML='<div class="okbox">Staged <b>'+r.total+'</b> · matched '+r.matched+' · new '+r.new+(r.errors?(' · errors '+r.errors):'')+'</div>'+pv;
+      if(r.total>0)$('#bulkCommit').style.display='inline-block';
+      loadList();
+    });
+  };
+  $('#bulkCommit').onclick=function(){
+    var b=this;b.disabled=true;b.textContent='Committing…';
+    jpost('{{ route('app.selfonboard.bulk.commit') }}',{}).then(function(r){
+      b.disabled=false;b.textContent='Commit → create/link';
+      if(!r.ok){toast(r.error||'Commit failed');return;}
+      $('#bulkResult').innerHTML='<div class="okbox">✔ Created '+r.created+' new · updated '+r.updated+' existing employees.</div>';
+      toast('Bulk committed');loadList();
+    });
+  };
 })();
 </script>
 </body></html>
