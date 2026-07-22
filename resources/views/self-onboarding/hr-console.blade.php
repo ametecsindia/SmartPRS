@@ -17,7 +17,9 @@
   .mark{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#ea580c);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800}
   .topbar b{font-weight:800} .topbar b span{color:var(--accent)}
   .topbar .t{font-size:13px;color:rgba(255,255,255,.65);font-family:'DM Sans',sans-serif}
-  .topbar a{margin-left:auto;color:rgba(255,255,255,.8);font-size:12px;text-decoration:none;border:1px solid rgba(255,255,255,.2);padding:6px 12px;border-radius:8px}
+  .topbar .sp{margin-left:auto}
+  .topbar a{color:rgba(255,255,255,.8);font-size:12px;text-decoration:none;border:1px solid rgba(255,255,255,.2);padding:6px 12px;border-radius:8px}
+  .invite{background:linear-gradient(135deg,var(--accent),#ea580c);color:#fff;border:none;font-weight:700;font-size:12.5px;padding:8px 14px;border-radius:8px;cursor:pointer;font-family:inherit}
   .layout{display:flex;gap:16px;max-width:1180px;margin:16px auto;padding:0 14px;align-items:flex-start}
   .list{width:340px;flex-shrink:0}
   .detail{flex:1;min-height:200px}
@@ -47,19 +49,41 @@
   .btn.primary{background:linear-gradient(135deg,var(--accent),#ea580c);color:#fff}
   .btn.green{background:linear-gradient(135deg,#10b981,#059669);color:#fff}
   .btn.ghost{background:#fff;color:var(--text2);border:1.5px solid var(--border)}
-  .corr{padding:14px 18px;border-top:1px solid var(--border);display:none}
-  .corr.on{display:block}
-  textarea{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px}
-  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--navy);color:#fff;padding:11px 18px;border-radius:10px;font-size:13px;opacity:0;transition:opacity .2s;z-index:50}
+  .corr{padding:14px 18px;border-top:1px solid var(--border);display:none} .corr.on{display:block}
+  textarea,input{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px}
+  label{display:block;font-size:11px;font-weight:700;color:var(--text2);margin:10px 0 5px;text-transform:uppercase;letter-spacing:.4px}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--navy);color:#fff;padding:11px 18px;border-radius:10px;font-size:13px;opacity:0;transition:opacity .2s;z-index:60}
   .toast.show{opacity:1}
+  .mov{position:fixed;inset:0;background:rgba(12,25,41,.5);display:none;align-items:center;justify-content:center;z-index:70;padding:16px}
+  .mov.on{display:flex}
+  .modal{background:#fff;border-radius:16px;width:100%;max-width:420px;padding:22px 22px 18px}
+  .modal h2{margin:0 0 4px;font-size:18px} .modal .s{color:var(--text2);font-size:13px;font-family:'DM Sans',sans-serif;margin:0 0 8px}
+  .modal .rr{display:flex;gap:10px} .modal .rr>div{flex:1}
+  .okbox{background:#eafaf0;border:1px solid #bfead0;border-radius:10px;padding:10px 12px;font-size:12.5px;margin-top:10px;word-break:break-all}
 </style>
 </head>
 <body>
-<div class="topbar"><div class="mark">S</div><b>Smart<span>PRS</span></b><span class="t">Self-Onboarding · Verification Console</span><a href="{{ url('/app') }}">← Back to app</a></div>
+<div class="topbar"><div class="mark">S</div><b>Smart<span>PRS</span></b><span class="t">Self-Onboarding · Verification Console</span>
+  <span class="sp"></span><button class="invite" id="inviteBtn">+ Invite candidate</button><a href="{{ url('/app') }}">← Back to app</a></div>
 <div class="layout">
   <div class="list"><div class="card" id="listCard"><div class="empty">Loading…</div></div></div>
-  <div class="detail"><div class="card" id="detailCard"><div class="empty">Select a submission on the left to review.</div></div></div>
+  <div class="detail"><div class="card" id="detailCard"><div class="empty">Select a submission on the left to review, or invite someone to onboard.</div></div></div>
 </div>
+
+<div class="mov" id="inviteMov"><div class="modal">
+  <h2>Invite to Self-Onboarding</h2>
+  <p class="s">Issue a Temp-EMP ID and send the onboarding link by email/WhatsApp.</p>
+  <label>Full name</label><input id="ivName" placeholder="Candidate / employee name">
+  <div class="rr"><div><label>Email</label><input id="ivEmail" placeholder="name@email.com"></div>
+  <div><label>Mobile / WhatsApp</label><input id="ivMobile" placeholder="+91…"></div></div>
+  <label>Type</label>
+  <select id="ivMode" style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px">
+    <option value="new">New candidate</option><option value="existing">Existing employee</option>
+  </select>
+  <div id="ivResult"></div>
+  <div style="display:flex;gap:10px;margin-top:14px"><button class="btn primary" id="ivSend">Send invite</button><button class="btn ghost" id="ivCancel">Close</button></div>
+</div></div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -67,16 +91,16 @@
   var CSRF=document.querySelector('meta[name=csrf-token]').content;
   var curId=null;
   function $(s,r){return (r||document).querySelector(s);}
-  function toast(m){var t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(function(){t.classList.remove('show');},2600);}
+  function toast(m){var t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(function(){t.classList.remove('show');},2800);}
   function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
-  function pill(s){var m={submitted:['p-sub','Pending verify'],correction:['p-cor','Correction sent'],verified:['p-ver','Verified'],approved:['p-app','Approved']};var x=m[s]||['p-sub',s];return '<span class="pill '+x[0]+'">'+x[1]+'</span>';}
+  function pill(s){var m={submitted:['p-sub','Pending verify'],correction:['p-cor','Correction sent'],verified:['p-ver','Verified'],approved:['p-app','Approved'],link_sent:['p-sub','Invited'],opened:['p-sub','Opened'],in_progress:['p-sub','In progress'],verifying:['p-sub','Verifying']};var x=m[s]||['p-sub',s];return '<span class="pill '+x[0]+'">'+x[1]+'</span>';}
   function api(path,opt){opt=opt||{};opt.headers=Object.assign({'X-CSRF-TOKEN':CSRF,'X-Requested-With':'XMLHttpRequest'},opt.headers||{});return fetch(path,opt).then(function(r){return r.json().catch(function(){return{ok:false,error:'Server error'};});});}
 
   function loadList(){
     api('{{ route('app.selfonboard.list') }}').then(function(r){
       var host=$('#listCard');
       if(!r.ok){host.innerHTML='<div class="empty">'+(r.error||'Could not load')+'</div>';return;}
-      if(!r.rows.length){host.innerHTML='<div class="empty">No submissions yet.</div>';return;}
+      if(!r.rows.length){host.innerHTML='<div class="empty">No submissions yet. Use “+ Invite candidate”.</div>';return;}
       host.innerHTML=r.rows.map(function(x){
         return '<div class="row" data-id="'+x.id+'"><div class="nm">'+esc(x.name||'—')+' '+pill(x.status)+'</div>'+
           '<div class="meta"><span>'+esc(x.temp_emp_code)+'</span><span>E '+(x.email_verified?'✔':'—')+' · M '+(x.mobile_verified?'✔':'—')+'</span><span>'+x.docs+' docs</span><span>'+(x.selfie?'selfie ✔':'no selfie')+'</span></div></div>';
@@ -89,10 +113,7 @@
   function select(id){
     curId=id;
     Array.prototype.forEach.call(document.querySelectorAll('.list .row'),function(el){el.classList.toggle('on',el.getAttribute('data-id')===id);});
-    api('/app/self-onboarding/'+id).then(function(r){
-      if(!r.ok){toast(r.error||'Load failed');return;}
-      renderDetail(r.rec);
-    });
+    api('/app/self-onboarding/'+id).then(function(r){ if(!r.ok){toast(r.error||'Load failed');return;} renderDetail(r.rec); });
   }
 
   function kvBlock(title,obj,map){
@@ -118,7 +139,7 @@
         kvBlock('Bank',d.bank,[['acc_name','A/c name'],['acc_no','A/c number'],['ifsc','IFSC'],['bank_name','Bank']])+
       '</div><div class="col" style="max-width:200px"><h3>Selfie</h3>'+selfie+'<h3>Documents</h3>'+docs+'</div></div>'+
       '<div class="actions"><button class="btn ghost" id="askCorr">Request Correction</button><button class="btn green" id="doVerify">Mark Verified</button></div>'+
-      '<div class="corr" id="corrBox"><h3>Items to correct (one per line)</h3><textarea id="corrItems" rows="3" placeholder="e.g. Education certificate is unreadable&#10;PAN does not match"></textarea>'+
+      '<div class="corr" id="corrBox"><h3>Items to correct (one per line)</h3><textarea id="corrItems" rows="3" placeholder="e.g. Education certificate is unreadable"></textarea>'+
         '<h3 style="margin-top:10px">Note (optional)</h3><textarea id="corrNote" rows="2"></textarea>'+
         '<div style="margin-top:10px;display:flex;gap:10px"><button class="btn primary" id="sendCorr">Send &amp; notify candidate</button><button class="btn ghost" id="cancelCorr">Cancel</button></div></div>';
 
@@ -131,18 +152,32 @@
       if(!items.length){toast('Add at least one item');return;}
       this.disabled=true;
       api('/app/self-onboarding/'+rec.id+'/correction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:items,note:$('#corrNote').value})}).then(function(r){
-        if(!r.ok){toast(r.error||'Failed');return;}
-        toast('Correction sent to candidate');loadList();select(rec.id);
+        if(!r.ok){toast(r.error||'Failed');return;} toast('Correction sent to candidate');loadList();select(rec.id);
       });
     };
     $('#doVerify').onclick=function(){
       this.disabled=true;
       api('/app/self-onboarding/'+rec.id+'/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(r){
-        if(!r.ok){toast(r.error||'Failed');return;}
-        toast('Marked verified');loadList();select(rec.id);
+        if(!r.ok){toast(r.error||'Failed');return;} toast('Marked verified');loadList();select(rec.id);
       });
     };
   }
+
+  // ----- Invite -----
+  $('#inviteBtn').onclick=function(){$('#ivResult').innerHTML='';$('#inviteMov').classList.add('on');};
+  $('#ivCancel').onclick=function(){$('#inviteMov').classList.remove('on');};
+  $('#ivSend').onclick=function(){
+    var name=$('#ivName').value.trim(),email=$('#ivEmail').value.trim(),mobile=$('#ivMobile').value.trim();
+    if(!name||(!email&&!mobile)){toast('Enter a name and an email or mobile');return;}
+    var b=this;b.disabled=true;b.textContent='Sending…';
+    api('{{ route('app.selfonboard.invite') }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,email:email,mobile:mobile,mode:$('#ivMode').value})}).then(function(r){
+      b.disabled=false;b.textContent='Send invite';
+      if(!r.ok){toast(r.error||'Could not invite');return;}
+      $('#ivResult').innerHTML='<div class="okbox">✔ Invited <b>'+esc(name)+'</b> · '+esc(r.temp_emp_code)+'<br>Link: <a href="'+r.link+'" target="_blank">'+r.link+'</a></div>';
+      $('#ivName').value='';$('#ivEmail').value='';$('#ivMobile').value='';
+      toast('Invite sent');loadList();
+    });
+  };
 
   loadList();
 })();

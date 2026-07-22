@@ -613,4 +613,28 @@ class SelfOnboardingController extends Controller
 
         return response()->json(['ok' => true]);
     }
+
+    /** Manual invite: HR/Admin issues a Temp-EMP ID and sends the self-onboarding link. */
+    public function hrInvite(Request $r)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $name = trim((string) $r->input('name'));
+        $email = trim((string) $r->input('email'));
+        $mobile = trim((string) $r->input('mobile'));
+        if ($name === '' || ($email === '' && $mobile === '')) {
+            return response()->json(['ok' => false, 'error' => 'Enter a name and at least an email or mobile.'], 422);
+        }
+        $u = $r->user();
+        $rec = self::issue([
+            'tenant_id' => $u->tenant_id ?? null,
+            'company_id' => $u->company_id ?? null,
+            'name' => $name, 'email' => $email ?: null, 'mobile' => $mobile ?: null,
+            'mode' => in_array($r->input('mode'), ['new', 'existing'], true) ? $r->input('mode') : 'new',
+        ]);
+        self::sendLink($rec);
+
+        return response()->json(['ok' => true, 'temp_emp_code' => $rec->temp_emp_code, 'link' => route('selfonboard.start', $rec->token)]);
+    }
 }

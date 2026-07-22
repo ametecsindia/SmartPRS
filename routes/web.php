@@ -585,3 +585,4 @@ Route::post('/self-onboard/{token}/document', [\App\Http\Controllers\SelfOnboard
 Route::post('/self-onboard/{token}/submit', [\App\Http\Controllers\SelfOnboardingController::class, 'submit'])->name('selfonboard.submit');
 Route::get('/self-onboard/{token}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'selfieImg'])->name('selfonboard.selfie.img');
 
+Route::post('/app/self-onboarding/invite', [\App\Http\Controllers\SelfOnboardingController::class, 'hrInvite'])->middleware('auth')->name('app.selfonboard.invite');
