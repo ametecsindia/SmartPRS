@@ -175,7 +175,7 @@ class SelfOnboardingController extends Controller
         $docs = DB::table('self_onboarding_docs')->where('self_onboarding_id', $rec->id)->pluck('kind')->all();
 
         return view('self-onboarding.portal', [
-            'rec' => $rec,
+            'rec' => $rec, 'logoUrl' => ConfigController::appLogoUrlFor($rec->tenant_id),
             'data' => json_decode($rec->data ?: '{}', true) ?: [],
             'docKinds' => $docs,
             'hasSelfie' => (bool) $rec->selfie_path,
@@ -469,7 +469,7 @@ class SelfOnboardingController extends Controller
             return $d;
         }
 
-        return view('self-onboarding.hr-console');
+        return view('self-onboarding.hr-console', ['logoUrl' => ConfigController::appLogoUrlFor($r->user()->tenant_id ?? null)]);
     }
 
     /** JSON: submissions awaiting / in verification. */

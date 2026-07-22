@@ -59,7 +59,7 @@
 </style>
 </head>
 <body>
-<div class="topbar"><img src="/images/logo-on-dark.svg" alt="SmartPRS" style="height:26px"><span class="t">Self-Onboarding · Verification Console</span>
+<div class="topbar"><img src="{{ $logoUrl ?? url('/images/logo.png') }}" alt="Company logo" style="height:30px;max-width:170px;object-fit:contain"><span class="t">Self-Onboarding · Verification Console</span>
   <span class="sp"></span><button class="invite" id="inviteBtn">+ Invite candidate</button><a href="{{ url('/app') }}">← Back to app</a></div>
 <div class="layout">
   <div class="list"><div class="card" id="listCard"><div class="empty">Loading…</div></div></div>

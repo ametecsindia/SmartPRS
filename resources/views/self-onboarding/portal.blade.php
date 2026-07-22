@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-<div class="topbar"><img src="/images/logo-on-dark.svg" alt="SmartPRS" style="height:26px"><span class="ref" id="refCode"></span></div>
+<div class="topbar"><img src="{{ $logoUrl ?? url('/images/logo.png') }}" alt="Company logo" style="height:30px;max-width:170px;object-fit:contain"><span class="ref" id="refCode"></span></div>
 <div class="wrap">
   <div class="card">
     <div class="prog"><i id="bar"></i></div>
