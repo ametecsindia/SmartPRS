@@ -34,7 +34,8 @@ class StatutoryController extends Controller
                 ->whereNull('deleted_at')
                 ->orderBy('emp_code')
                 ->get(array_values(array_filter(['id', 'emp_code', 'name', 'ctc', 'doj',
-                    Schema::hasColumn('employees', 'pt_state') ? 'pt_state' : null]))); // rev180 — schema-safe on fresh DBs
+                    Schema::hasColumn('employees', 'pt_state') ? 'pt_state' : null,
+                    Schema::hasColumn('employees', 'gender') ? 'gender' : null]))); // rev180 — schema-safe on fresh DBs; gender for MH female PT exemption
 
             if ($type === 'gratuity') {
                 $cols = ['Code', 'Name', 'DOJ', 'Years', 'Monthly Basic', 'Eligible', 'Gratuity'];
@@ -71,7 +72,7 @@ class StatutoryController extends Controller
                 $month = now()->format('Y-m');
                 foreach ($emps as $e) {
                     $s = AppDataController::computeSlip((float) $e->ctc, $rates);
-                    $mpt = AppDataController::ptForGross((float) $s['gross'], $rates, (string) ($e->pt_state ?? ''), $month);
+                    $mpt = AppDataController::ptForGross((float) $s['gross'], $rates, (string) ($e->pt_state ?? ''), $month, (string) ($e->gender ?? ''));
                     // Annual: Maharashtra's February ₹300 makes the year ₹2,500 for the top slab.
                     $annual = $mpt * 12;
                     if (stripos((string) ($e->pt_state ?? ''), 'maharashtra') !== false && $mpt >= 200) {

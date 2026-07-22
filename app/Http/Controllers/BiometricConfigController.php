@@ -4,7 +4,6 @@ namespace App\Http\Controllers;
 
 use App\Services\ETimeOfficeService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -14,6 +13,12 @@ use Illuminate\Support\Facades\Schema;
  * Stores the cloud-attendance API connection (eTimeOffice) per tenant in
  * biometric_configs and exposes load / save / test / sync to the SPA. Admin/HR
  * only. The password is never returned to the browser (only a hasPassword flag).
+ *
+ * F3 (multiple devices) — a tenant may now hold MANY device rows, each mapped to
+ * a Branch (from the Branches master) plus an optional free-text location label
+ * (e.g. "Main Gate"). list() returns them all; save() upserts by id; delete()
+ * removes one; test()/sync() act on a specific device (by id). The hourly
+ * scheduler already syncs every enabled row (ETimeOfficeService::allConfigs()).
  */
 class BiometricConfigController extends Controller
 {
@@ -43,22 +48,41 @@ class BiometricConfigController extends Controller
                 $t->timestamps();
             });
         }
-        // rev173e — In/Out Machine IDs: sites with a separate entry device and
-        // exit device. A punch from the In machine = IN, from the Out machine =
-        // OUT — overriding the feed's (often blank/wrong) INOUT flag.
-        foreach (['in_machine_id', 'out_machine_id'] as $c) {
+        // Additive columns for existing installs (In/Out machine IDs + F3 label/branch).
+        $add = [
+            'in_machine_id' => fn ($t) => $t->string('in_machine_id', 40)->nullable(),
+            'out_machine_id' => fn ($t) => $t->string('out_machine_id', 40)->nullable(),
+            'label' => fn ($t) => $t->string('label', 120)->nullable(),          // F3 — device / location label
+            'branch' => fn ($t) => $t->string('branch', 120)->nullable(),        // F3 — mapped Branch (name)
+        ];
+        foreach ($add as $c => $fn) {
             if (! Schema::hasColumn('biometric_configs', $c)) {
                 try {
-                    Schema::table('biometric_configs', function ($t) use ($c) {
-                        $t->string($c, 40)->nullable();
+                    Schema::table('biometric_configs', function ($t) use ($fn) {
+                        $fn($t);
                     });
                 } catch (\Throwable $e) {
-                    // best-effort; save() will surface a real failure
+                    // best-effort; save() surfaces a real failure
                 }
             }
         }
     }
 
+    /** A single config row by id, tenant-scoped. */
+    private function rowById(Request $request, ?int $id)
+    {
+        if (! $id) {
+            return null;
+        }
+        self::ensureTable();
+        $tid = self::tid($request);
+        $q = DB::table('biometric_configs')->where('id', $id);
+        $tid ? $q->where('tenant_id', $tid) : $q->whereNull('tenant_id');
+
+        return $q->first();
+    }
+
+    /** The latest config row for this tenant (back-compat for single-device callers). */
     private function row(Request $request)
     {
         self::ensureTable();
@@ -69,17 +93,12 @@ class BiometricConfigController extends Controller
         return $q->orderByDesc('id')->first();
     }
 
-    /** GET /app/biometric-config */
-    public function show(Request $request)
+    private function present($r): array
     {
-        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
-            return $deny;
-        }
-        $r = $this->row($request);
-        // rev169 — clients ship BLANK: return only SAVED values (empty when no
-        // config exists yet). Defaults appear as placeholder hints in the UI,
-        // never as pre-filled values, and no Ametecs data is ever baked in.
-        $config = [
+        return [
+            'id' => $r?->id,
+            'label' => $r?->label ?? '',
+            'branch' => $r?->branch ?? '',
             'provider' => $r?->provider ?? '',
             'enabled' => (bool) ($r?->enabled ?? false),
             'base_url' => $r?->base_url ?? '',
@@ -88,20 +107,66 @@ class BiometricConfigController extends Controller
             'username' => $r?->username ?? '',
             'empcode' => $r?->empcode ?? '',
             'emp_prefix' => $r?->emp_prefix ?? '',
-            'in_machine_id' => $r?->in_machine_id ?? '',    // rev173e
-            'out_machine_id' => $r?->out_machine_id ?? '',  // rev173e
-        ];
-
-        return response()->json([
-            'ok' => true,
-            'config' => $config,
+            'in_machine_id' => $r?->in_machine_id ?? '',
+            'out_machine_id' => $r?->out_machine_id ?? '',
             'hasPassword' => ! empty($r?->password),
             'lastSyncAt' => $r?->last_sync_at ?? null,
             'lastStatus' => $r?->last_status ?? null,
+        ];
+    }
+
+    /** GET /app/biometric-config/list — every device for this tenant (F3). */
+    public function list(Request $request)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        self::ensureTable();
+        $tid = self::tid($request);
+        $q = DB::table('biometric_configs');
+        $tid ? $q->where('tenant_id', $tid) : $q->whereNull('tenant_id');
+        $rows = $q->orderBy('id')->get();
+
+        $branches = [];
+        try {
+            $bq = DB::table('branches');
+            if ($tid && Schema::hasColumn('branches', 'tenant_id')) {
+                $bq->where('tenant_id', $tid);
+            }
+            if (Schema::hasColumn('branches', 'deleted_at')) {
+                $bq->whereNull('deleted_at');
+            }
+            $branches = $bq->orderBy('name')->pluck('name')->all();
+        } catch (\Throwable $e) {
+            // branches master optional
+        }
+
+        return response()->json([
+            'ok' => true,
+            'devices' => $rows->map(fn ($r) => $this->present($r))->values(),
+            'branches' => $branches,
         ]);
     }
 
-    /** POST /app/biometric-config — save (password only updated when provided). */
+    /** GET /app/biometric-config — the latest single config (back-compat). */
+    public function show(Request $request)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        $r = $this->row($request);
+        $p = $this->present($r);
+
+        return response()->json([
+            'ok' => true,
+            'config' => $p,
+            'hasPassword' => $p['hasPassword'],
+            'lastSyncAt' => $p['lastSyncAt'],
+            'lastStatus' => $p['lastStatus'],
+        ]);
+    }
+
+    /** POST /app/biometric-config — create OR update one device (by id). */
     public function save(Request $request)
     {
         if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
@@ -109,10 +174,13 @@ class BiometricConfigController extends Controller
         }
         self::ensureTable();
         $tid = self::tid($request);
-        $r = $this->row($request);
+        $id = $request->input('id') ? (int) $request->input('id') : null;
+        $r = $id ? $this->rowById($request, $id) : null;
 
         $data = [
             'tenant_id' => $tid,
+            'label' => trim((string) $request->input('label', '')) ?: null,          // F3
+            'branch' => trim((string) $request->input('branch', '')) ?: null,        // F3
             'provider' => trim((string) $request->input('provider', 'etimeoffice')) ?: 'etimeoffice',
             'enabled' => $request->boolean('enabled'),
             'base_url' => trim((string) $request->input('base_url', '')) ?: 'https://api.etimeoffice.com/api',
@@ -121,8 +189,8 @@ class BiometricConfigController extends Controller
             'username' => trim((string) $request->input('username', '')) ?: null,
             'empcode' => trim((string) $request->input('empcode', '')) ?: 'ALL',
             'emp_prefix' => trim((string) $request->input('emp_prefix', '')) ?: null,
-            'in_machine_id' => trim((string) $request->input('in_machine_id', '')) ?: null,    // rev173e
-            'out_machine_id' => trim((string) $request->input('out_machine_id', '')) ?: null,  // rev173e
+            'in_machine_id' => trim((string) $request->input('in_machine_id', '')) ?: null,
+            'out_machine_id' => trim((string) $request->input('out_machine_id', '')) ?: null,
             'updated_at' => now(),
         ];
         $pwd = (string) $request->input('password', '');
@@ -132,18 +200,35 @@ class BiometricConfigController extends Controller
 
         if ($r) {
             DB::table('biometric_configs')->where('id', $r->id)->update($data);
+            $savedId = $r->id;
         } else {
             $data['created_at'] = now();
-            DB::table('biometric_configs')->insert($data);
+            $savedId = DB::table('biometric_configs')->insertGetId($data);
         }
+
+        return response()->json(['ok' => true, 'id' => $savedId]);
+    }
+
+    /** POST /app/biometric-config/{id}/delete — remove one device (F3). */
+    public function delete(Request $request, int $id)
+    {
+        if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
+            return $deny;
+        }
+        $r = $this->rowById($request, $id);
+        if (! $r) {
+            return response()->json(['ok' => false, 'error' => 'Device not found.'], 404);
+        }
+        DB::table('biometric_configs')->where('id', $r->id)->delete();
 
         return response()->json(['ok' => true]);
     }
 
-    /** Build an effective config from posted values, falling back to the saved password. */
+    /** Build an effective config from posted values + a specific saved row's password. */
     private function effectiveConfig(Request $request): array
     {
-        $r = $this->row($request);
+        $id = $request->input('id') ? (int) $request->input('id') : null;
+        $r = $id ? $this->rowById($request, $id) : $this->row($request);
         $savedPwd = null;
         if ($r && ! empty($r->password)) {
             try {
@@ -164,8 +249,8 @@ class BiometricConfigController extends Controller
             'password' => $posted !== '' ? $posted : $savedPwd,
             'empcode' => trim((string) $request->input('empcode', $r->empcode ?? 'ALL')) ?: 'ALL',
             'emp_prefix' => trim((string) $request->input('emp_prefix', $r->emp_prefix ?? '')),
-            'in_machine_id' => trim((string) $request->input('in_machine_id', $r->in_machine_id ?? '')),    // rev173e
-            'out_machine_id' => trim((string) $request->input('out_machine_id', $r->out_machine_id ?? '')),  // rev173e
+            'in_machine_id' => trim((string) $request->input('in_machine_id', $r->in_machine_id ?? '')),
+            'out_machine_id' => trim((string) $request->input('out_machine_id', $r->out_machine_id ?? '')),
             'tenant_id' => self::tid($request),
         ];
     }
@@ -198,7 +283,7 @@ class BiometricConfigController extends Controller
         return response()->json(['ok' => true, 'parsed' => count($parsed), 'preview' => $preview]);
     }
 
-    /** POST /app/biometric-config/sync — fetch + parse + import now. */
+    /** POST /app/biometric-config/sync — fetch + parse + import now (one device). */
     public function sync(Request $request)
     {
         if ($deny = ApprovalService::denyUnlessRole($request, ['admin', 'hr_manager'])) {
@@ -219,7 +304,8 @@ class BiometricConfigController extends Controller
         $r = ETimeOfficeService::import($punches, $cfg);
 
         $status = 'Imported '.$r['imported'].' punch(es) for '.$r['matched'].' row(s)';
-        $row = $this->row($request);
+        $id = $request->input('id') ? (int) $request->input('id') : null;
+        $row = $id ? $this->rowById($request, $id) : $this->row($request);
         if ($row) {
             DB::table('biometric_configs')->where('id', $row->id)->update([
                 'last_sync_at' => now(), 'last_status' => $status, 'last_count' => $r['imported'], 'updated_at' => now(),

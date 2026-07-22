@@ -36,7 +36,7 @@ class AppDataController extends Controller
         if (! Schema::hasTable('employees')) {
             return;
         }
-        $cols = ['department', 'designation', 'branch', 'team', 'reporting_manager', 'team_leader', 'father', 'spouse', 'blood_group', 'id_marks', 'gender', 'address', 'pt_state', 'shift', 'employment_stage'];
+        $cols = ['department', 'designation', 'branch', 'team', 'reporting_manager', 'team_leader', 'father', 'spouse', 'blood_group', 'id_marks', 'gender', 'address', 'pt_state', 'shift', 'employment_stage', 'dra_declared', 'pcc_declared'];
         $missing = array_values(array_filter($cols, fn ($c) => ! Schema::hasColumn('employees', $c)));
         if (! $missing) {
             return;
@@ -64,6 +64,18 @@ class AppDataController extends Controller
         }
 
         return $val;
+    }
+
+    /** F5 — normalise a self-declared Yes/No compliance answer. Blank → null so
+     *  editing a pre-existing employee is never forced to answer. */
+    private static function yesNo($v): ?string
+    {
+        $s = strtolower(trim((string) $v));
+        if ($s === '') {
+            return null;
+        }
+
+        return in_array($s, ['yes', 'y', 'true', '1'], true) ? 'Yes' : 'No';
     }
 
     /** Keep only the array keys that are real columns on $table (schema-tolerant insert). */
@@ -209,6 +221,8 @@ class AppDataController extends Controller
                 'salaryType' => self::SALARY_TYPE[$col('salary_type')] ?? 'Salary',
                 'commPct' => (float) ($col('comm_pct') ?? 0),
                 'shift' => $col('shift') ?? '',   // rev173 — default Working Shift (name)
+                'draDeclared' => $col('dra_declared') ?? '',   // F5 — self-onboarding DRA (Yes/No)
+                'pccDeclared' => $col('pcc_declared') ?? '',   // F5 — self-onboarding PCC (Yes/No)
             ];
         })->values();
 
@@ -1305,9 +1319,23 @@ class AppDataController extends Controller
      *      Maharashtra February = ₹300 for the top slab).
      *   2. No/unknown state → the tenant's pt_slabs override, else the Telangana default.
      */
-    public static function ptForGross(float $gross, array $r, ?string $state = null, ?string $month = null): float
+    public static function ptForGross(float $gross, array $r, ?string $state = null, ?string $month = null, ?string $gender = null): float
     {
         $st = strtolower(trim((string) $state));
+        // Gender-based PT exemption. Under the Maharashtra State Tax on Professions
+        // Act, women drawing a monthly gross up to ₹25,000 are exempt (PT = ₹0);
+        // above that the normal slab applies. Configurable via pt_female_exempt
+        // (default ON) and pt_female_exempt_upto (default ₹25,000). Applied BEFORE
+        // the slab lookup so it overrides the state slab for eligible employees.
+        $femaleExempt = ! array_key_exists('pt_female_exempt', $r) || (int) ($r['pt_female_exempt'] ?? 1) === 1;
+        if ($femaleExempt) {
+            $g = strtolower(trim((string) $gender));
+            $isFemale = in_array($g, ['female', 'f', 'woman', 'women'], true);
+            $femUpto = (float) ($r['pt_female_exempt_upto'] ?? 25000);
+            if ($isFemale && $st !== '' && str_contains($st, 'maharashtra') && $gross <= $femUpto) {
+                return 0.0;
+            }
+        }
         if ($st !== '') {
             foreach (self::PT_FREE_STATES as $free) {
                 if (str_contains($st, $free)) {
@@ -1433,7 +1461,7 @@ class AppDataController extends Controller
         $conveyance = (! empty($r['conveyance_enabled']) && $convRate > 0) ? round($pfBase * $convRate / 100, 2) : 0.0;
 
         return [
-            'pf' => $pfEmployee, 'esi' => $esiEmployee, 'pt' => self::ptForGross($gross, $r, $ctx['pt_state'] ?? null, $ctx['month'] ?? null),
+            'pf' => $pfEmployee, 'esi' => $esiEmployee, 'pt' => self::ptForGross($gross, $r, $ctx['pt_state'] ?? null, $ctx['month'] ?? null, $ctx['gender'] ?? null),
             'conveyance' => $conveyance,
             'pf_wage' => round($pfBase, 2),
             'pf_employer' => $pfEmployer, 'pf_eps' => $eps, 'pf_epf_employer' => $epfEmployer, 'pf_edli' => $edli,
@@ -2131,6 +2159,9 @@ class AppDataController extends Controller
             'id_marks' => $e['idMarks'] ?? null,
             'gender' => $e['gender'] ?? null,
             'employment_stage' => $e['employment_stage'] ?? ($e['employmentStage'] ?? null),
+            // F5 — self-onboarding compliance self-declaration (Yes/No), normalised.
+            'dra_declared' => self::yesNo($e['draDeclared'] ?? null),
+            'pcc_declared' => self::yesNo($e['pccDeclared'] ?? null),
             'status' => (strtolower(trim((string) ($e['status'] ?? 'active'))) === 'inactive') ? 'inactive' : 'active',   // rev183 — Active/Inactive from the form
             'address' => $e['addr'] ?? ($e['address'] ?? null),
             'dob' => $e['dob'] ?? null,

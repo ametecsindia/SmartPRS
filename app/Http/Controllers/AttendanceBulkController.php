@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\LateArrivalService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -323,6 +324,15 @@ class AttendanceBulkController extends Controller
                     DB::table('attendance_logs')->insert($chunk);
                 }
                 $written = count($logs);
+                // F4 — immediate late-arrival email for the approved IN punches
+                // (fail-soft, OFF unless enabled; only today's/yesterday's dates).
+                $touched = [];
+                foreach ($rows as $r) {
+                    if ($r->in_at && $r->emp_code && $r->log_date) {
+                        $touched[$r->emp_code][$r->log_date] = true;
+                    }
+                }
+                LateArrivalService::notifyTouched($tid, $touched);
             }
 
             DB::table('attendance_pending')->where('batch', $batch)->where('status', 'pending')

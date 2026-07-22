@@ -126,6 +126,8 @@
       <div><label>Aadhaar / National ID</label><input data-field="aadhaar"></div></div>
       <div class="two"><div><label>ESIC no. (if any)</label><input data-field="esic"></div>
       <div><label>Category</label><select data-field="category"><option value="">Select</option><option>General</option><option>OBC</option><option>SC</option><option>ST</option><option>EWS</option></select></div></div>
+      <div class="two"><div><label>DRA Status — valid DRA certificate? <span style="color:#c0392b">*</span></label><select data-field="dra_status"><option value="">Select</option><option>Yes</option><option>No</option></select></div>
+      <div><label>PCC Status — Police Clearance obtained? <span style="color:#c0392b">*</span></label><select data-field="pcc_status"><option value="">Select</option><option>Yes</option><option>No</option></select></div></div>
       <div class="nav"><button class="btn ghost" data-back>Back</button><button class="btn primary" data-save data-section="statutory">Save &amp; Next</button></div>
     </section>
 
@@ -257,6 +259,7 @@ window.SO = {
   $all('[data-save]').forEach(function(b){b.onclick=function(){
     var sec=b.getAttribute('data-section');
     var d={};$all('[data-step="'+sec+'"] [data-field]').forEach(function(el){d[el.getAttribute('data-field')]=el.value.trim();});
+    if(sec==='statutory'&&(!d.dra_status||!d.pcc_status)){toast('Please select DRA Status and PCC Status (Yes / No) — both are required.');return;}
     b.disabled=true;
     post('/save',{section:sec,data:d}).then(function(r){b.disabled=false;
       if(!r.ok){toast(r.error||'Could not save');return;}

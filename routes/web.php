@@ -63,6 +63,16 @@ Route::get('/nda/{token}', [App\Http\Controllers\NdaSignController::class, 'show
 Route::post('/nda/{token}/sign', [App\Http\Controllers\NdaSignController::class, 'sign'])->name('nda.sign')
     ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class]);
 
+// Public SELF-ONBOARDING portal (new hire / existing employee, no login — token-secured).
+Route::get('/self-onboard/{token}', [App\Http\Controllers\SelfOnboardingController::class, 'start'])->name('selfonboard.start');
+Route::post('/self-onboard/{token}/otp/send', [App\Http\Controllers\SelfOnboardingController::class, 'otpSend'])->name('selfonboard.otp.send');
+Route::post('/self-onboard/{token}/otp/verify', [App\Http\Controllers\SelfOnboardingController::class, 'otpVerify'])->name('selfonboard.otp.verify');
+Route::post('/self-onboard/{token}/save', [App\Http\Controllers\SelfOnboardingController::class, 'save'])->name('selfonboard.save');
+Route::get('/self-onboard/{token}/selfie', [App\Http\Controllers\SelfOnboardingController::class, 'selfieImg'])->name('selfonboard.selfie.img');
+Route::post('/self-onboard/{token}/selfie', [App\Http\Controllers\SelfOnboardingController::class, 'selfie'])->name('selfonboard.selfie');
+Route::post('/self-onboard/{token}/document', [App\Http\Controllers\SelfOnboardingController::class, 'document'])->name('selfonboard.document');
+Route::post('/self-onboard/{token}/submit', [App\Http\Controllers\SelfOnboardingController::class, 'submit'])->name('selfonboard.submit');
+
 // rev 119: MOBILE APP device gate — public API consumed by the hybrid app
 // BEFORE login (no session/cookie → CSRF-exempt, like the webhooks). Tenant is
 // resolved by host (custom domain) or the workspace slug the app sends.
@@ -259,6 +269,7 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::get('/app/employees/{code}/backup-file', [App\Http\Controllers\AppDataController::class, 'employeeBackupFile'])->name('app.employees.backupfile');
     Route::get('/app/employees/{code}/archive-detail', [App\Http\Controllers\AppDataController::class, 'archiveDetail'])->name('app.employees.archivedetail');
     Route::get('/app/employees/template', [App\Http\Controllers\AppDataController::class, 'employeeTemplate'])->name('app.employees.template');
+    Route::get('/app/employees/export', [App\Http\Controllers\EmployeeExportController::class, 'export'])->name('app.employees.export');   // F6 — full employee export (CSV + XLSX)
     Route::get('/app/payslip/{code}/pdf', [App\Http\Controllers\AppDataController::class, 'payslipPdf'])->name('app.payslip.pdf');
     Route::get('/app/statutory/{type}/pdf', [App\Http\Controllers\AppDataController::class, 'statutoryPdf'])->name('app.statutory.pdf');
     Route::get('/app/kb', [App\Http\Controllers\KbController::class, 'index'])->name('app.kb');
@@ -472,7 +483,9 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/device/{id}/sync', [App\Http\Controllers\DeviceController::class, 'syncById'])->whereNumber('id')->name('app.device.sync');
     // rev157: Biometric Device Setup — frontend-managed cloud-attendance API config (eTimeOffice).
     Route::get('/app/biometric-config', [App\Http\Controllers\BiometricConfigController::class, 'show'])->name('app.bioconfig');
+    Route::get('/app/biometric-config/list', [App\Http\Controllers\BiometricConfigController::class, 'list'])->name('app.bioconfig.list');   // F3 — all devices
     Route::post('/app/biometric-config', [App\Http\Controllers\BiometricConfigController::class, 'save'])->name('app.bioconfig.save');
+    Route::post('/app/biometric-config/{id}/delete', [App\Http\Controllers\BiometricConfigController::class, 'delete'])->whereNumber('id')->name('app.bioconfig.delete');   // F3
     Route::post('/app/biometric-config/test', [App\Http\Controllers\BiometricConfigController::class, 'test'])->name('app.bioconfig.test');
     Route::post('/app/biometric-config/sync', [App\Http\Controllers\BiometricConfigController::class, 'sync'])->name('app.bioconfig.sync');
     // rev161: Employee Document Tracker — real file uploads (list / upload / download / delete).
@@ -555,16 +568,23 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/mobile-devices/{id}/reject', [App\Http\Controllers\MobileDeviceController::class, 'reject'])->name('app.mobiledevices.reject');
     Route::post('/app/mobile-devices/{id}/revoke', [App\Http\Controllers\MobileDeviceController::class, 'revoke'])->name('app.mobiledevices.revoke');
 
-// HR VERIFICATION CONSOLE for self-onboarding (authenticated; role-gated in controller).
-Route::middleware(['auth'])->group(function () {
-    Route::get('/app/self-onboarding', [\App\Http\Controllers\SelfOnboardingController::class, 'hrConsole'])->name('app.selfonboard.console');
-    Route::get('/app/self-onboarding/list', [\App\Http\Controllers\SelfOnboardingController::class, 'hrList'])->name('app.selfonboard.list');
-    Route::get('/app/self-onboarding/{id}', [\App\Http\Controllers\SelfOnboardingController::class, 'hrShow'])->whereNumber('id');
-    Route::get('/app/self-onboarding/{id}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'hrSelfie'])->whereNumber('id');
-    Route::get('/app/self-onboarding/{id}/doc/{doc}', [\App\Http\Controllers\SelfOnboardingController::class, 'hrDoc'])->whereNumber('id')->whereNumber('doc');
-    Route::post('/app/self-onboarding/{id}/correction', [\App\Http\Controllers\SelfOnboardingController::class, 'hrCorrection'])->whereNumber('id');
-    Route::post('/app/self-onboarding/{id}/verify', [\App\Http\Controllers\SelfOnboardingController::class, 'hrVerify'])->whereNumber('id');
-});
+    // Self-Onboarding — HR verification console (admin/HR; controller self-guards).
+    // Literal paths BEFORE the {id} wildcard; {id} is numeric-constrained.
+    Route::get('/app/self-onboarding', [App\Http\Controllers\SelfOnboardingController::class, 'hrConsole'])->name('app.selfonboard.console');
+    Route::get('/app/self-onboarding/list', [App\Http\Controllers\SelfOnboardingController::class, 'hrList'])->name('app.selfonboard.list');
+    Route::get('/app/self-onboarding/employees', [App\Http\Controllers\SelfOnboardingController::class, 'hrEmployees'])->name('app.selfonboard.employees');
+    Route::get('/app/self-onboarding/bulk-template', [App\Http\Controllers\SelfOnboardingController::class, 'hrBulkTemplate'])->name('app.selfonboard.bulk.template');
+    Route::post('/app/self-onboarding/bulk-upload', [App\Http\Controllers\SelfOnboardingController::class, 'hrBulkUpload'])->name('app.selfonboard.bulk.upload');
+    Route::post('/app/self-onboarding/bulk-commit', [App\Http\Controllers\SelfOnboardingController::class, 'hrBulkCommit'])->name('app.selfonboard.bulk.commit');
+    Route::post('/app/self-onboarding/invite', [App\Http\Controllers\SelfOnboardingController::class, 'hrInvite'])->name('app.selfonboard.invite');
+    Route::post('/app/self-onboarding/invite-existing', [App\Http\Controllers\SelfOnboardingController::class, 'hrInviteExisting'])->name('app.selfonboard.invite.existing');
+    Route::get('/app/self-onboarding/{id}', [App\Http\Controllers\SelfOnboardingController::class, 'hrShow'])->whereNumber('id')->name('app.selfonboard.show');
+    Route::get('/app/self-onboarding/{id}/selfie', [App\Http\Controllers\SelfOnboardingController::class, 'hrSelfie'])->whereNumber('id')->name('app.selfonboard.hrselfie');
+    Route::get('/app/self-onboarding/{id}/doc/{doc}', [App\Http\Controllers\SelfOnboardingController::class, 'hrDoc'])->whereNumber('id')->whereNumber('doc')->name('app.selfonboard.hrdoc');
+    Route::post('/app/self-onboarding/{id}/fields', [App\Http\Controllers\SelfOnboardingController::class, 'hrSetFields'])->whereNumber('id')->name('app.selfonboard.fields');
+    Route::post('/app/self-onboarding/{id}/correction', [App\Http\Controllers\SelfOnboardingController::class, 'hrCorrection'])->whereNumber('id')->name('app.selfonboard.correction');
+    Route::post('/app/self-onboarding/{id}/verify', [App\Http\Controllers\SelfOnboardingController::class, 'hrVerify'])->whereNumber('id')->name('app.selfonboard.verify');
+    Route::post('/app/self-onboarding/{id}/approve', [App\Http\Controllers\SelfOnboardingController::class, 'hrApprove'])->whereNumber('id')->name('app.selfonboard.approve');
 
     Route::get('/app/{screen?}', [AppController::class, 'show'])->name('app');
 
@@ -574,22 +594,3 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/'.$legacy, fn () => redirect('/app'));
     }
 });
-
-// Public candidate/existing-employee SELF-ONBOARDING portal (token-secured, no login).
-Route::get('/self-onboard/{token}', [\App\Http\Controllers\SelfOnboardingController::class, 'start'])->name('selfonboard.start');
-Route::post('/self-onboard/{token}/otp/send', [\App\Http\Controllers\SelfOnboardingController::class, 'otpSend'])->name('selfonboard.otp.send');
-Route::post('/self-onboard/{token}/otp/verify', [\App\Http\Controllers\SelfOnboardingController::class, 'otpVerify'])->name('selfonboard.otp.verify');
-Route::post('/self-onboard/{token}/save', [\App\Http\Controllers\SelfOnboardingController::class, 'save'])->name('selfonboard.save');
-Route::post('/self-onboard/{token}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'selfie'])->name('selfonboard.selfie');
-Route::post('/self-onboard/{token}/document', [\App\Http\Controllers\SelfOnboardingController::class, 'document'])->name('selfonboard.document');
-Route::post('/self-onboard/{token}/submit', [\App\Http\Controllers\SelfOnboardingController::class, 'submit'])->name('selfonboard.submit');
-Route::get('/self-onboard/{token}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'selfieImg'])->name('selfonboard.selfie.img');
-
-Route::post('/app/self-onboarding/invite', [\App\Http\Controllers\SelfOnboardingController::class, 'hrInvite'])->middleware('auth')->name('app.selfonboard.invite');
-Route::post('/app/self-onboarding/{id}/approve', [\App\Http\Controllers\SelfOnboardingController::class, 'hrApprove'])->whereNumber('id')->middleware('auth')->name('app.selfonboard.approve');
-Route::post('/app/self-onboarding/invite-existing', [\App\Http\Controllers\SelfOnboardingController::class, 'hrInviteExisting'])->middleware('auth')->name('app.selfonboard.invite.existing');
-Route::get('/app/self-onboarding-bulk/template', [\App\Http\Controllers\SelfOnboardingController::class, 'hrBulkTemplate'])->middleware('auth')->name('app.selfonboard.bulk.template');
-Route::post('/app/self-onboarding-bulk/upload', [\App\Http\Controllers\SelfOnboardingController::class, 'hrBulkUpload'])->middleware('auth')->name('app.selfonboard.bulk.upload');
-Route::post('/app/self-onboarding-bulk/commit', [\App\Http\Controllers\SelfOnboardingController::class, 'hrBulkCommit'])->middleware('auth')->name('app.selfonboard.bulk.commit');
-Route::get('/app/self-onboarding/employees', [\App\Http\Controllers\SelfOnboardingController::class, 'hrEmployees'])->middleware('auth')->name('app.selfonboard.employees');
-Route::post('/app/self-onboarding/{id}/fields', [\App\Http\Controllers\SelfOnboardingController::class, 'hrSetFields'])->whereNumber('id')->middleware('auth')->name('app.selfonboard.fields');

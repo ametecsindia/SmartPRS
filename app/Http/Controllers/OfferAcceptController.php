@@ -12,10 +12,6 @@ use Illuminate\Support\Facades\Schema;
  * (LetterController::sendAcceptLink), opens this PUBLIC page (no login), reviews
  * the offer, and confirms acceptance — which stamps the letter accepted + time + IP
  * and moves the recruitment candidate to "offer". No auth (token is the secret).
- *
- * rev+: on acceptance we also issue a SELF-ONBOARDING link (Temp-EMP ID + token)
- * and email the candidate a "Start Self-Onboarding" button; the button is shown
- * on this page too.
  */
 class OfferAcceptController extends Controller
 {
@@ -40,29 +36,6 @@ class OfferAcceptController extends Controller
         return DB::table('letters')->where('accept_token', $token)->where('is_template', 0)->first();
     }
 
-    /** The self-onboarding token for this candidate, if one has been issued. */
-    private function selfToken($letter, $cand): ?string
-    {
-        try {
-            if (! Schema::hasTable('self_onboarding')) {
-                return null;
-            }
-
-            return DB::table('self_onboarding')
-                ->when($letter->tenant_id ?? null, fn ($q) => $q->where('tenant_id', $letter->tenant_id))
-                ->where(function ($q) use ($letter, $cand) {
-                    $q->where('name', $letter->candidate);
-                    if ($cand) {
-                        $q->orWhere('candidate_id', $cand->id);
-                    }
-                })
-                ->whereNull('deleted_at')
-                ->orderByDesc('id')->value('token');
-        } catch (\Throwable $e) {
-            return null;
-        }
-    }
-
     public function show(string $token)
     {
         $letter = $this->find($token);
@@ -85,7 +58,6 @@ class OfferAcceptController extends Controller
             'brand' => $brand,
             'token' => $token,
             'accepted' => ($letter->status ?? '') === 'accepted',
-            'selfToken' => $this->selfToken($letter, $cand),
         ]);
     }
 
@@ -109,27 +81,6 @@ class OfferAcceptController extends Controller
                 }
                 DB::table('recruitment')->where('name', $letter->candidate)
                     ->where('tenant_id', $letter->tenant_id)->update($upd);
-            }
-
-            // Issue a self-onboarding link and email the candidate the button. Fail-soft.
-            try {
-                $cand = DB::table('recruitment')->where('name', $letter->candidate)
-                    ->where('tenant_id', $letter->tenant_id)->first();
-                $company = DB::table('companies')->where('id', $letter->company_id)->value('name');
-                $rec = SelfOnboardingController::issue([
-                    'tenant_id' => $letter->tenant_id,
-                    'company_id' => $letter->company_id,
-                    'candidate_id' => $cand->id ?? null,
-                    'name' => $letter->candidate,
-                    'email' => $cand->email ?? null,
-                    'mobile' => $cand->mobile ?? ($cand->phone ?? null),
-                ]);
-                SelfOnboardingController::sendLink($rec, [
-                    'position' => $cand->position ?? null,
-                    'brand' => $company,
-                ]);
-            } catch (\Throwable $e) {
-                // never block acceptance on the onboarding link
             }
         }
 

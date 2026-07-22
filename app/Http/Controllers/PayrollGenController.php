@@ -1137,6 +1137,9 @@ class PayrollGenController extends Controller
         if (Schema::hasColumn('employees', 'pt_state')) {
             $empSel[] = 'pt_state'; // rev180 — state-wise Professional Tax slabs
         }
+        if (Schema::hasColumn('employees', 'gender')) {
+            $empSel[] = 'gender'; // PT — Maharashtra female exemption (gross ≤ ₹25,000)
+        }
         $emps = DB::table('employees')
             ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
             ->where('company_id', $company->id)
@@ -1277,6 +1280,7 @@ class PayrollGenController extends Controller
             $grossEst = round($ctc * $factor / 12, 2);
             $stx = [
                 'pt_state' => (string) ($e->pt_state ?? ''),
+                'gender' => (string) ($e->gender ?? ''),   // PT — MH female exemption
                 'month' => $month,
                 'esi_lock' => $grossEst > (float) ($rates['esi_threshold'] ?? 21000)
                     ? AppDataController::esiPeriodLock((int) $e->id, $month, $rates)
@@ -1606,6 +1610,7 @@ class PayrollGenController extends Controller
             // rev180 — same statutory context as payroll (state PT + ESI period lock).
             $stxLv = [
                 'pt_state' => (string) ($target->pt_state ?? ''),
+                'gender' => (string) ($target->gender ?? ''),   // PT — MH female exemption
                 'month' => $month,
                 'esi_lock' => round($ctc / 12, 2) > (float) ($rates['esi_threshold'] ?? 21000)
                     ? AppDataController::esiPeriodLock((int) $target->id, $month, $rates)
@@ -1956,6 +1961,7 @@ class PayrollGenController extends Controller
             // month (Maharashtra February). No ESI period lock in a simulation.
             $stxSim = [
                 'pt_state' => trim((string) $request->input('pt_state', '')),
+                'gender' => trim((string) $request->input('gender', '')),   // PT — MH female exemption
                 'month' => $month,
             ];
 

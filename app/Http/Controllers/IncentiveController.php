@@ -80,6 +80,14 @@ class IncentiveController extends Controller
             $month = trim((string) $request->input('month', ''));
             $status = $request->input('status') === 'approved' ? 'approved' : 'pending';
             $rows = $request->input('rows', []);
+            // F2 — tag each created entry with a payslip pay-line label ("purpose")
+            // so bulk incentive runs show as a SEPARATE "Incentive" line on the
+            // payslip (vs the "Commission" line), instead of all folding into one.
+            // Honour an explicit purpose, else derive from the engine type selector.
+            $purpose = trim((string) $request->input('purpose', ''));
+            if ($purpose === '') {
+                $purpose = strtolower(trim((string) $request->input('type', ''))) === 'incentive' ? 'Incentive' : 'Commission';
+            }
             if (! is_array($rows) || $month === '') {
                 return response()->json(['ok' => false, 'error' => 'Month and at least one row are required.'], 422);
             }
@@ -216,6 +224,7 @@ class IncentiveController extends Controller
                     'tenant_id' => $tid,
                     'company_id' => $emp->company_id,
                     'employee_id' => $emp->id,
+                    'purpose' => $purpose,   // F2 — payslip pay-line label (Commission | Incentive)
                     'portfolio' => $r['portfolio'] ?? null,
                     'gross_amount' => $payout,
                     'tds_rate' => $tdsRate,

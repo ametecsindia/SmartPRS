@@ -103,7 +103,7 @@
       '<div class="dbody"><div class="col">'+flags+
         kvB('Personal',d.personal,[['full_name','Full name'],['dob','Date of birth'],['gender','Gender'],['father_name','Father/Guardian'],['nationality','Nationality'],['blood_group','Blood group'],['marital','Marital status']])+
         kvB('Contact',d.contact,[['current_address','Current address'],['permanent_address','Permanent address'],['emergency_name','Emergency name'],['emergency_phone','Emergency phone']])+
-        kvB('Statutory',d.statutory,[['pan','PAN'],['uan','UAN'],['aadhaar','Aadhaar/National ID'],['esic','ESIC'],['category','Category']])+
+        kvB('Statutory',d.statutory,[['pan','PAN'],['uan','UAN'],['aadhaar','Aadhaar/National ID'],['esic','ESIC'],['category','Category'],['dra_status','DRA (Yes/No)'],['pcc_status','PCC (Yes/No)']])+
         kvB('Bank',d.bank,[['acc_name','A/c name'],['acc_no','A/c number'],['ifsc','IFSC'],['bank_name','Bank']])+
       '</div><div class="col" style="max-width:200px"><h3>Selfie</h3>'+selfie+'<h3>Documents</h3>'+docs+'</div></div>'+
       hrForm+

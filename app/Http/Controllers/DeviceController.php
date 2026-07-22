@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Company;
 use App\Models\Device;
 use App\Models\Employee;
+use App\Services\LateArrivalService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -172,6 +173,8 @@ class DeviceController extends Controller
             $this->writeLog($employee, $row['date'], $row['in'], 'in', $companyId);
             $this->writeLog($employee, $row['date'], $row['out'], 'out', $companyId);
             $imported++;
+            // F4 — immediate late-arrival email (fail-soft, OFF unless enabled).
+            LateArrivalService::evaluate($employee->tenant_id ?? null, (string) $employee->emp_code, (string) $row['date']);
         }
 
         return $imported;

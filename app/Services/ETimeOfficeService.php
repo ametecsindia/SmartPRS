@@ -294,6 +294,7 @@ class ETimeOfficeService
             return ['imported' => 0, 'matched' => 0, 'unmatched' => $unmatched];
         }
         $cache = [];
+        $touched = [];   // F4 — emp_code => [date => true] for late-arrival notification
         foreach ($punches as $p) {
             $full = $prefix.$p['emp_code'];
             if (! isset($cache[$full])) {
@@ -337,7 +338,15 @@ class ETimeOfficeService
                 ]
             );
             $imported++;
+            // F4 — remember only IN punches for the late-arrival check.
+            if (($p['direction'] ?? 'in') === 'in') {
+                $touched[$emp->emp_code][$p['punch_at']->toDateString()] = true;
+            }
         }
+
+        // F4 — immediate late-arrival notification for the punches just imported.
+        // Fail-soft inside the service; never affects the import result.
+        LateArrivalService::notifyTouched($cfg['tenant_id'] ?? null, $touched);
 
         return ['imported' => $imported, 'matched' => $matched, 'unmatched' => $unmatched];
     }

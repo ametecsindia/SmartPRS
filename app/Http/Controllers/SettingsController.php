@@ -33,6 +33,8 @@ class SettingsController extends Controller
             'esi_employee_rate' => 0.75,  // ESI employee %
             'esi_employer_rate' => 3.25,  // ESI employer %
             'pt_amount' => 200,           // Professional Tax / month (₹)
+            'pt_female_exempt' => 1,      // PT gender rule: exempt women in Maharashtra earning ≤ pt_female_exempt_upto (1 = on, default). Maharashtra State Tax on Professions Act.
+            'pt_female_exempt_upto' => 25000, // monthly-gross ceiling for the female PT exemption (₹); above this the normal slab applies
             'std_deduction' => 75000,      // rev165: salary standard deduction (₹) — new regime
             'rebate_87a_limit' => 1200000, // rev165: 87A rebate — nil tax up to ₹12L (new regime)
             'cess_rate' => 4,             // health & education cess %
@@ -55,6 +57,7 @@ class SettingsController extends Controller
             'dra_gate' => 'warn',         // rev181 — DRA-expiry gate at money points (incentive commit / commission approval / off-roll earning approval): off | warn (default — pays but warns + audits) | block (refuses until the DRA cert is valid)
             'points_gate_min' => 0,       // rev181 — minimum points EARNED IN THE INCENTIVE MONTH to be eligible on bulk incentive commit; 0 = gate off. Points stay a scoreboard — this gates ELIGIBILITY only, it never converts points to money.
             'incentive_payout_lag' => 0,  // rev181c (D4) — retention guard: when a commission entry / bulk commit has NO payout date, auto-set it N months after the earned month (0 = off). Incentive timing is contractual — the lag keeps 1–N months of incentive always in the pipeline.
+            'late_email_enabled' => 0,        // F4 — email employees automatically on a late arrival (based on the Late Policy). 0 = off (default), 1 = on.
             'data_retention_months' => 84,    // G5 — record / recording retention period (months); 84 = 7 years
             'contact_window_start' => '08:00', // H1 — lawful borrower-contact window start (RBI 08:00–19:00)
             'contact_window_end' => '19:00',   // H1 — lawful borrower-contact window end
@@ -138,13 +141,15 @@ class SettingsController extends Controller
         $v = $request->validate([
             'pf_wage_cap' => $num, 'pf_rate' => $num,
             'esi_threshold' => $num, 'esi_employee_rate' => $num, 'esi_employer_rate' => $num,
-            'pt_amount' => $num, 'std_deduction' => $num, 'rebate_87a_limit' => $num,
+            'pt_amount' => $num, 'pt_female_exempt' => $num, 'pt_female_exempt_upto' => $num,
+            'std_deduction' => $num, 'rebate_87a_limit' => $num,
             'cess_rate' => $num, 'comm_tds_rate' => $num, 'no_pan_tds_rate' => $num,
             'conveyance_enabled' => $num, 'conveyance_rate' => $num,
             'payslip_show_ytd' => $num, // rev179 — 1/0 toggle
             'sandwich_rule' => $num,    // rev180 — 1/0 toggle
             'bonus_pct' => $num,        // rev180 — statutory bonus %
             'points_gate_min' => $num,  // rev181 — monthly points threshold (0 = off)
+            'late_email_enabled' => $num, // F4 — late-arrival email toggle
             'incentive_payout_lag' => $num, // rev181c — payout lag months (0 = off)
             'dra_gate' => ['nullable', 'in:off,warn,block'], // rev181 — DRA money-point gate
             'weekly_off_day' => ['nullable', 'in:sunday,monday,tuesday,wednesday,thursday,friday,saturday'],
