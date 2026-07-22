@@ -55,7 +55,7 @@
 </style>
 </head>
 <body>
-<div class="topbar"><div class="mark">S</div><b>Smart<span>PRS</span></b><span class="t">Self-Onboarding · Verification Console</span><a href="{{ url('/') }}">← Back to app</a></div>
+<div class="topbar"><div class="mark">S</div><b>Smart<span>PRS</span></b><span class="t">Self-Onboarding · Verification Console</span><a href="{{ url('/app') }}">← Back to app</a></div>
 <div class="layout">
   <div class="list"><div class="card" id="listCard"><div class="empty">Loading…</div></div></div>
   <div class="detail"><div class="card" id="detailCard"><div class="empty">Select a submission on the left to review.</div></div></div>

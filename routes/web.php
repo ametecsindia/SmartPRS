@@ -555,6 +555,17 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
     Route::post('/app/mobile-devices/{id}/reject', [App\Http\Controllers\MobileDeviceController::class, 'reject'])->name('app.mobiledevices.reject');
     Route::post('/app/mobile-devices/{id}/revoke', [App\Http\Controllers\MobileDeviceController::class, 'revoke'])->name('app.mobiledevices.revoke');
 
+// HR VERIFICATION CONSOLE for self-onboarding (authenticated; role-gated in controller).
+Route::middleware(['auth'])->group(function () {
+    Route::get('/app/self-onboarding', [\App\Http\Controllers\SelfOnboardingController::class, 'hrConsole'])->name('app.selfonboard.console');
+    Route::get('/app/self-onboarding/list', [\App\Http\Controllers\SelfOnboardingController::class, 'hrList'])->name('app.selfonboard.list');
+    Route::get('/app/self-onboarding/{id}', [\App\Http\Controllers\SelfOnboardingController::class, 'hrShow'])->whereNumber('id');
+    Route::get('/app/self-onboarding/{id}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'hrSelfie'])->whereNumber('id');
+    Route::get('/app/self-onboarding/{id}/doc/{doc}', [\App\Http\Controllers\SelfOnboardingController::class, 'hrDoc'])->whereNumber('id')->whereNumber('doc');
+    Route::post('/app/self-onboarding/{id}/correction', [\App\Http\Controllers\SelfOnboardingController::class, 'hrCorrection'])->whereNumber('id');
+    Route::post('/app/self-onboarding/{id}/verify', [\App\Http\Controllers\SelfOnboardingController::class, 'hrVerify'])->whereNumber('id');
+});
+
     Route::get('/app/{screen?}', [AppController::class, 'show'])->name('app');
 
     // Legacy first-pass native module pages are superseded by the /app prototype
@@ -574,13 +585,3 @@ Route::post('/self-onboard/{token}/document', [\App\Http\Controllers\SelfOnboard
 Route::post('/self-onboard/{token}/submit', [\App\Http\Controllers\SelfOnboardingController::class, 'submit'])->name('selfonboard.submit');
 Route::get('/self-onboard/{token}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'selfieImg'])->name('selfonboard.selfie.img');
 
-// HR VERIFICATION CONSOLE for self-onboarding (authenticated; role-gated in controller).
-Route::middleware(['auth'])->group(function () {
-    Route::get('/app/self-onboarding', [\App\Http\Controllers\SelfOnboardingController::class, 'hrConsole'])->name('app.selfonboard.console');
-    Route::get('/app/self-onboarding/list', [\App\Http\Controllers\SelfOnboardingController::class, 'hrList'])->name('app.selfonboard.list');
-    Route::get('/app/self-onboarding/{id}', [\App\Http\Controllers\SelfOnboardingController::class, 'hrShow'])->whereNumber('id');
-    Route::get('/app/self-onboarding/{id}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'hrSelfie'])->whereNumber('id');
-    Route::get('/app/self-onboarding/{id}/doc/{doc}', [\App\Http\Controllers\SelfOnboardingController::class, 'hrDoc'])->whereNumber('id')->whereNumber('doc');
-    Route::post('/app/self-onboarding/{id}/correction', [\App\Http\Controllers\SelfOnboardingController::class, 'hrCorrection'])->whereNumber('id');
-    Route::post('/app/self-onboarding/{id}/verify', [\App\Http\Controllers\SelfOnboardingController::class, 'hrVerify'])->whereNumber('id');
-});
