@@ -563,3 +563,6 @@ Route::middleware(['auth', App\Http\Middleware\LicenseGate::class, App\Http\Midd
         Route::get('/'.$legacy, fn () => redirect('/app'));
     }
 });
+
+// Public candidate/existing-employee SELF-ONBOARDING portal (token-secured, no login).
+Route::get('/self-onboard/{token}', [\App\Http\Controllers\SelfOnboardingController::class, 'start'])->name('selfonboard.start');
