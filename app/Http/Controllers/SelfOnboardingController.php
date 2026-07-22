@@ -445,4 +445,172 @@ class SelfOnboardingController extends Controller
 
         return response(Storage::disk('local')->get($rec->selfie_path), 200, ['Content-Type' => 'image/jpeg']);
     }
+
+    /* ------------------------------------------------------------- HR console */
+
+    private function hrDeny(Request $r)
+    {
+        return ApprovalService::denyUnlessRole($r, ['admin', 'hr_manager']);
+    }
+
+    private function hrRec(Request $r, int $id)
+    {
+        $tid = $r->user()->tenant_id ?? null;
+
+        return DB::table('self_onboarding')->where('id', $id)
+            ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+            ->whereNull('deleted_at')->first();
+    }
+
+    /** The verification console page. */
+    public function hrConsole(Request $r)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+
+        return view('self-onboarding.hr-console');
+    }
+
+    /** JSON: submissions awaiting / in verification. */
+    public function hrList(Request $r)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $this->ensureTables();
+        $tid = $r->user()->tenant_id ?? null;
+        $counts = DB::table('self_onboarding_docs')->select('self_onboarding_id', DB::raw('count(*) as c'))
+            ->groupBy('self_onboarding_id')->pluck('c', 'self_onboarding_id');
+        $rows = DB::table('self_onboarding')
+            ->when($tid, fn ($q) => $q->where('tenant_id', $tid))
+            ->whereNull('deleted_at')
+            ->whereIn('status', ['submitted', 'correction', 'verified', 'approved'])
+            ->orderByDesc('submitted_at')->orderByDesc('id')->get();
+
+        return response()->json(['ok' => true, 'rows' => $rows->map(function ($x) use ($counts) {
+            return [
+                'id' => $x->id, 'temp_emp_code' => $x->temp_emp_code, 'name' => $x->name,
+                'status' => $x->status, 'progress' => $x->progress,
+                'email_verified' => (bool) $x->email_verified,
+                'mobile_verified' => (bool) ($x->mobile_verified || $x->wa_verified),
+                'docs' => (int) ($counts[$x->id] ?? 0), 'selfie' => (bool) $x->selfie_path,
+                'submitted_at' => $x->submitted_at,
+            ];
+        })]);
+    }
+
+    /** JSON: full detail for one submission. */
+    public function hrShow(Request $r, int $id)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $rec = $this->hrRec($r, $id);
+        if (! $rec) {
+            return response()->json(['ok' => false, 'error' => 'Not found.'], 404);
+        }
+        $docs = DB::table('self_onboarding_docs')->where('self_onboarding_id', $id)->get()
+            ->map(fn ($d) => ['id' => $d->id, 'kind' => $d->kind, 'status' => $d->status,
+                'url' => url('/app/self-onboarding/'.$id.'/doc/'.$d->id)]);
+
+        return response()->json(['ok' => true, 'rec' => [
+            'id' => $rec->id, 'temp_emp_code' => $rec->temp_emp_code, 'name' => $rec->name,
+            'email' => $rec->email, 'mobile' => $rec->mobile, 'whatsapp' => $rec->whatsapp,
+            'email_verified' => (bool) $rec->email_verified,
+            'mobile_verified' => (bool) $rec->mobile_verified, 'wa_verified' => (bool) $rec->wa_verified,
+            'status' => $rec->status, 'progress' => $rec->progress,
+            'data' => json_decode($rec->data ?: '{}', true) ?: [],
+            'flags' => json_decode($rec->flags ?: '[]', true) ?: [],
+            'selfie' => $rec->selfie_path ? url('/app/self-onboarding/'.$id.'/selfie') : null,
+            'docs' => $docs,
+        ]]);
+    }
+
+    public function hrSelfie(Request $r, int $id)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $rec = $this->hrRec($r, $id);
+        if (! $rec || ! $rec->selfie_path || ! Storage::disk('local')->exists($rec->selfie_path)) {
+            abort(404);
+        }
+
+        return response(Storage::disk('local')->get($rec->selfie_path), 200, ['Content-Type' => 'image/jpeg']);
+    }
+
+    public function hrDoc(Request $r, int $id, int $doc)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $rec = $this->hrRec($r, $id);
+        $row = $rec ? DB::table('self_onboarding_docs')->where('id', $doc)->where('self_onboarding_id', $id)->first() : null;
+        if (! $row || ! Storage::disk('local')->exists($row->path)) {
+            abort(404);
+        }
+        $mime = str_ends_with(strtolower($row->path), '.pdf') ? 'application/pdf' : 'image/jpeg';
+
+        return response(Storage::disk('local')->get($row->path), 200, ['Content-Type' => $mime]);
+    }
+
+    /** Flag items and ask the candidate to correct them — reopens the link and notifies. */
+    public function hrCorrection(Request $r, int $id)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $rec = $this->hrRec($r, $id);
+        if (! $rec) {
+            return response()->json(['ok' => false, 'error' => 'Not found.'], 404);
+        }
+        $items = array_values(array_filter(array_map('trim', (array) $r->input('items', []))));
+        if (! $items) {
+            return response()->json(['ok' => false, 'error' => 'Add at least one item to correct.'], 422);
+        }
+        $note = trim((string) $r->input('note', ''));
+        DB::table('self_onboarding')->where('id', $id)->update([
+            'status' => 'correction', 'flags' => json_encode($items), 'updated_at' => now(),
+        ]);
+        try {
+            if ($rec->email) {
+                MailService::queue([
+                    'tenant_id' => $rec->tenant_id, 'company_id' => $rec->company_id,
+                    'to' => $rec->email, 'to_name' => $rec->name,
+                    'subject' => 'Action needed on your onboarding',
+                    'heading' => 'A few items need your attention',
+                    'intro' => $note ?: 'Please correct the following and re-submit your onboarding:',
+                    'lines' => ['Please correct' => implode('; ', $items)],
+                    'cta_label' => 'Open my onboarding', 'cta_url' => route('selfonboard.start', $rec->token),
+                    'kind' => 'onboarding.correction', 'sync' => true,
+                ]);
+            }
+            if ($rec->whatsapp || $rec->mobile) {
+                WaService::sendTemplate([
+                    'tenant_id' => $rec->tenant_id, 'mobile' => $rec->whatsapp ?: $rec->mobile,
+                    'template' => WaService::templateNameFor('lead', $rec->tenant_id),
+                    'bodyValues' => [$rec->name ?: 'there', implode(', ', $items)], 'kind' => 'onboarding.correction',
+                ]);
+            }
+        } catch (\Throwable $e) {
+        }
+
+        return response()->json(['ok' => true]);
+    }
+
+    /** Mark the submission verified (ready for approval + injection in Phase 5). */
+    public function hrVerify(Request $r, int $id)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $rec = $this->hrRec($r, $id);
+        if (! $rec) {
+            return response()->json(['ok' => false, 'error' => 'Not found.'], 404);
+        }
+        DB::table('self_onboarding')->where('id', $id)->update(['status' => 'verified', 'updated_at' => now()]);
+
+        return response()->json(['ok' => true]);
+    }
 }

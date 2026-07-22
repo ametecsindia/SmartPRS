@@ -573,3 +573,14 @@ Route::post('/self-onboard/{token}/selfie', [\App\Http\Controllers\SelfOnboardin
 Route::post('/self-onboard/{token}/document', [\App\Http\Controllers\SelfOnboardingController::class, 'document'])->name('selfonboard.document');
 Route::post('/self-onboard/{token}/submit', [\App\Http\Controllers\SelfOnboardingController::class, 'submit'])->name('selfonboard.submit');
 Route::get('/self-onboard/{token}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'selfieImg'])->name('selfonboard.selfie.img');
+
+// HR VERIFICATION CONSOLE for self-onboarding (authenticated; role-gated in controller).
+Route::middleware(['auth'])->group(function () {
+    Route::get('/app/self-onboarding', [\App\Http\Controllers\SelfOnboardingController::class, 'hrConsole'])->name('app.selfonboard.console');
+    Route::get('/app/self-onboarding/list', [\App\Http\Controllers\SelfOnboardingController::class, 'hrList'])->name('app.selfonboard.list');
+    Route::get('/app/self-onboarding/{id}', [\App\Http\Controllers\SelfOnboardingController::class, 'hrShow'])->whereNumber('id');
+    Route::get('/app/self-onboarding/{id}/selfie', [\App\Http\Controllers\SelfOnboardingController::class, 'hrSelfie'])->whereNumber('id');
+    Route::get('/app/self-onboarding/{id}/doc/{doc}', [\App\Http\Controllers\SelfOnboardingController::class, 'hrDoc'])->whereNumber('id')->whereNumber('doc');
+    Route::post('/app/self-onboarding/{id}/correction', [\App\Http\Controllers\SelfOnboardingController::class, 'hrCorrection'])->whereNumber('id');
+    Route::post('/app/self-onboarding/{id}/verify', [\App\Http\Controllers\SelfOnboardingController::class, 'hrVerify'])->whereNumber('id');
+});
