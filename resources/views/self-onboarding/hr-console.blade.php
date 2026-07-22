@@ -54,7 +54,7 @@
 </style></head>
 <body>
 <div class="topbar"><img src="{{ $logoUrl ?? url('/images/logo.png') }}" alt="Company logo" style="height:30px;max-width:170px;object-fit:contain"><span class="t">Self-Onboarding · Verification Console</span>
-  <span class="sp"></span><button class="invite" id="inviteBtn">+ Invite</button><a href="{{ url('/app') }}">← Back to app</a></div>
+  <span class="sp"></span><button class="invite" id="inviteBtn">+ Invite</button><button class="invite" id="bulkBtn" style="background:#1a3350">⬆ Bulk import</button><a href="{{ url('/app') }}">← Back to app</a></div>
 <div class="layout">
   <div class="list"><div class="card" id="listCard"><div class="empty">Loading…</div></div></div>
   <div class="detail"><div class="card" id="detailCard"><div class="empty">Select a submission to review, or invite someone to onboard.</div></div></div>
