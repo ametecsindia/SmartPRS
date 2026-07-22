@@ -699,7 +699,7 @@ class SelfOnboardingController extends Controller
         $tid = $rec->tenant_id;
         $companyId = $rec->company_id;
         $hrPatch = $this->hrPatch(is_array($hr) ? $hr : [], $tid);
-        $candExtra = array_filter(['blood_group' => $p['blood_group'] ?? null, 'marital_status' => $p['marital'] ?? null, 'category' => $st['category'] ?? null, 'esic_no' => $st['esic'] ?? null]);
+        $candExtra = array_filter(['blood_group' => $p['blood_group'] ?? null, 'marital_status' => $p['marital'] ?? null, 'category' => $st['category'] ?? null, 'esic_no' => $st['esic'] ?? null, 'father' => $p['father_name'] ?? null, 'nationality' => $p['nationality'] ?? null, 'aadhaar' => $st['aadhaar'] ?? null, 'permanent_address' => $ct['permanent_address'] ?? null, 'emergency_name' => $ct['emergency_name'] ?? null, 'emergency_phone' => $ct['emergency_phone'] ?? null]);
 
         if ($rec->employee_id) {
             $patch = ['email_verified' => (bool) $rec->email_verified, 'mobile_verified' => (bool) $rec->mobile_verified, 'wa_verified' => (bool) $rec->wa_verified, 'docs_status' => 'approved', 'updated_at' => now()];
@@ -873,7 +873,7 @@ class SelfOnboardingController extends Controller
         if (! Schema::hasTable('employees')) {
             return;
         }
-        foreach (['esic_no', 'employment_type', 'marital_status'] as $c) {
+        foreach (['esic_no', 'employment_type', 'marital_status', 'father', 'nationality', 'aadhaar', 'permanent_address', 'emergency_name', 'emergency_phone', 'blood_group', 'category'] as $c) {
             if (! Schema::hasColumn('employees', $c)) {
                 try {
                     Schema::table('employees', function (Blueprint $b) use ($c) {
