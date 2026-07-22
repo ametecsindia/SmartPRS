@@ -591,3 +591,5 @@ Route::post('/app/self-onboarding/invite-existing', [\App\Http\Controllers\SelfO
 Route::get('/app/self-onboarding-bulk/template', [\App\Http\Controllers\SelfOnboardingController::class, 'hrBulkTemplate'])->middleware('auth')->name('app.selfonboard.bulk.template');
 Route::post('/app/self-onboarding-bulk/upload', [\App\Http\Controllers\SelfOnboardingController::class, 'hrBulkUpload'])->middleware('auth')->name('app.selfonboard.bulk.upload');
 Route::post('/app/self-onboarding-bulk/commit', [\App\Http\Controllers\SelfOnboardingController::class, 'hrBulkCommit'])->middleware('auth')->name('app.selfonboard.bulk.commit');
+Route::get('/app/self-onboarding/employees', [\App\Http\Controllers\SelfOnboardingController::class, 'hrEmployees'])->middleware('auth')->name('app.selfonboard.employees');
+Route::post('/app/self-onboarding/{id}/fields', [\App\Http\Controllers\SelfOnboardingController::class, 'hrSetFields'])->whereNumber('id')->middleware('auth')->name('app.selfonboard.fields');
