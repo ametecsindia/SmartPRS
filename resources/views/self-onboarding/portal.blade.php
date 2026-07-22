@@ -101,6 +101,8 @@
       <div><label>Gender</label><select data-field="gender"><option value="">Select</option><option>Male</option><option>Female</option><option>Other</option></select></div></div>
       <label>Father / Guardian name</label><input data-field="father_name">
       <label>Nationality</label><input data-field="nationality" value="Indian">
+      <div class="two"><div><label>Blood group</label><select data-field="blood_group"><option value="">Select</option><option>A+</option><option>A-</option><option>B+</option><option>B-</option><option>O+</option><option>O-</option><option>AB+</option><option>AB-</option></select></div>
+      <div><label>Marital status</label><select data-field="marital"><option value="">Select</option><option>Single</option><option>Married</option><option>Widowed</option><option>Divorced</option></select></div></div>
       <div class="nav"><button class="btn ghost" data-back>Back</button><button class="btn primary" data-save data-section="personal">Save &amp; Next</button></div>
     </section>
 
@@ -122,6 +124,8 @@
       <label>PAN</label><input data-field="pan" style="text-transform:uppercase" maxlength="10">
       <div class="two"><div><label>UAN / PF no. (if any)</label><input data-field="uan"></div>
       <div><label>Aadhaar / National ID</label><input data-field="aadhaar"></div></div>
+      <div class="two"><div><label>ESIC no. (if any)</label><input data-field="esic"></div>
+      <div><label>Category</label><select data-field="category"><option value="">Select</option><option>General</option><option>OBC</option><option>SC</option><option>ST</option><option>EWS</option></select></div></div>
       <div class="nav"><button class="btn ghost" data-back>Back</button><button class="btn primary" data-save data-section="statutory">Save &amp; Next</button></div>
     </section>
 

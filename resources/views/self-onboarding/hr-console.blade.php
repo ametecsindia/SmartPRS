@@ -104,9 +104,9 @@
     var flags=(rec.flags&&rec.flags.length)? '<div style="background:#fdecec;color:#c0392b;border-radius:9px;padding:8px 11px;font-size:12px;margin-bottom:8px">Awaiting correction: '+rec.flags.map(esc).join('; ')+'</div>' : '';
     var html='<div class="dhead"><h2>'+esc(rec.name||'—')+'</h2><span class="code">'+esc(rec.temp_emp_code)+' · '+pill(rec.status)+'</span><div class="badges">'+badges+'</div></div>'+
       '<div class="dbody"><div class="col">'+flags+
-        kvBlock('Personal',d.personal,[['full_name','Full name'],['dob','Date of birth'],['gender','Gender'],['father_name','Father/Guardian'],['nationality','Nationality']])+
+        kvBlock('Personal',d.personal,[['full_name','Full name'],['dob','Date of birth'],['gender','Gender'],['father_name','Father/Guardian'],['nationality','Nationality'],['blood_group','Blood group'],['marital','Marital status']])+
         kvBlock('Contact',d.contact,[['current_address','Current address'],['permanent_address','Permanent address'],['emergency_name','Emergency name'],['emergency_phone','Emergency phone']])+
-        kvBlock('Statutory',d.statutory,[['pan','PAN'],['uan','UAN'],['aadhaar','Aadhaar/National ID']])+
+        kvBlock('Statutory',d.statutory,[['pan','PAN'],['uan','UAN'],['aadhaar','Aadhaar/National ID'],['esic','ESIC'],['category','Category']])+
         kvBlock('Bank',d.bank,[['acc_name','A/c name'],['acc_no','A/c number'],['ifsc','IFSC'],['bank_name','Bank']])+
       '</div><div class="col" style="max-width:200px"><h3>Selfie</h3>'+selfie+'<h3>Documents</h3>'+docs+'</div></div>'+
       '<div class="actions"><button class="btn ghost" id="askCorr">Request Correction</button><button class="btn green" id="doVerify">Mark Verified</button><button class="btn primary" id="doApprove">Approve &amp; Inject</button></div>'+
