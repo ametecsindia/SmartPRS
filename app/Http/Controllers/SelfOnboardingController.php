@@ -637,4 +637,102 @@ class SelfOnboardingController extends Controller
 
         return response()->json(['ok' => true, 'temp_emp_code' => $rec->temp_emp_code, 'link' => route('selfonboard.start', $rec->token)]);
     }
+
+    /** Seed the onboarding checklist table (matches OnboardingController). */
+    private function ensureOnboardingTable(): void
+    {
+        if (! Schema::hasTable('onboarding')) {
+            Schema::create('onboarding', function (Blueprint $t) {
+                $t->id();
+                $t->unsignedBigInteger('tenant_id')->nullable()->index();
+                $t->unsignedBigInteger('company_id')->nullable();
+                $t->unsignedBigInteger('employee_id')->nullable();
+                $t->string('employee')->nullable();
+                $t->string('company_name')->nullable();
+                $t->string('stage')->nullable();
+                $t->date('joined_on')->nullable();
+                $t->string('status')->nullable();
+                $t->timestamps();
+            });
+        }
+    }
+
+    /**
+     * Approve a verified submission and INJECT it into the employees master:
+     * create the employee (emp_code EMP####, mirroring the hire flow), carry the
+     * verified email/mobile/WhatsApp flags + PAN/UAN/bank + docs status, seed the
+     * onboarding checklist, then disable + archive the link (never deleted).
+     */
+    public function hrApprove(Request $r, int $id)
+    {
+        if ($d = $this->hrDeny($r)) {
+            return $d;
+        }
+        $rec = $this->hrRec($r, $id);
+        if (! $rec) {
+            return response()->json(['ok' => false, 'error' => 'Not found.'], 404);
+        }
+        if ($rec->status === 'injected' || $rec->employee_id) {
+            $code = DB::table('employees')->where('id', $rec->employee_id)->value('emp_code');
+
+            return response()->json(['ok' => true, 'already' => true, 'emp_code' => $code]);
+        }
+        if ($rec->status !== 'verified') {
+            return response()->json(['ok' => false, 'error' => 'Mark the submission Verified before approving.'], 422);
+        }
+
+        $all = json_decode($rec->data ?: '{}', true) ?: [];
+        $p = $all['personal'] ?? [];
+        $ct = $all['contact'] ?? [];
+        $st = $all['statutory'] ?? [];
+        $bk = $all['bank'] ?? [];
+        $tid = $rec->tenant_id ?: ($r->user()->tenant_id ?? null);
+        $companyId = $rec->company_id ?: ($r->user()->company_id ?? null);
+
+        // emp_code — same scheme as RecruitmentController::createEmployeeFromCandidate
+        $n = (int) DB::table('employees')->when($tid, fn ($q) => $q->where('tenant_id', $tid))->count() + 1;
+        $code = 'EMP'.str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+        while (DB::table('employees')->where('emp_code', $code)->when($tid, fn ($q) => $q->where('tenant_id', $tid))->exists()) {
+            $n++;
+            $code = 'EMP'.str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+        }
+
+        $name = $p['full_name'] ?? $rec->name;
+        $empId = DB::table('employees')->insertGetId(ApprovalService::safeRow('employees', [
+            'uuid' => (string) Str::uuid(), 'tenant_id' => $tid, 'company_id' => $companyId,
+            'emp_code' => $code, 'name' => $name,
+            'dob' => $p['dob'] ?? null, 'gender' => $p['gender'] ?? null,
+            'email' => $rec->email, 'email_verified' => (bool) $rec->email_verified,
+            'mobile' => $rec->mobile, 'mobile_verified' => (bool) $rec->mobile_verified,
+            'whatsapp' => $rec->whatsapp, 'wa_verified' => (bool) $rec->wa_verified,
+            'address' => $ct['current_address'] ?? null,
+            'pan' => ! empty($st['pan']) ? strtoupper($st['pan']) : null,
+            'uan' => $st['uan'] ?? null,
+            'bank_name' => $bk['bank_name'] ?? null, 'bank_acc' => $bk['acc_no'] ?? null,
+            'ifsc' => ! empty($bk['ifsc']) ? strtoupper($bk['ifsc']) : null,
+            'docs_status' => 'approved', 'docs_stored' => true,
+            'type' => 'office', 'salary_type' => 'only_salary', 'status' => 'active',
+            'doj' => now()->toDateString(),
+            'created_at' => now(), 'updated_at' => now(),
+        ]));
+
+        // seed onboarding checklist
+        try {
+            $this->ensureOnboardingTable();
+            DB::table('onboarding')->insert(ApprovalService::safeRow('onboarding', [
+                'tenant_id' => $tid, 'company_id' => $companyId, 'employee_id' => $empId,
+                'employee' => $name, 'joined_on' => now()->toDateString(), 'status' => 'pending',
+                'created_at' => now(), 'updated_at' => now(),
+            ]));
+        } catch (\Throwable $e) {
+        }
+
+        // link disabled + archived (never deleted)
+        DB::table('self_onboarding')->where('id', $id)->update([
+            'status' => 'injected', 'employee_id' => $empId,
+            'approved_at' => now(), 'link_disabled_at' => now(), 'updated_at' => now(),
+        ]);
+
+        return response()->json(['ok' => true, 'emp_code' => $code, 'employee_id' => $empId]);
+    }
 }

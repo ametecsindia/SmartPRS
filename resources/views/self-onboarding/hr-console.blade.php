@@ -8,14 +8,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root{--navy:#0c1929;--navy3:#1a3350;--accent:#f97316;--accent-soft:rgba(249,115,22,.1);
-    --blue:#3b82f6;--green:#10b981;--amber:#f59e0b;--red:#ef4444;
+  :root{--navy:#0c1929;--accent:#f97316;--accent-soft:rgba(249,115,22,.1);--blue:#3b82f6;--green:#10b981;--amber:#f59e0b;--red:#ef4444;
     --bg:#f0f4f8;--card:#fff;--border:#e2e8f0;--text1:#0f172a;--text2:#475569;--text3:#94a3b8;}
   *{box-sizing:border-box}
   body{margin:0;font-family:'Plus Jakarta Sans',system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text1)}
   .topbar{background:var(--navy);color:#fff;display:flex;align-items:center;gap:12px;padding:11px 18px;position:sticky;top:0;z-index:10}
-  .mark{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#ea580c);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800}
-  .topbar b{font-weight:800} .topbar b span{color:var(--accent)}
   .topbar .t{font-size:13px;color:rgba(255,255,255,.65);font-family:'DM Sans',sans-serif}
   .topbar .sp{margin-left:auto}
   .topbar a{color:rgba(255,255,255,.8);font-size:12px;text-decoration:none;border:1px solid rgba(255,255,255,.2);padding:6px 12px;border-radius:8px}
@@ -54,16 +51,15 @@
   label{display:block;font-size:11px;font-weight:700;color:var(--text2);margin:10px 0 5px;text-transform:uppercase;letter-spacing:.4px}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--navy);color:#fff;padding:11px 18px;border-radius:10px;font-size:13px;opacity:0;transition:opacity .2s;z-index:60}
   .toast.show{opacity:1}
-  .mov{position:fixed;inset:0;background:rgba(12,25,41,.5);display:none;align-items:center;justify-content:center;z-index:70;padding:16px}
-  .mov.on{display:flex}
-  .modal{background:#fff;border-radius:16px;width:100%;max-width:420px;padding:22px 22px 18px}
+  .mov{position:fixed;inset:0;background:rgba(12,25,41,.5);display:none;align-items:center;justify-content:center;z-index:70;padding:16px} .mov.on{display:flex}
+  .modal{background:#fff;border-radius:16px;width:100%;max-width:420px;padding:22px}
   .modal h2{margin:0 0 4px;font-size:18px} .modal .s{color:var(--text2);font-size:13px;font-family:'DM Sans',sans-serif;margin:0 0 8px}
   .modal .rr{display:flex;gap:10px} .modal .rr>div{flex:1}
   .okbox{background:#eafaf0;border:1px solid #bfead0;border-radius:10px;padding:10px 12px;font-size:12.5px;margin-top:10px;word-break:break-all}
 </style>
 </head>
 <body>
-<div class="topbar"><div class="mark">S</div><b>Smart<span>PRS</span></b><span class="t">Self-Onboarding · Verification Console</span>
+<div class="topbar"><img src="/images/logo-on-dark.svg" alt="SmartPRS" style="height:26px"><span class="t">Self-Onboarding · Verification Console</span>
   <span class="sp"></span><button class="invite" id="inviteBtn">+ Invite candidate</button><a href="{{ url('/app') }}">← Back to app</a></div>
 <div class="layout">
   <div class="list"><div class="card" id="listCard"><div class="empty">Loading…</div></div></div>
@@ -91,9 +87,9 @@
   var CSRF=document.querySelector('meta[name=csrf-token]').content;
   var curId=null;
   function $(s,r){return (r||document).querySelector(s);}
-  function toast(m){var t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(function(){t.classList.remove('show');},2800);}
+  function toast(m){var t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(function(){t.classList.remove('show');},3000);}
   function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
-  function pill(s){var m={submitted:['p-sub','Pending verify'],correction:['p-cor','Correction sent'],verified:['p-ver','Verified'],approved:['p-app','Approved'],link_sent:['p-sub','Invited'],opened:['p-sub','Opened'],in_progress:['p-sub','In progress'],verifying:['p-sub','Verifying']};var x=m[s]||['p-sub',s];return '<span class="pill '+x[0]+'">'+x[1]+'</span>';}
+  function pill(s){var m={submitted:['p-sub','Pending verify'],correction:['p-cor','Correction sent'],verified:['p-ver','Verified'],approved:['p-app','Approved'],injected:['p-app','Injected'],link_sent:['p-sub','Invited'],opened:['p-sub','Opened'],in_progress:['p-sub','In progress'],verifying:['p-sub','Verifying']};var x=m[s]||['p-sub',s];return '<span class="pill '+x[0]+'">'+x[1]+'</span>';}
   function api(path,opt){opt=opt||{};opt.headers=Object.assign({'X-CSRF-TOKEN':CSRF,'X-Requested-With':'XMLHttpRequest'},opt.headers||{});return fetch(path,opt).then(function(r){return r.json().catch(function(){return{ok:false,error:'Server error'};});});}
 
   function loadList(){
@@ -138,13 +134,18 @@
         kvBlock('Statutory',d.statutory,[['pan','PAN'],['uan','UAN'],['aadhaar','Aadhaar/National ID']])+
         kvBlock('Bank',d.bank,[['acc_name','A/c name'],['acc_no','A/c number'],['ifsc','IFSC'],['bank_name','Bank']])+
       '</div><div class="col" style="max-width:200px"><h3>Selfie</h3>'+selfie+'<h3>Documents</h3>'+docs+'</div></div>'+
-      '<div class="actions"><button class="btn ghost" id="askCorr">Request Correction</button><button class="btn green" id="doVerify">Mark Verified</button></div>'+
+      '<div class="actions"><button class="btn ghost" id="askCorr">Request Correction</button><button class="btn green" id="doVerify">Mark Verified</button><button class="btn primary" id="doApprove">Approve &amp; Inject</button></div>'+
       '<div class="corr" id="corrBox"><h3>Items to correct (one per line)</h3><textarea id="corrItems" rows="3" placeholder="e.g. Education certificate is unreadable"></textarea>'+
         '<h3 style="margin-top:10px">Note (optional)</h3><textarea id="corrNote" rows="2"></textarea>'+
         '<div style="margin-top:10px;display:flex;gap:10px"><button class="btn primary" id="sendCorr">Send &amp; notify candidate</button><button class="btn ghost" id="cancelCorr">Cancel</button></div></div>';
 
     var host=$('#detailCard');host.innerHTML=html;
-    if(rec.status==='verified'||rec.status==='approved'){$('#doVerify').textContent='Verified ✔';$('#doVerify').disabled=true;$('#doVerify').style.opacity=.6;}
+    var st=rec.status;
+    function dim(el,txt){if(!el)return;el.disabled=true;el.style.opacity=.55;if(txt)el.textContent=txt;}
+    if(st==='verified'){ dim($('#doVerify'),'Verified ✔'); }
+    else { dim($('#doApprove')); }
+    if(st==='approved'||st==='injected'){ dim($('#doVerify'),'Verified ✔'); dim($('#doApprove'),'Injected ✔'); }
+
     $('#askCorr').onclick=function(){$('#corrBox').classList.add('on');};
     $('#cancelCorr').onclick=function(){$('#corrBox').classList.remove('on');};
     $('#sendCorr').onclick=function(){
@@ -158,8 +159,15 @@
     $('#doVerify').onclick=function(){
       this.disabled=true;
       api('/app/self-onboarding/'+rec.id+'/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(r){
-        if(!r.ok){toast(r.error||'Failed');return;} toast('Marked verified');loadList();select(rec.id);
-      });
+        if(!r.ok){this.disabled=false;toast(r.error||'Failed');return;} toast('Marked verified');loadList();select(rec.id);
+      }.bind(this));
+    };
+    $('#doApprove').onclick=function(){
+      this.disabled=true;this.textContent='Injecting…';
+      api('/app/self-onboarding/'+rec.id+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(r){
+        if(!r.ok){this.disabled=false;this.textContent='Approve & Inject';toast(r.error||'Failed');return;}
+        toast('Injected to employee master as '+(r.emp_code||'employee'));loadList();select(rec.id);
+      }.bind(this));
     };
   }
 
