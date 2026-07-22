@@ -635,6 +635,7 @@ class SelfOnboardingController extends Controller
     /** Build an employees-column patch from the HR-entered fields (resolving FKs). */
     private function hrPatch(array $hr, $tid): array
     {
+        $this->ensureEmployeeCols();
         $patch = [];
         if (! empty($hr['designation'])) {
             $did = DB::table('designations')->where('name', $hr['designation'])->when($tid, fn ($q) => $q->where('tenant_id', $tid))->value('id');
@@ -863,5 +864,23 @@ class SelfOnboardingController extends Controller
         }
 
         return response()->json(['ok' => true, 'created' => $created, 'updated' => $updated]);
+    }
+
+    /** Add optional master columns used by self-onboarding if they don't exist yet. */
+    private function ensureEmployeeCols(): void
+    {
+        if (! Schema::hasTable('employees')) {
+            return;
+        }
+        foreach (['esic_no', 'employment_type'] as $c) {
+            if (! Schema::hasColumn('employees', $c)) {
+                try {
+                    Schema::table('employees', function (Blueprint $b) use ($c) {
+                        $b->string($c)->nullable();
+                    });
+                } catch (\Throwable $e) {
+                }
+            }
+        }
     }
 }
